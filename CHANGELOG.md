@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.12.1](https://github.com/smykla-skalski/smyklot/compare/v1.12.0...v1.12.1) (2026-06-21)
+
+### Bug Fixes
+
+* **ci:** bump create-github-app-token to v3.2.0 ([#99](https://github.com/smykla-skalski/smyklot/issues/99)) ([457d7dc](https://github.com/smykla-skalski/smyklot/commit/457d7dc03b13fb00a78e4fee69156499b2bd6794))
+* **deps:** update ginkgo to v2.29.0 ([#92](https://github.com/smykla-skalski/smyklot/issues/92)) ([61837ea](https://github.com/smykla-skalski/smyklot/commit/61837eaf670db6a4265f0e614ed245036d573ea5))
+* **deps:** update ginkgo to v2.30.0 ([#112](https://github.com/smykla-skalski/smyklot/issues/112)) ([198f6dd](https://github.com/smykla-skalski/smyklot/commit/198f6dd68b203bf254ba488762ace846cb2c21e6))
+* **deps:** update module github.com/jferrl/go-githubauth to v1.6.0 ([#89](https://github.com/smykla-skalski/smyklot/issues/89)) ([30466f2](https://github.com/smykla-skalski/smyklot/commit/30466f2c9bf1a0bd60901156b97e447abfec6632))
+* **deps:** update module github.com/onsi/gomega to v1.41.0 ([#93](https://github.com/smykla-skalski/smyklot/issues/93)) ([3cef9ab](https://github.com/smykla-skalski/smyklot/commit/3cef9ab38bf6c943ea32d3fc0103e6053e904f19))
+* **deps:** update module github.com/onsi/gomega to v1.42.0 ([#113](https://github.com/smykla-skalski/smyklot/issues/113)) ([2635d40](https://github.com/smykla-skalski/smyklot/commit/2635d4094090bbc9e1bb3ec100c0ce66d097cf39))
+* **lint:** extract repeated string literals to constants ([c81c508](https://github.com/smykla-skalski/smyklot/commit/c81c508760f3f24e78fd9fcb51aca67ad5bfc597))
+
+## [1.12.0](https://github.com/smykla-skalski/smyklot/compare/v1.11.2...v1.12.0) (2026-04-13)
+
+### Features
+
+* **lint:** migrate to markdownlint-cli2 ([dbca17b](https://github.com/smykla-skalski/smyklot/commit/dbca17b7535f03178ee48b86029caf0f60006fd2))
+
+### Bug Fixes
+
+* **deps:** update ginkgo to v2.28.1 ([#57](https://github.com/smykla-skalski/smyklot/issues/57)) ([758ed1d](https://github.com/smykla-skalski/smyklot/commit/758ed1dfb912073a4c5410cbdce502e5b5ff5837))
+* **deps:** update module github.com/jferrl/go-githubauth/v2 to v2.0.1 ([#82](https://github.com/smykla-skalski/smyklot/issues/82)) ([805a892](https://github.com/smykla-skalski/smyklot/commit/805a892f9c6d6a21b637194fad60cb96fb3d0981))
+* **deps:** update module github.com/onsi/gomega to v1.39.0 ([#58](https://github.com/smykla-skalski/smyklot/issues/58)) ([6d3aa92](https://github.com/smykla-skalski/smyklot/commit/6d3aa928bd941b588361d2daa6e8500c2063cd9d))
+* **deps:** update module github.com/onsi/gomega to v1.39.1 ([#68](https://github.com/smykla-skalski/smyklot/issues/68)) ([354caf4](https://github.com/smykla-skalski/smyklot/commit/354caf44e18b5c3c88ae55337ea18a8e45cc0f5b))
+* **pkg:** use fmt.Fprintf, suppress G704 ([dfcb851](https://github.com/smykla-skalski/smyklot/commit/dfcb851e0b281b94fc7247fd1bdedeb7821d9e73))
+
+### Code Refactoring
+
+* **docs:** slim down CLAUDE.md ([29d09d4](https://github.com/smykla-skalski/smyklot/commit/29d09d46cb91bb638c060bb631764066bc7ad745))
+
+## [1.11.2](https://github.com/smykla-skalski/smyklot/compare/v1.11.1...v1.11.2) (2026-02-10)
+
+### Bug Fixes
+
+* **action:** update registry path after rename ([7913acc](https://github.com/smykla-skalski/smyklot/commit/7913acce17b68262dd573842974904c8d246ae50))
+
 ## [1.11.0](https://github.com/smykla-skalski/smyklot/compare/v1.10.4...v1.11.0) (2025-12-08)
 
 ### Features
