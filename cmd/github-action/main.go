@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,7 +16,6 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jferrl/go-githubauth"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -23,6 +23,7 @@ import (
 	"github.com/smykla-skalski/smyklot/pkg/config"
 	"github.com/smykla-skalski/smyklot/pkg/feedback"
 	"github.com/smykla-skalski/smyklot/pkg/github"
+	"github.com/smykla-skalski/smyklot/pkg/githubapp"
 	"github.com/smykla-skalski/smyklot/pkg/permissions"
 )
 
@@ -67,7 +68,7 @@ const (
 	errCommentTooLong      = "comment body exceeds maximum length"
 	errInvalidRepoName     = "invalid repository owner or name"
 	selfApprovalNotAllowed = "(self-approval not allowed)"
-	maxCommentBodyLength   = 10000 // 10KB - matches github.maxCommentBodyLength
+	maxCommentBodyLength   = 10000 // 10KB - cap on untrusted comment bodies
 	stepSummaryTemplate    = `## Smyklot Configuration
 
 ### Runtime Configuration
@@ -151,11 +152,9 @@ type stepSummaryData struct {
 	CommandAliases         map[string]string
 }
 
-var (
-	// githubNamePattern validates GitHub repository and owner names
-	// Allows: alphanumeric, hyphens, underscores, dots (e.g., .dotfiles, foo_bar, foo-bar)
-	githubNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-)
+// githubNamePattern validates GitHub repository and owner names
+// Allows: alphanumeric, hyphens, underscores, dots (e.g., .dotfiles, foo_bar, foo-bar)
+var githubNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 var rootCmd = &cobra.Command{
 	Use:   "smyklot",
@@ -246,34 +245,6 @@ func run(cmd *cobra.Command, _ []string) error {
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to write step summary: %v\n", err)
 	}
 
-	// Parse the command from the comment
-	//
-	// A parse error still yields the commands the comment asked for, which the
-	// deleted-comment branch below reports on
-	parsedCmd, parseErr := commands.ParseCommand(rc.CommentBody, bc)
-
-	// Handle deleted comments
-	//
-	// A deleted comment is never executed, so this branch always returns
-	if rc.CommentAction == commentActionDeleted {
-		deletedCommands := deletedCommandsToReport(bc, parsedCmd)
-		if len(deletedCommands) == 0 {
-			return nil
-		}
-
-		return handleDeletedComment(ctx, rc, deletedCommands)
-	}
-
-	if parseErr != nil {
-		// Not a valid command, ignore silently
-		return nil
-	}
-
-	// If no valid command was detected and reactions are disabled, exit early
-	if !parsedCmd.IsValid && bc.DisableReactions {
-		return nil
-	}
-
 	// Get GitHub App installation token if configured
 	token := rc.Token
 	installationToken, err := getInstallationToken(rc)
@@ -289,6 +260,65 @@ func run(cmd *cobra.Command, _ []string) error {
 	client, err := github.NewClient(token, rc.APIBaseURL)
 	if err != nil {
 		return NewGitHubError(ErrGitHubClient, err)
+	}
+
+	// Layer the repository's own configuration over the workflow's
+	//
+	// The service reads the same file, so a repository that checks one in gets
+	// the same treatment whichever entry point handles the comment
+	base := bc
+
+	bc, err = effectiveConfig(ctx, client, rc.RepoOwner, rc.RepoName, base)
+	if err != nil {
+		if errors.Is(err, ErrRepoConfigInvalid) {
+			return reportInvalidRepoConfig(ctx, client, rc, base, err)
+		}
+
+		return err
+	}
+
+	return executeComment(ctx, client, rc, bc)
+}
+
+// executeComment runs whatever a comment asks for, whichever entry point
+// delivered it.
+//
+// The Action and the webhook service differ only in how they arrive here: one
+// reads environment variables a workflow set, the other a signed delivery. From
+// this point the two are the same code, which is what keeps their results the
+// same for the same comment.
+func executeComment(
+	ctx context.Context,
+	client *github.Client,
+	rc *RuntimeConfig,
+	bc *config.Config,
+) error {
+	// Parse the command from the comment
+	//
+	// A parse error still yields the commands the comment asked for, which the
+	// deleted-comment branch below reports on
+	parsedCmd, parseErr := commands.ParseCommand(rc.CommentBody, bc)
+
+	// Handle deleted comments
+	//
+	// A deleted comment is never executed, so this branch always returns
+	if rc.CommentAction == commentActionDeleted {
+		deletedCommands := deletedCommandsToReport(bc, parsedCmd)
+		if len(deletedCommands) == 0 {
+			return nil
+		}
+
+		return handleDeletedComment(ctx, client, rc, deletedCommands)
+	}
+
+	if parseErr != nil {
+		// Not a valid command, ignore silently
+		return nil
+	}
+
+	// If no valid command was detected and reactions are disabled, exit early
+	if !parsedCmd.IsValid && bc.DisableReactions {
+		return nil
 	}
 
 	// Convert string IDs to integers
@@ -497,11 +527,23 @@ func loadEnvIfEmpty(target *string, envVar string) {
 
 // validateConfig validates that all required configuration is present
 func validateConfig(rc *RuntimeConfig) error {
+	if rc.Token == "" {
+		return NewEnvVarError(ErrMissingEnvVar, envGitHubToken)
+	}
+
+	return validateCommentInput(rc)
+}
+
+// validateCommentInput validates everything about a comment that does not
+// depend on how the process authenticated.
+//
+// The service knows all of this from the delivery payload before it mints a
+// token, so it can reject a bad delivery without doing any work first.
+func validateCommentInput(rc *RuntimeConfig) error {
 	requiredFields := []struct {
 		value  string
 		envVar string
 	}{
-		{rc.Token, envGitHubToken},
 		{rc.CommentBody, envCommentBody},
 		{rc.CommentID, envCommentID},
 		{rc.PRNumber, envPRNumber},
@@ -1238,24 +1280,12 @@ func deletedCommandsToReport(bc *config.Config, parsedCmd commands.Command) []co
 }
 
 // handleDeletedComment posts a notification that a command comment was deleted.
-func handleDeletedComment(ctx context.Context, rc *RuntimeConfig, deletedCommands []commands.CommandType) error {
-	// Get GitHub App installation token if configured
-	token := rc.Token
-	installationToken, err := getInstallationToken(rc)
-	if err != nil {
-		return err
-	}
-
-	if installationToken != "" {
-		token = installationToken
-	}
-
-	// Create a GitHub client
-	client, err := github.NewClient(token, rc.APIBaseURL)
-	if err != nil {
-		return NewGitHubError(ErrGitHubClient, err)
-	}
-
+func handleDeletedComment(
+	ctx context.Context,
+	client *github.Client,
+	rc *RuntimeConfig,
+	deletedCommands []commands.CommandType,
+) error {
 	// Convert PR number and comment ID
 	prNum, err := strconv.Atoi(rc.PRNumber)
 	if err != nil {
@@ -1806,28 +1836,22 @@ func getInstallationToken(rc *RuntimeConfig) (string, error) {
 		return "", NewInputError(ErrInvalidInput, rc.InstallationID, errInvalidInstallID)
 	}
 
-	// Create GitHub App JWT token source
-	appTokenSource, err := githubauth.NewApplicationTokenSource(
-		clientID,
-		[]byte(rc.GitHubAppPrivateKey),
-	)
+	// Minting goes through the same store the service uses. Two implementations
+	// had already drifted once: this path never passed the API base URL, so a
+	// GitHub Enterprise install minted its token against public GitHub while
+	// every other call went to the enterprise host
+	tokens, err := githubapp.NewTokenStore(
+		clientID, []byte(rc.GitHubAppPrivateKey), rc.APIBaseURL, githubapp.DefaultMintTimeout)
 	if err != nil {
 		return "", NewGitHubError(ErrGitHubAppAuth, err)
 	}
 
-	// Create the installation token source
-	installationTokenSource := githubauth.NewInstallationTokenSource(
-		installationID,
-		appTokenSource,
-	)
-
-	// Get the installation token
-	token, err := installationTokenSource.Token()
+	token, err := tokens.InstallationToken(installationID)
 	if err != nil {
 		return "", NewGitHubError(ErrGitHubAppAuth, err)
 	}
 
-	return token.AccessToken, nil
+	return token, nil
 }
 
 // writeStepSummary writes the effective configuration to GitHub Actions step summary.

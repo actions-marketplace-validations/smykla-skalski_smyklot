@@ -34,12 +34,6 @@ var (
 	// ErrMergePR is returned when merging a PR fails
 	ErrMergePR = errors.New("failed to merge PR")
 
-	// ErrDismissReview is returned when dismissing a review fails
-	ErrDismissReview = errors.New("failed to dismiss review")
-
-	// ErrGetWorkingDirectory is returned when getting working directory fails
-	ErrGetWorkingDirectory = errors.New("failed to get the working directory")
-
 	// ErrGetCodeowners is returned when fetching CODEOWNERS from GitHub fails
 	ErrGetCodeowners = errors.New("failed to fetch CODEOWNERS from GitHub")
 
@@ -52,8 +46,19 @@ var (
 	// ErrConfigLoad is returned when loading configuration fails
 	ErrConfigLoad = errors.New("failed to load configuration")
 
+	// ErrRepoConfigInvalid is returned when a repository's own configuration
+	// file exists but cannot be parsed. Unlike a failure to fetch it, retrying
+	// will not help, so the repository is told rather than left guessing
+	ErrRepoConfigInvalid = errors.New("repository configuration file is invalid")
+
 	// ErrGetPRs is returned when fetching open PRs from GitHub fails
 	ErrGetPRs = errors.New("failed to fetch open PRs from GitHub")
+
+	// ErrListInstallations is returned when listing the App's installations fails
+	ErrListInstallations = errors.New("failed to list App installations")
+
+	// ErrListRepos is returned when listing an installation's repositories fails
+	ErrListRepos = errors.New("failed to list installation repositories")
 )
 
 // EnvVarError represents an error related to environment variable validation.
@@ -178,6 +183,20 @@ func (e *ConfigError) Unwrap() error {
 	}
 
 	return e.Op
+}
+
+// Is matches on the operation, since Unwrap walks to the cause instead.
+//
+// Without this a caller cannot tell one configuration failure from another -
+// errors.Is would follow Unwrap past Op and never see it. GitHubError and
+// InputError already do this.
+func (e *ConfigError) Is(target error) bool {
+	var configErr *ConfigError
+	if errors.As(target, &configErr) {
+		return true
+	}
+
+	return errors.Is(e.Op, target)
 }
 
 func (e *GitHubError) Is(target error) bool {

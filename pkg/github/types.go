@@ -1,5 +1,27 @@
 package github
 
+// repoConfigPath is where a repository's own Smyklot configuration lives
+const repoConfigPath = ".github/smyklot.yaml"
+
+// Installation represents one installation of the GitHub App
+type Installation struct {
+	// ID identifies the installation, and is what an installation token is
+	// minted for
+	ID int64
+
+	// Account is the login of the user or organization that installed the App
+	Account string
+}
+
+// Repository identifies a repository an installation can reach
+type Repository struct {
+	// Owner is the repository owner's login
+	Owner string
+
+	// Name is the repository name
+	Name string
+}
+
 // MergeableState represents the merge state of a PR from GitHub REST API
 type MergeableState string
 
