@@ -44,6 +44,19 @@ const (
 	maxPages = 100
 )
 
+// sharedTransport is the connection pool every client draws on.
+//
+// A Transport is safe for concurrent use and owns the keep-alive pool, so one
+// per process means a client built for a single call reuses a connection
+// somebody else opened. A Transport per client would hand every short-lived
+// client an empty pool to fill and then abandon, and the abandoned one holds
+// its idle connections until they time out on their own.
+var sharedTransport = &http.Transport{
+	MaxIdleConns:        maxIdleConns,
+	MaxIdleConnsPerHost: maxIdleConnsPerHost,
+	IdleConnTimeout:     idleConnTimeout,
+}
+
 // Client is a GitHub API client
 type Client struct {
 	httpClient *http.Client
@@ -84,12 +97,8 @@ func newClient(token, baseURL, authScheme string) (*Client, error) {
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        maxIdleConns,
-				MaxIdleConnsPerHost: maxIdleConnsPerHost,
-				IdleConnTimeout:     idleConnTimeout,
-			},
+			Timeout:   defaultTimeout,
+			Transport: sharedTransport,
 		},
 		token:      token,
 		baseURL:    baseURL,
@@ -563,6 +572,20 @@ func (c *Client) getFileContent(
 	}
 
 	return decoded, nil
+}
+
+// Ping reports whether the GitHub API answers and accepts these credentials.
+//
+// GET /rate_limit is the cheapest call that proves both. It is exempt from the
+// limit it reports, so a probe on a short interval costs nothing, and it still
+// fails on a token that has expired or been revoked.
+//
+// Sent without the retry every other call gets: a readiness probe wants the
+// current answer, not a patient one.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.makeRequest(ctx, http.MethodGet, "/rate_limit", nil)
+
+	return err
 }
 
 // ListInstallations retrieves every installation of the GitHub App.
