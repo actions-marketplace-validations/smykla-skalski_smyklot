@@ -82,6 +82,7 @@ tasks:
       - lint:go
       - lint:markdown
       - lint:mod
+      - lint:helm
     cmd: echo "✅ All linters passed!"
 
   lint:go:
@@ -109,6 +110,28 @@ tasks:
       - echo "▶ Verifying Go modules"
       - go mod verify
       - echo "✓ Go modules verified"
+
+  lint:helm:
+    desc: Lint the Helm chart
+    cmds:
+      - echo "▶ Linting the Helm chart"
+      # Both are required and have no default, so linting without them would
+      # only ever exercise the failure the chart is meant to raise
+      - >-
+        helm lint charts/smyklot
+        --set github.clientId=lint
+        --set github.existingSecret=lint
+      # A chart that renders two replicas would reintroduce the double-acting
+      # this whole design exists to stop, so the refusal is worth a check of
+      # its own - a guard nothing exercises is a guard that quietly stops working
+      - |
+        if helm template charts/smyklot \
+          --set github.clientId=lint \
+          --set github.existingSecret=lint \
+          --set replicaCount=2 >/dev/null 2>&1; then
+          echo "✗ chart rendered more than one replica" && exit 1
+        fi
+      - echo "✓ Helm chart passes linting"
 
   # ==========================================================================
   # Security

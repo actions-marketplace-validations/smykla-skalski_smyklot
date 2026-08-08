@@ -49,6 +49,9 @@ const (
 	// KeyAllowSelfApproval is the config key for allow_self_approval setting
 	KeyAllowSelfApproval = "allow_self_approval"
 
+	// KeyRunner is the config key for the runner setting
+	KeyRunner = "runner"
+
 	// EnvPrefix is the prefix for environment variables
 	EnvPrefix = "SMYKLOT"
 
@@ -71,6 +74,7 @@ func SetupViper(v *viper.Viper) {
 	v.SetDefault(KeyDisableReactions, false)
 	v.SetDefault(KeyDisableDeletedComments, false)
 	v.SetDefault(KeyAllowSelfApproval, false)
+	v.SetDefault(KeyRunner, string(DefaultRunner))
 
 	// Enable environment variable support
 	v.SetEnvPrefix(EnvPrefix)
@@ -78,7 +82,18 @@ func SetupViper(v *viper.Viper) {
 }
 
 // LoadFromViper creates a Config from Viper settings
-func LoadFromViper(v *viper.Viper) *Config {
+//
+// Every path that builds a Config from settings comes through here - the
+// process-wide environment, the JSON blob, and a repository's own file - so
+// this is where a value that cannot mean anything is rejected. A setting
+// validated anywhere else would be validated on one of those paths and not the
+// others.
+func LoadFromViper(v *viper.Viper) (*Config, error) {
+	runner, err := ParseRunner(v.GetString(KeyRunner))
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		QuietSuccess:           v.GetBool(KeyQuietSuccess),
 		QuietReactions:         v.GetBool(KeyQuietReactions),
@@ -92,7 +107,8 @@ func LoadFromViper(v *viper.Viper) *Config {
 		DisableReactions:       v.GetBool(KeyDisableReactions),
 		DisableDeletedComments: v.GetBool(KeyDisableDeletedComments),
 		AllowSelfApproval:      v.GetBool(KeyAllowSelfApproval),
-	}
+		Runner:                 runner,
+	}, nil
 }
 
 // LoadRepoConfig layers a repository's own configuration file over base
@@ -134,7 +150,7 @@ func LoadRepoConfig(base *Config, content []byte) (*Config, error) {
 		return nil, err
 	}
 
-	return LoadFromViper(v), nil
+	return LoadFromViper(v)
 }
 
 // LoadJSONConfig reads and parses JSON configuration from SMYKLOT_CONFIG environment variable

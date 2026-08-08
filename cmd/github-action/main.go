@@ -284,6 +284,13 @@ func run(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The service handles this repository unless the file says otherwise, and
+	// two entry points acting on one comment is what that setting exists to
+	// stop
+	if actionStandsDown(ctx, bc) {
+		return nil
+	}
+
 	return executeComment(ctx, client, rc, bc)
 }
 
@@ -522,7 +529,12 @@ func loadBotConfig(v *viper.Viper) (*config.Config, error) {
 	}
 
 	// Load bot configuration from Viper
-	return config.LoadFromViper(v), nil
+	bc, err := config.LoadFromViper(v)
+	if err != nil {
+		return nil, NewConfigError(ErrConfigLoad, err)
+	}
+
+	return bc, nil
 }
 
 // loadEnvIfEmpty loads environment variable into target if target is empty
@@ -1850,8 +1862,11 @@ func getInstallationToken(rc *RuntimeConfig) (string, error) {
 	return token, nil
 }
 
-// writeStepSummary writes the effective configuration to GitHub Actions step summary.
-func writeStepSummary(rc *RuntimeConfig, bc *config.Config) error {
+// appendStepSummary adds one note to the GitHub Actions step summary.
+//
+// This is the only place the summary file is opened. Outside Actions there is
+// no such file, and nothing is written.
+func appendStepSummary(note string) error {
 	summaryFile := os.Getenv(envStepSummary)
 	if summaryFile == "" {
 		// Not running in GitHub Actions, skip
@@ -1866,6 +1881,19 @@ func writeStepSummary(rc *RuntimeConfig, bc *config.Config) error {
 	defer func() {
 		_ = file.Close()
 	}()
+
+	if _, err := file.WriteString(note); err != nil {
+		return NewGitHubError(ErrStepSummary, err)
+	}
+
+	return nil
+}
+
+// writeStepSummary writes the effective configuration to GitHub Actions step summary.
+func writeStepSummary(rc *RuntimeConfig, bc *config.Config) error {
+	// Rendered before anything is opened, so appendStepSummary stays the one
+	// place that knows how to write to the summary
+	var rendered strings.Builder
 
 	tmpl, err := template.New(summaryTemplateName).Parse(stepSummaryTemplate)
 	if err != nil {
@@ -1900,9 +1928,9 @@ func writeStepSummary(rc *RuntimeConfig, bc *config.Config) error {
 		CommandAliases:         bc.CommandAliases,
 	}
 
-	if err := tmpl.Execute(file, data); err != nil {
+	if err := tmpl.Execute(&rendered, data); err != nil {
 		return NewGitHubError(ErrStepSummary, err)
 	}
 
-	return nil
+	return appendStepSummary(rendered.String())
 }
