@@ -18,3 +18,76 @@ helm = "4.2.3"                            # Packages and publishes the chart
 GO111MODULE = "on"
 GOFLAGS = "-mod=readonly"
 CGO_ENABLED = "0"
+
+[tasks.build]
+description = "Build all Smyklot binaries through the repository Taskfile"
+run = "task build"
+
+[tasks.test]
+description = "Run the complete Smyklot test suite through the repository Taskfile"
+run = "task test"
+
+[tasks."test:unit"]
+description = "Run Smyklot unit tests through the repository Taskfile"
+run = "task test:unit"
+
+[tasks."test:storage"]
+description = "Run the storage adapter unit suite"
+run = "ginkgo --focus Unit ./internal/storage/sqlite"
+
+[tasks.lint]
+description = "Run all Smyklot linters through the repository Taskfile"
+run = "task lint"
+
+[tasks.fmt]
+description = "Format Smyklot Go sources through the repository Taskfile"
+run = "task fmt"
+
+[tasks."deps:tidy"]
+description = "Tidy Smyklot Go module metadata through the repository Taskfile"
+run = "task deps:tidy"
+
+[tasks."panel:frontend:install"]
+description = "Install the panel frontend's pinned dependencies"
+run = "./scripts/install-panel-frontend.sh"
+
+[tasks."panel:frontend:build"]
+description = "Build the panel frontend"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run build"
+
+[tasks."panel:frontend:lint"]
+description = "Lint, format-check, and type-check the panel frontend"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run lint"
+
+[tasks."panel:frontend:format"]
+description = "Format the panel frontend with its pinned Prettier configuration"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run format"
+
+[tasks."panel:frontend:test"]
+description = "Run the panel frontend unit tests"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm test"
+
+[tasks."panel:assets:generate"]
+description = "Build and package the panel frontend for Go embedding"
+depends = ["panel:frontend:build"]
+run = "go run ./internal/panelassets/cmd/generate"
+
+[tasks."panel:dev"]
+description = "Serve the panel frontend without a mock API"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run dev"
+
+[tasks."panel:dev:mock"]
+description = "Serve the panel frontend with deterministic mock data"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run dev:mock"
