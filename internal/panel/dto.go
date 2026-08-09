@@ -3,6 +3,7 @@ package panel
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/config"
 )
+
+const allFilter = "all"
 
 type accountResponse struct {
 	ID          string  `json:"id"`
@@ -183,6 +186,20 @@ func repositoryDetailDTO(
 	}
 }
 
+func repositoryPageDTO(
+	target storage.Target,
+	page storage.RepositoryPage,
+) pageResponse[repositorySummaryResponse] {
+	items := make([]repositorySummaryResponse, 0, len(page.Items))
+	for _, repository := range page.Items {
+		items = append(items, repositorySummaryDTO(target, repository))
+	}
+
+	return pageResponse[repositorySummaryResponse]{
+		Items: items, NextCursor: offsetCursor(page.NextOffset), Total: page.Total,
+	}
+}
+
 func auditPageDTO(page storage.AuditPage) pageResponse[auditResponse] {
 	items := make([]auditResponse, 0, len(page.Items))
 	for _, entry := range page.Items {
@@ -197,7 +214,7 @@ func auditPageDTO(page storage.AuditPage) pageResponse[auditResponse] {
 	}
 
 	return pageResponse[auditResponse]{
-		Items: items, NextCursor: cursor(page.NextCursor), Total: page.Total,
+		Items: items, NextCursor: offsetCursor(page.NextOffset), Total: page.Total,
 	}
 }
 
@@ -217,15 +234,15 @@ func failurePageDTO(page storage.FailurePage) pageResponse[failureResponse] {
 	}
 
 	return pageResponse[failureResponse]{
-		Items: items, NextCursor: cursor(page.NextCursor), Total: page.Total,
+		Items: items, NextCursor: offsetCursor(page.NextOffset), Total: page.Total,
 	}
 }
 
-func cursor(value int64) *string {
+func offsetCursor(value int) *string {
 	if value == 0 {
 		return nil
 	}
-	formatted := strconv.FormatInt(value, 10)
+	formatted := strconv.Itoa(value)
 
 	return &formatted
 }
@@ -264,11 +281,11 @@ func parseHistoryPage(values url.Values) (storage.HistoryPageRequest, error) {
 		return storage.HistoryPageRequest{}, fmt.Errorf("invalid history query")
 	}
 	if raw := values.Get("cursor"); raw != "" {
-		cursorID, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || cursorID <= 0 {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset <= 0 {
 			return storage.HistoryPageRequest{}, fmt.Errorf("invalid history cursor")
 		}
-		page.CursorID = cursorID
+		page.Offset = offset
 	}
 	if raw := values.Get("limit"); raw != "" {
 		limit, err := strconv.Atoi(raw)
@@ -286,4 +303,126 @@ func parseHistoryPage(values url.Values) (storage.HistoryPageRequest, error) {
 	}
 
 	return page, nil
+}
+
+func parseRepositoryPage(values url.Values) (storage.RepositoryPageRequest, error) {
+	page := storage.RepositoryPageRequest{
+		Limit: DefaultPageSize,
+		Order: storage.RepositoryNameAscending,
+		Query: strings.TrimSpace(values.Get("q")),
+	}
+	if len(page.Query) > 200 || strings.ContainsFunc(page.Query, unicode.IsControl) {
+		return storage.RepositoryPageRequest{}, fmt.Errorf("invalid repository search")
+	}
+	if raw := values.Get("cursor"); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset <= 0 {
+			return storage.RepositoryPageRequest{}, fmt.Errorf("invalid repository cursor")
+		}
+		page.Offset = offset
+	}
+	if raw := values.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit <= 0 || limit > MaxPageSize {
+			return storage.RepositoryPageRequest{}, fmt.Errorf("invalid repository page size")
+		}
+		page.Limit = limit
+	}
+	switch order := storage.RepositoryOrder(values.Get("sort")); order {
+	case "", storage.RepositoryNameAscending:
+	case storage.RepositoryNameDescending, storage.RepositoryNewest, storage.RepositoryOldest:
+		page.Order = order
+	default:
+		return storage.RepositoryPageRequest{}, fmt.Errorf("invalid repository sort order")
+	}
+	switch values.Get("state") {
+	case "", allFilter:
+	case "enabled":
+		value := true
+		page.EffectiveEnabled = &value
+	case "disabled":
+		value := false
+		page.EffectiveEnabled = &value
+	default:
+		return storage.RepositoryPageRequest{}, fmt.Errorf("invalid repository state")
+	}
+	fileStatuses, err := parseRepositoryFileStatuses(values["file"])
+	if err != nil {
+		return storage.RepositoryPageRequest{}, err
+	}
+	page.FileStatuses = fileStatuses
+
+	hasOverrides, overrideKeys, err := parseRepositorySettings(values["setting"])
+	if err != nil {
+		return storage.RepositoryPageRequest{}, err
+	}
+	page.HasConfigOverrides = hasOverrides
+	page.ConfigOverrideKeys = overrideKeys
+
+	return page, nil
+}
+
+func parseRepositorySettings(values []string) (*bool, []string, error) {
+	if len(values) == 1 && (values[0] == "custom" || values[0] == "none") {
+		value := values[0] == "custom"
+		return &value, nil, nil
+	}
+
+	keys := make([]string, 0, len(values))
+	for _, setting := range values {
+		if setting == allFilter && len(values) == 1 {
+			continue
+		}
+		if !panelConfigKey(setting) {
+			return nil, nil, fmt.Errorf("invalid repository setting")
+		}
+		if !slices.Contains(keys, setting) {
+			keys = append(keys, setting)
+		}
+	}
+
+	return nil, keys, nil
+}
+
+func parseRepositoryFileStatuses(values []string) ([]storage.RepositoryFileStatus, error) {
+	statuses := make([]storage.RepositoryFileStatus, 0, len(values))
+	for _, value := range values {
+		if value == allFilter && len(values) == 1 {
+			continue
+		}
+		status := storage.RepositoryFileStatus(value)
+		switch status {
+		case storage.RepositoryFileMissing,
+			storage.RepositoryFileValid,
+			storage.RepositoryFileInvalid,
+			storage.RepositoryFileBypassed:
+		default:
+			return nil, fmt.Errorf("invalid repository file status")
+		}
+		if !slices.Contains(statuses, status) {
+			statuses = append(statuses, status)
+		}
+	}
+
+	return statuses, nil
+}
+
+func panelConfigKey(key string) bool {
+	switch key {
+	case config.KeyQuietSuccess,
+		config.KeyQuietReactions,
+		config.KeyQuietPending,
+		config.KeyAllowedCommands,
+		config.KeyCommandAliases,
+		config.KeyCommandPrefix,
+		config.KeyDisableMentions,
+		config.KeyDisableBareCommands,
+		config.KeyDisableUnapprove,
+		config.KeyDisableReactions,
+		config.KeyDisableDeletedComments,
+		config.KeyAllowSelfApproval:
+		return true
+	default:
+		return false
+	}
 }

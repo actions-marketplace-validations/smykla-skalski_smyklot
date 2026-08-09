@@ -393,6 +393,9 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 	if firstPage.Total != 2 || len(firstPage.Items) != 1 || firstPage.NextCursor == nil {
 		t.Fatalf("unexpected first audit page: %#v", firstPage)
 	}
+	if *firstPage.NextCursor != "1" {
+		t.Fatalf("first audit cursor = %q, want offset 1", *firstPage.NextCursor)
+	}
 
 	second := harness.request(
 		t,
@@ -446,6 +449,147 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 		!strings.Contains(invalid.Body.String(), `"code":"invalid_history_query"`) {
 		t.Fatalf("invalid history query = %d %s", invalid.Code, invalid.Body.String())
 	}
+}
+
+func TestPanelRepositoryPaginationFilteringAndSorting(t *testing.T) {
+	harness := newPanelHarness(t, "owner")
+	session := harness.signIn(t)
+	targetID := "github:installation:10"
+	target, err := harness.store.GetTarget(t.Context(), targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.store.ReconcileInstallation(t.Context(), storage.InstallationSnapshot{
+		TargetID:       target.ID,
+		InstallationID: target.InstallationID,
+		Kind:           target.Kind,
+		Account:        target.Account,
+		Repositories: []storage.RepositorySnapshot{
+			{ID: "repository-20", Name: "smyklot", FullName: "smykla-skalski/smyklot"},
+			{ID: "repository-21", Name: "alpha", FullName: "smykla-skalski/alpha"},
+			{ID: "repository-22", Name: "beta-service", FullName: "smykla-skalski/beta-service"},
+		},
+		SyncedAt: harness.now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if _, err := harness.store.UpdateRepositorySettings(t.Context(), storage.RepositorySettingsChange{
+		TargetID:             targetID,
+		RepositoryID:         "repository-22",
+		ActorAccountID:       target.Account.ID,
+		EnabledOverride:      &enabled,
+		ConfigPatch:          config.Patch{QuietSuccess: &enabled},
+		IgnoreRepositoryFile: false,
+		ExpectedRevision:     1,
+		ChangedAt:            harness.now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.store.UpdateRepositoryFileState(t.Context(), storage.RepositoryFileState{
+		TargetID:     targetID,
+		RepositoryID: "repository-22",
+		Status:       storage.RepositoryFileInvalid,
+		ObservedAt:   harness.now.Add(3 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	filteredPage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+
+			"/repositories?q=service&sort=newest&state=enabled&file=invalid&setting=quiet_success&limit=1",
+		session,
+	)
+	if filteredPage.Total != 1 || len(filteredPage.Items) != 1 ||
+		filteredPage.Items[0].Name != "beta-service" || filteredPage.NextCursor != nil {
+		t.Fatalf("unexpected filtered repositories: %#v", filteredPage)
+	}
+
+	multiplePage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+
+			"/repositories?file=missing&file=invalid&setting=quiet_success&setting=command_prefix&limit=10",
+		session,
+	)
+	if multiplePage.Total != 1 || len(multiplePage.Items) != 1 ||
+		multiplePage.Items[0].Name != "beta-service" {
+		t.Fatalf("unexpected multi-filtered repositories: %#v", multiplePage)
+	}
+
+	firstPage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+"/repositories?sort=name_desc&limit=1",
+		session,
+	)
+	if firstPage.Total != 3 || len(firstPage.Items) != 1 || firstPage.NextCursor == nil ||
+		firstPage.Items[0].Name != "smyklot" {
+		t.Fatalf("unexpected first repository page: %#v", firstPage)
+	}
+
+	secondPage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+"/repositories?sort=name_desc&limit=1&cursor="+
+			url.QueryEscape(*firstPage.NextCursor),
+		session,
+	)
+	if secondPage.Total != 3 || len(secondPage.Items) != 1 ||
+		secondPage.Items[0].Name != "beta-service" {
+		t.Fatalf("unexpected second repository page: %#v", secondPage)
+	}
+
+	invalid := harness.request(
+		t,
+		http.MethodGet,
+		"/panel/api/v1/targets/"+targetID+"/repositories?setting=runner",
+		nil,
+		session,
+	)
+	if invalid.Code != http.StatusBadRequest ||
+		!strings.Contains(invalid.Body.String(), `"code":"invalid_repository_query"`) {
+		t.Fatalf("invalid repository query = %d %s", invalid.Code, invalid.Body.String())
+	}
+
+	mixedPreset := harness.request(
+		t,
+		http.MethodGet,
+		"/panel/api/v1/targets/"+targetID+
+			"/repositories?setting=custom&setting=quiet_success",
+		nil,
+		session,
+	)
+	if mixedPreset.Code != http.StatusBadRequest ||
+		!strings.Contains(mixedPreset.Body.String(), `"code":"invalid_repository_query"`) {
+		t.Fatalf(
+			"mixed repository setting preset = %d %s",
+			mixedPreset.Code,
+			mixedPreset.Body.String(),
+		)
+	}
+}
+
+func getRepositoryPage(
+	t *testing.T,
+	harness *panelHarness,
+	path string,
+	session *http.Cookie,
+) pageResponse[repositorySummaryResponse] {
+	t.Helper()
+	response := harness.request(t, http.MethodGet, path, nil, session)
+	if response.Code != http.StatusOK {
+		t.Fatalf("repository page = %d %s", response.Code, response.Body.String())
+	}
+
+	var page pageResponse[repositorySummaryResponse]
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+
+	return page
 }
 
 func seedFailure(
@@ -507,7 +651,12 @@ func TestPanelRejectsAnotherOwnerAndCrossOriginWrites(t *testing.T) {
 
 func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
-	for _, path := range []string{"/panel/", "/panel/repositories"} {
+	for _, path := range []string{
+		"/panel/",
+		"/panel/i/smykla-skalski/repositories",
+		"/panel/i/auth/settings",
+		"/panel/help",
+	} {
 		response := harness.request(t, http.MethodGet, path, nil, nil)
 		body := response.Body.String()
 		if response.Code != http.StatusOK ||
@@ -520,6 +669,20 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 	asset := harness.request(t, http.MethodGet, "/panel/assets/app.js", nil, nil)
 	if asset.Code != http.StatusOK || asset.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
 		t.Fatalf("asset response = %d %#v", asset.Code, asset.Header())
+	}
+	for _, path := range []string{
+		"/panel/smykla-skalski/repositories",
+		"/panel/auth/settings",
+		"/panel/webhook/history",
+		"/panel/i/smykla-skalski/help",
+		"/panel/i/smykla-skalski/unknown",
+		"/panel/@smykla-skalski/repositories",
+		"/panel/assets/missing.js",
+	} {
+		response := harness.request(t, http.MethodGet, path, nil, nil)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("unknown panel route %s = %d %s", path, response.Code, response.Body.String())
+		}
 	}
 }
 

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { tick } from 'svelte';
+
   import { formatDateTime, formatRelative, formatTimestamp } from '../lib/format';
   import { readTimeDisplay, writeTimeDisplay } from '../lib/preferences';
   import type { TimeDisplay } from '../lib/preferences';
@@ -15,11 +17,12 @@
   import Avatar from './Avatar.svelte';
   import Chip from './Chip.svelte';
   import HistoryDisplayMenu from './HistoryDisplayMenu.svelte';
+  import PageNavigation from './PageNavigation.svelte';
+  import PageSizeSelect from './PageSizeSelect.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
   type HistoryType = 'audit' | 'failures';
 
-  const PAGE_SIZES = [10, 20, 50] as const;
   const HISTORY_TYPES = [
     { value: 'audit', label: 'Audit' },
     { value: 'failures', label: 'Failures' },
@@ -47,12 +50,13 @@
   let limit = $state<number>(20);
   let auditPage = $state<Page<AuditEntry> | null>(null);
   let failurePage = $state<Page<DeliveryFailure> | null>(null);
-  let cursors = $state<Array<string | undefined>>([undefined]);
   let pageIndex = $state(0);
   let loading = $state(false);
   let problem = $state<string | null>(null);
   let now = $state(Date.now());
   let requestSequence = 0;
+  let historyTools: HTMLDivElement;
+  let scrollAfterPageSizeChange = false;
 
   const currentPage = $derived(historyType === 'audit' ? auditPage : failurePage);
   const itemCount = $derived(currentPage?.items.length ?? 0);
@@ -131,15 +135,15 @@
   }
 
   async function resetAndLoad(key: string): Promise<void> {
-    cursors = [undefined];
     pageIndex = 0;
-    await loadPage(undefined, key);
+    await loadPage(0, key);
   }
 
-  async function loadPage(cursor: string | undefined, key: string): Promise<void> {
+  async function loadPage(index: number, key: string): Promise<void> {
     const sequence = ++requestSequence;
     loading = true;
     problem = null;
+    const cursor = index === 0 ? undefined : String(index * limit);
     try {
       if (historyType === 'audit') {
         const page = await fetchAudit({
@@ -149,7 +153,13 @@
           limit,
           scope: auditScope,
         });
-        if (sequence === requestSequence && key === requestKey) auditPage = page;
+        if (sequence === requestSequence && key === requestKey) {
+          if (index > 0 && page.total <= index * limit) {
+            await resetAndLoad(key);
+            return;
+          }
+          auditPage = page;
+        }
       } else {
         const page = await fetchFailures({
           cursor,
@@ -158,35 +168,48 @@
           limit,
           kind: failureKind,
         });
-        if (sequence === requestSequence && key === requestKey) failurePage = page;
+        if (sequence === requestSequence && key === requestKey) {
+          if (index > 0 && page.total <= index * limit) {
+            await resetAndLoad(key);
+            return;
+          }
+          failurePage = page;
+        }
       }
     } catch (error) {
       if (sequence === requestSequence && key === requestKey) {
         problem = error instanceof Error ? error.message : String(error);
       }
     } finally {
-      if (sequence === requestSequence && key === requestKey) loading = false;
+      if (sequence === requestSequence && key === requestKey) {
+        loading = false;
+        await scrollToResultsAfterPageSizeChange();
+      }
     }
   }
 
-  async function nextPage(): Promise<void> {
-    const cursor = currentPage?.next_cursor;
-    if (cursor === null || cursor === undefined || loading) return;
-    const nextIndex = pageIndex + 1;
-    cursors = [...cursors.slice(0, nextIndex), cursor];
-    pageIndex = nextIndex;
-    await loadPage(cursor, requestKey);
+  function selectPageSize(nextLimit: number): void {
+    if (nextLimit === limit) return;
+    scrollAfterPageSizeChange = true;
+    limit = nextLimit;
   }
 
-  async function previousPage(): Promise<void> {
-    if (pageIndex === 0 || loading) return;
-    const previousIndex = pageIndex - 1;
-    pageIndex = previousIndex;
-    await loadPage(cursors[previousIndex], requestKey);
+  async function scrollToResultsAfterPageSizeChange(): Promise<void> {
+    if (!scrollAfterPageSizeChange) return;
+    scrollAfterPageSizeChange = false;
+    await tick();
+    historyTools.scrollIntoView({ block: 'start' });
+  }
+
+  async function selectPage(nextIndex: number): Promise<void> {
+    const bounded = Math.min(pageCount - 1, Math.max(0, nextIndex));
+    if (bounded === pageIndex || loading) return;
+    pageIndex = bounded;
+    await loadPage(bounded, requestKey);
   }
 
   function retry(): void {
-    void loadPage(cursors[pageIndex], requestKey);
+    void loadPage(pageIndex, requestKey);
   }
 </script>
 
@@ -210,7 +233,7 @@
     />
   </header>
 
-  <div class="history-tools">
+  <div class="history-tools" bind:this={historyTools}>
     <label class="search-field">
       <span class="visually-hidden">Search history</span>
       <span class="search-icon" aria-hidden="true"></span>
@@ -246,6 +269,10 @@
     </label>
 
     <HistoryDisplayMenu value={timeDisplay} onSelect={selectTimeDisplay} />
+
+    <div class="toolbar-rows">
+      <PageSizeSelect value={limit} label="Rows per page above history" onSelect={selectPageSize} />
+    </div>
   </div>
 
   <div class:loading class="history-results" aria-busy={loading}>
@@ -397,33 +424,21 @@
       </p>
 
       <div class="page-actions">
-        <button
-          class="btn page-button"
-          disabled={pageIndex === 0 || loading}
-          onclick={previousPage}
-        >
-          <span aria-hidden="true">←</span>
-          Previous
-        </button>
-        <span class="page-number mono">Page {pageIndex + 1} of {pageCount}</span>
-        <button
-          class="btn page-button"
-          disabled={currentPage?.next_cursor === null || loading}
-          onclick={nextPage}
-        >
-          Next
-          <span aria-hidden="true">→</span>
-        </button>
+        <PageNavigation
+          {pageIndex}
+          {pageCount}
+          disabled={loading}
+          onSelect={(nextIndex) => void selectPage(nextIndex)}
+        />
       </div>
 
-      <label class="rows-field">
-        <span>Rows</span>
-        <select class="select-input" bind:value={limit} aria-label="Rows per page">
-          {#each PAGE_SIZES as size (size)}
-            <option value={size}>{size}</option>
-          {/each}
-        </select>
-      </label>
+      <div class="footer-rows">
+        <PageSizeSelect
+          value={limit}
+          label="Rows per page below history"
+          onSelect={selectPageSize}
+        />
+      </div>
     </footer>
   {/if}
 </section>
@@ -468,8 +483,8 @@
     border-bottom: 1px solid var(--rule);
     display: grid;
     gap: 0.5rem;
-    grid-template-columns: minmax(12rem, 1fr) max-content max-content auto;
-    padding: 0.625rem 1.125rem;
+    grid-template-columns: minmax(12rem, 1fr) max-content max-content auto auto;
+    padding: 0.625rem;
   }
 
   .search-field,
@@ -675,14 +690,13 @@
     background: var(--well);
     border-top: 1px solid var(--rule);
     display: grid;
-    gap: 0.75rem;
+    gap: 0.5rem;
     grid-template-columns: 1fr auto 1fr;
     min-height: 3.75rem;
-    padding: 0.625rem 1.125rem;
+    padding: 0.625rem;
   }
 
-  .range,
-  .page-number {
+  .range {
     color: var(--dim);
     font-size: 0.625rem;
     margin: 0;
@@ -695,34 +709,18 @@
   }
 
   .page-actions {
-    align-items: center;
+    min-width: 0;
+  }
+
+  .toolbar-rows,
+  .footer-rows {
     display: flex;
-    gap: 0.5rem;
+    justify-content: flex-end;
   }
 
-  .page-button {
-    background: var(--strip-lift);
-    font-size: 0.75rem;
-    padding: 0 0.625rem;
-  }
-
-  .rows-field {
-    align-items: center;
-    display: flex;
-    gap: 0.5rem;
-    justify-self: end;
-  }
-
-  .rows-field > span {
-    color: var(--dim);
-    font: 600 0.5625rem/1 var(--mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .rows-field select {
-    font-size: 0.75rem;
-    width: 4.25rem;
+  .toolbar-rows,
+  .footer-rows {
+    --page-size-control-height: var(--history-control-height);
   }
 
   @media (max-width: 36rem) {
@@ -732,7 +730,7 @@
     }
 
     .history-tools {
-      grid-template-columns: 1fr 1fr auto;
+      grid-template-columns: 1fr 1fr;
     }
 
     .search-field {
@@ -759,7 +757,7 @@
       grid-row: 2;
     }
 
-    .rows-field {
+    .footer-rows {
       grid-column: 2;
       grid-row: 2;
     }

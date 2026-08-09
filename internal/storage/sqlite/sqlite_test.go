@@ -342,6 +342,134 @@ var _ = Describe("SQLite store [Unit]", func() {
 		Expect(oldRepository.Available).To(BeFalse())
 	})
 
+	It("paginates, searches, filters, and sorts available repositories", func() {
+		account := testAccount(now)
+		installation := testInstallation(account, now, []storage.RepositorySnapshot{
+			testRepository("repo-alpha", "smykla-skalski/alpha", false),
+			testRepository("repo-beta", "smykla-skalski/beta", true),
+			testRepository("repo-delta", "smykla-skalski/delta", false),
+			testRepository("repo-gamma", "smykla-skalski/gamma", false),
+		})
+		Expect(store.ReconcileInstallation(ctx, installation)).To(Succeed())
+
+		enabled := true
+		_, err := store.UpdateRepositorySettings(ctx, storage.RepositorySettingsChange{
+			TargetID:             installation.TargetID,
+			RepositoryID:         "repo-beta",
+			ActorAccountID:       account.ID,
+			EnabledOverride:      &enabled,
+			ConfigPatch:          config.Patch{QuietSuccess: &enabled},
+			IgnoreRepositoryFile: false,
+			ExpectedRevision:     1,
+			ChangedAt:            now.Add(2 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		stateChanged, err := store.UpdateRepositoryFileState(ctx, storage.RepositoryFileState{
+			TargetID:     installation.TargetID,
+			RepositoryID: "repo-gamma",
+			Status:       storage.RepositoryFileInvalid,
+			ObservedAt:   now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stateChanged).To(BeTrue())
+		stateChanged, err = store.UpdateRepositoryFileState(ctx, storage.RepositoryFileState{
+			TargetID:     installation.TargetID,
+			RepositoryID: "repo-alpha",
+			Status:       storage.RepositoryFileValid,
+			ObservedAt:   now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stateChanged).To(BeTrue())
+
+		prefix := "!"
+		_, err = store.UpdateRepositorySettings(ctx, storage.RepositorySettingsChange{
+			TargetID:             installation.TargetID,
+			RepositoryID:         "repo-delta",
+			ActorAccountID:       account.ID,
+			ConfigPatch:          config.Patch{CommandPrefix: &prefix},
+			IgnoreRepositoryFile: false,
+			ExpectedRevision:     1,
+			ChangedAt:            now.Add(3 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		first, err := store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit: 2,
+			Order: storage.RepositoryNameDescending,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Total).To(Equal(4))
+		Expect(first.NextOffset).To(Equal(2))
+		Expect(first.Items).To(HaveLen(2))
+		Expect(first.Items[0].Name).To(Equal("gamma"))
+		Expect(first.Items[1].Name).To(Equal("delta"))
+
+		second, err := store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Offset: 2,
+			Limit:  2,
+			Order:  storage.RepositoryNameDescending,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second.NextOffset).To(BeZero())
+		Expect(second.Items).To(HaveLen(2))
+		Expect(second.Items[0].Name).To(Equal("beta"))
+
+		enabledOnly, err := store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit:            10,
+			Order:            storage.RepositoryNameAscending,
+			EffectiveEnabled: &enabled,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(enabledOnly.Total).To(Equal(1))
+		Expect(enabledOnly.Items[0].Name).To(Equal("beta"))
+
+		customOnly, err := store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit:              10,
+			Order:              storage.RepositoryNameAscending,
+			HasConfigOverrides: &enabled,
+			ConfigOverrideKeys: []string{config.KeyQuietSuccess},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(customOnly.Total).To(Equal(1))
+		Expect(customOnly.Items[0].Name).To(Equal("beta"))
+
+		matching, err := store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit:        10,
+			Order:        storage.RepositoryNewest,
+			Query:        "GAM",
+			FileStatuses: []storage.RepositoryFileStatus{storage.RepositoryFileInvalid},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(matching.Total).To(Equal(1))
+		Expect(matching.Items[0].Name).To(Equal("gamma"))
+
+		matching, err = store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit: 10,
+			Order: storage.RepositoryNameAscending,
+			FileStatuses: []storage.RepositoryFileStatus{
+				storage.RepositoryFileValid,
+				storage.RepositoryFileInvalid,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(matching.Total).To(Equal(2))
+		Expect(matching.Items[0].Name).To(Equal("alpha"))
+		Expect(matching.Items[1].Name).To(Equal("gamma"))
+
+		matching, err = store.ListRepositoryPage(ctx, installation.TargetID, storage.RepositoryPageRequest{
+			Limit: 10,
+			Order: storage.RepositoryNameAscending,
+			ConfigOverrideKeys: []string{
+				config.KeyQuietSuccess,
+				config.KeyCommandPrefix,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(matching.Total).To(Equal(2))
+		Expect(matching.Items[0].Name).To(Equal("beta"))
+		Expect(matching.Items[1].Name).To(Equal("delta"))
+	})
+
 	It("recovers running deliveries left by a stopped process", func() {
 		_, target := seedInstallation(ctx, store, now)
 		claim := storage.DeliveryClaim{
@@ -486,12 +614,12 @@ var _ = Describe("SQLite store [Unit]", func() {
 		Expect(page.Items).To(HaveLen(1))
 		Expect(page.Total).To(Equal(2))
 		Expect(page.Items[0].DeliveryID).To(Equal(second.DeliveryID))
-		Expect(page.NextCursor).NotTo(BeZero())
+		Expect(page.NextOffset).To(Equal(1))
 
 		older, err := store.ListFailures(ctx, target.TargetID, storage.FailurePageRequest{
 			HistoryPageRequest: storage.HistoryPageRequest{
-				CursorID: page.NextCursor,
-				Limit:    1,
+				Offset: page.NextOffset,
+				Limit:  1,
 			},
 		})
 		Expect(err).NotTo(HaveOccurred())

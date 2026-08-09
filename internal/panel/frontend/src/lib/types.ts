@@ -95,6 +95,21 @@ export interface RepositoryDetail {
   revision: number;
 }
 
+export type RepositorySort = 'name_asc' | 'name_desc' | 'newest' | 'oldest';
+export type RepositoryStateFilter = 'all' | 'enabled' | 'disabled';
+export type RepositorySettingFilter =
+  { mode: 'all' | 'custom' | 'none' } | { mode: 'keys'; keys: ConfigKey[] };
+
+export interface RepositoryPageRequest {
+  cursor?: string;
+  query: string;
+  sort: RepositorySort;
+  limit: number;
+  state: RepositoryStateFilter;
+  files: RepositoryFileStatus[];
+  setting: RepositorySettingFilter;
+}
+
 export interface TargetSettingsInput {
   repository_default_enabled: boolean;
   config_patch: ConfigPatch;
