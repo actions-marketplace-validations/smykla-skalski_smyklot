@@ -7,6 +7,7 @@
   import RepositoryList from './components/RepositoryList.svelte';
   import SignedOut from './components/SignedOut.svelte';
   import TargetSettings from './components/TargetSettings.svelte';
+  import UserManagement from './components/UserManagement.svelte';
   import ViewTabs from './components/ViewTabs.svelte';
   import type { PanelApi } from './lib/api';
   import type { PanelBuild } from './lib/base';
@@ -44,13 +45,19 @@
   let failure = $state<PanelFailure | null>(null);
   let historyVersion = $state(0);
   let repositoryDetailsVersion = $state(0);
+  let userVersion = $state(0);
   let view = $state<PanelView>('settings');
+  let globalUsers = $state(false);
   let streamReady = $state(false);
+  let revokedReason = $state<string | null>(null);
   const targetReads = new LatestRequest();
   const streamRefreshes = new LatestRequest();
 
   const selectedTarget = $derived(
     selectedId === null ? null : (targets.find((target) => target.id === selectedId) ?? null),
+  );
+  const manageableUserTargets = $derived(
+    targets.filter((target) => target.capabilities.manage_target_users),
   );
 
   async function load(): Promise<void> {
@@ -97,12 +104,13 @@
   async function selectTarget(targetId: string): Promise<void> {
     const target = targets.find((entry) => entry.id === targetId);
     if (target === undefined || selectedId === targetId) return;
-    if (view === 'help') {
+    if (view === 'help' || (view === 'users' && globalUsers)) {
       selectedId = target.id;
       writeLastInstallation(target.account.login);
       failure = null;
       repositoryDetailsVersion += 1;
       historyVersion += 1;
+      userVersion += 1;
       return;
     }
     await activateRoute(routeFor(target, view), 'push');
@@ -112,6 +120,7 @@
     const target = selectedTarget;
     if (target === null || view === nextView) return;
     view = nextView;
+    if (nextView === 'users') globalUsers = viewer?.capabilities.manage_global_users === true;
     router.push(routeFor(target, nextView));
   }
 
@@ -135,6 +144,10 @@
     const targetChanged = selectedId !== target.id;
     selectedId = target.id;
     view = resolved.view;
+    globalUsers =
+      requested?.view === 'users' &&
+      !('account' in requested) &&
+      viewer?.capabilities.manage_global_users === true;
     writeLastInstallation(target.account.login);
     const canonical = routeFor(target, resolved.view);
 
@@ -148,6 +161,7 @@
     failure = null;
     repositoryDetailsVersion += 1;
     historyVersion += 1;
+    userVersion += 1;
   }
 
   function targetForAccount(account: string): PanelTarget | undefined {
@@ -157,6 +171,7 @@
 
   function routeFor(target: PanelTarget, nextView: PanelView): PanelRoute {
     if (nextView === 'help') return { view: 'help' };
+    if (nextView === 'users' && globalUsers) return { view: 'users' };
     return { account: target.account.login, view: nextView };
   }
 
@@ -171,7 +186,9 @@
 
   function sameRoute(left: PanelRoute | null, right: PanelRoute): boolean {
     if (left === null || left.view !== right.view) return false;
-    if (left.view === 'help' || right.view === 'help') return true;
+    if (!('account' in left) || !('account' in right)) {
+      return !('account' in left) && !('account' in right);
+    }
     return left.account === right.account;
   }
 
@@ -183,6 +200,7 @@
     targets = targets.map((entry) => (entry.id === updated.id ? updated : entry));
     repositoryDetailsVersion += 1;
     historyVersion += 1;
+    userVersion += 1;
   }
 
   function fetchRepositories(
@@ -215,9 +233,18 @@
     refreshFromStreamSafely();
   }
 
-  async function refreshFromStream(): Promise<void> {
+  async function refreshFromStream(refreshViewer = false): Promise<void> {
     const refresh = streamRefreshes.begin();
     try {
+      if (refreshViewer) {
+        const currentViewer = await api.fetchViewer();
+        if (!streamRefreshes.isCurrent(refresh)) return;
+        if (currentViewer === null) {
+          revokeAccess('Your panel access was revoked');
+          return;
+        }
+        viewer = currentViewer;
+      }
       if (!(await refreshTargets()) || !streamRefreshes.isCurrent(refresh)) return;
       if (selectedId === null) {
         await activateRoute(router.current(), 'replace');
@@ -228,6 +255,7 @@
       if (selectedId !== null) {
         repositoryDetailsVersion += 1;
         historyVersion += 1;
+        userVersion += 1;
       }
       clearFailure('stream');
     } catch (error) {
@@ -239,11 +267,45 @@
     void refreshFromStream();
   }
 
+  function refreshAccessFromStream(): void {
+    void refreshFromStream(true);
+  }
+
+  function selectUserScope(targetId: string | null): void {
+    if (view !== 'users') return;
+    if (targetId === null) {
+      if (viewer?.capabilities.manage_global_users !== true || selectedTarget === null) return;
+      globalUsers = true;
+      router.push({ view: 'users' });
+      userVersion += 1;
+      return;
+    }
+    const target = targets.find((entry) => entry.id === targetId);
+    if (target === undefined || !target.capabilities.manage_target_users) return;
+    globalUsers = false;
+    selectedId = target.id;
+    writeLastInstallation(target.account.login);
+    router.push({ account: target.account.login, view: 'users' });
+    userVersion += 1;
+  }
+
+  function revokeAccess(reason: string): void {
+    revokedReason = reason;
+    viewer = null;
+    targets = [];
+    selectedId = null;
+    streamReady = false;
+    targetReads.invalidate();
+    streamRefreshes.invalidate();
+  }
+
   $effect(() => {
-    if (viewer === null || !streamReady) return;
+    if (!streamReady) return;
     return api.openStream({
-      onResync: refreshFromStreamSafely,
-      onChange: refreshFromStreamSafely,
+      onResync: refreshAccessFromStream,
+      onChange: (event) =>
+        event.type === 'access.changed' ? refreshAccessFromStream() : refreshFromStreamSafely(),
+      onRevoked: (event) => revokeAccess(event.reason),
     });
   });
 
@@ -309,15 +371,32 @@
       <p class="dim">Reading the panel…</p>
     </Plate>
   {:else if viewer === null}
-    {#if failure === null}<SignedOut href={api.signInUrl()} />{/if}
+    {#if revokedReason !== null}
+      <Plate label="Access revoked" tone="alarm">
+        <p>{revokedReason}</p>
+        <a class="btn" href={api.signInUrl()}>Sign in</a>
+      </Plate>
+    {:else if failure === null}
+      <SignedOut href={api.signInUrl()} />
+    {/if}
   {:else}
     {#if selectedTarget !== null}
-      <ViewTabs value={view} hrefFor={viewHref} onSelect={selectView} />
+      <ViewTabs
+        value={view}
+        hrefFor={viewHref}
+        onSelect={selectView}
+        showUsers={viewer.capabilities.manage_global_users ||
+          selectedTarget.capabilities.manage_target_users}
+      />
 
       {#if view === 'settings'}
         <div id="settings-panel" role="tabpanel" aria-labelledby="settings-tab">
           {#key selectedTarget.id}
-            <TargetSettings target={selectedTarget} onUpdate={updateTarget} />
+            <TargetSettings
+              target={selectedTarget}
+              readOnly={!selectedTarget.capabilities.write}
+              onUpdate={updateTarget}
+            />
           {/key}
         </div>
       {:else if view === 'repositories'}
@@ -330,6 +409,36 @@
               onLoad={loadRepository}
               onUpdate={updateRepository}
               onChanged={() => repositoryChanged(selectedTarget.id)}
+              readOnly={!selectedTarget.capabilities.write}
+            />
+          {/key}
+        </div>
+      {:else if view === 'users'}
+        <div id="users-panel" role="tabpanel" aria-labelledby="users-tab">
+          {#key `${selectedTarget.id}:${globalUsers}`}
+            <UserManagement
+              scope={globalUsers ? 'global' : 'target'}
+              targetId={selectedTarget.id}
+              targetName={selectedTarget.account.display_name}
+              targets={manageableUserTargets}
+              actorTargetRole={selectedTarget.effective_role}
+              canManageGlobal={viewer.capabilities.manage_global_users}
+              canManageOwners={viewer.capabilities.manage_owners}
+              refreshVersion={userVersion}
+              onScope={selectUserScope}
+              fetchUsers={api.fetchUsers}
+              addUser={api.addUser}
+              updateUser={api.updateUser}
+              fetchTargetUsers={api.fetchTargetUsers}
+              addTargetUser={api.addTargetUser}
+              updateTargetUser={api.updateTargetUser}
+              fetchInvitations={api.fetchInvitations}
+              createInvitation={api.createInvitation}
+              fetchTargetInvitations={api.fetchTargetInvitations}
+              createTargetInvitation={api.createTargetInvitation}
+              reissueInvitation={api.reissueInvitation}
+              revokeInvitation={api.revokeInvitation}
+              fetchUserDecisions={api.fetchUserDecisions}
             />
           {/key}
         </div>

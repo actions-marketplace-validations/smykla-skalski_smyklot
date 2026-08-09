@@ -1,20 +1,33 @@
 import { panelUrl } from './base';
-import type { PanelEventSourceFactory, PanelStreamHandlers } from './events';
+import type { PanelStreamHandlers, PanelWebSocketFactory } from './events';
 import { openPanelStream, panelStreamUrl } from './events';
 import type {
   AuditEntry,
   AuditHistoryRequest,
+  AddGlobalUserInput,
+  AddGlobalInvitationInput,
+  AddTargetInvitationInput,
+  AddTargetUserInput,
+  AccessDecision,
   DeliveryFailure,
   FailureHistoryRequest,
   Page,
   PanelErrorBody,
   PanelTarget,
+  PanelInvitation,
+  InvitationPageRequest,
+  PanelUser,
+  PanelUserPageRequest,
   PanelViewer,
   RepositoryDetail,
   RepositoryPageRequest,
   RepositorySettingsInput,
   RepositorySummary,
   TargetSettingsInput,
+  InvitationDays,
+  InvitationSignIn,
+  UpdateGlobalUserInput,
+  UpdateTargetUserInput,
 } from './types';
 
 export class PanelApiError extends Error {
@@ -31,6 +44,30 @@ export class PanelApiError extends Error {
 export interface PanelApi {
   fetchViewer(): Promise<PanelViewer | null>;
   fetchTargets(): Promise<PanelTarget[]>;
+  fetchUsers(request: PanelUserPageRequest): Promise<Page<PanelUser>>;
+  addUser(input: AddGlobalUserInput): Promise<PanelUser>;
+  updateUser(accountId: string, input: UpdateGlobalUserInput): Promise<PanelUser>;
+  fetchTargetUsers(targetId: string, request: PanelUserPageRequest): Promise<Page<PanelUser>>;
+  addTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser>;
+  updateTargetUser(
+    targetId: string,
+    accountId: string,
+    input: UpdateTargetUserInput,
+  ): Promise<PanelUser>;
+  fetchInvitations(request: InvitationPageRequest): Promise<Page<PanelInvitation>>;
+  createInvitation(input: AddGlobalInvitationInput): Promise<PanelInvitation>;
+  fetchTargetInvitations(
+    targetId: string,
+    request: InvitationPageRequest,
+  ): Promise<Page<PanelInvitation>>;
+  createTargetInvitation(
+    targetId: string,
+    input: AddTargetInvitationInput,
+  ): Promise<PanelInvitation>;
+  fetchInvitation(token: string): Promise<PanelInvitation>;
+  reissueInvitation(invitationId: string, expiresInDays: InvitationDays): Promise<PanelInvitation>;
+  revokeInvitation(invitationId: string): Promise<PanelInvitation>;
+  fetchUserDecisions(accountId: string, targetId?: string): Promise<AccessDecision[]>;
   updateTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget>;
   fetchRepositories(
     targetId: string,
@@ -45,18 +82,24 @@ export interface PanelApi {
   fetchAudit(targetId: string, request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
   fetchFailures(targetId: string, request: FailureHistoryRequest): Promise<Page<DeliveryFailure>>;
   signOut(): Promise<void>;
-  signInUrl(): string;
+  signInUrl(invitation?: InvitationSignIn): string;
   openStream(handlers: PanelStreamHandlers): () => void;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-const browserEventSource: PanelEventSourceFactory = (url) => new EventSource(url);
+const browserWebSocket: PanelWebSocketFactory = (url) => {
+  const socket = new WebSocket(url);
+  return {
+    addEventListener: (type, listener) => socket.addEventListener(type, (event) => listener(event)),
+    close: (code, reason) => socket.close(code, reason),
+  };
+};
 
 export function createPanelApi(
   base: string,
   fetchImpl: FetchLike,
-  createEventSource: PanelEventSourceFactory = browserEventSource,
+  createWebSocket: PanelWebSocketFactory = browserWebSocket,
 ): PanelApi {
   const request = async (path: string, init?: RequestInit): Promise<Response> => {
     const response = await fetchImpl(panelUrl(base, path), {
@@ -81,6 +124,13 @@ export function createPanelApi(
       body: JSON.stringify(body),
     });
 
+  const postJson = <T>(path: string, body: unknown): Promise<T> =>
+    jsonRequest<T>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
   return {
     async fetchViewer(): Promise<PanelViewer | null> {
       const response = await fetchImpl(panelUrl(base, '/api/v1/session'), {
@@ -98,6 +148,91 @@ export function createPanelApi(
     async fetchTargets(): Promise<PanelTarget[]> {
       const body = await jsonRequest<{ targets: PanelTarget[] }>('/api/v1/targets');
       return body.targets;
+    },
+
+    fetchUsers(userPage: PanelUserPageRequest): Promise<Page<PanelUser>> {
+      return jsonRequest(withAccessPageQuery('/api/v1/users', userPage));
+    },
+
+    addUser(input: AddGlobalUserInput): Promise<PanelUser> {
+      return postJson('/api/v1/users', input);
+    },
+
+    updateUser(accountId: string, input: UpdateGlobalUserInput): Promise<PanelUser> {
+      return putJson(`/api/v1/users/${pathSegment(accountId)}`, input);
+    },
+
+    fetchTargetUsers(targetId: string, userPage: PanelUserPageRequest): Promise<Page<PanelUser>> {
+      return jsonRequest(
+        withAccessPageQuery(`/api/v1/targets/${pathSegment(targetId)}/users`, userPage),
+      );
+    },
+
+    addTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser> {
+      return postJson(`/api/v1/targets/${pathSegment(targetId)}/users`, input);
+    },
+
+    updateTargetUser(
+      targetId: string,
+      accountId: string,
+      input: UpdateTargetUserInput,
+    ): Promise<PanelUser> {
+      return putJson(
+        `/api/v1/targets/${pathSegment(targetId)}/users/${pathSegment(accountId)}`,
+        input,
+      );
+    },
+
+    fetchInvitations(invitationPage: InvitationPageRequest): Promise<Page<PanelInvitation>> {
+      return jsonRequest(withAccessPageQuery('/api/v1/invitations', invitationPage));
+    },
+
+    createInvitation(input: AddGlobalInvitationInput): Promise<PanelInvitation> {
+      return postJson('/api/v1/invitations', input);
+    },
+
+    fetchTargetInvitations(
+      targetId: string,
+      invitationPage: InvitationPageRequest,
+    ): Promise<Page<PanelInvitation>> {
+      return jsonRequest(
+        withAccessPageQuery(`/api/v1/targets/${pathSegment(targetId)}/invitations`, invitationPage),
+      );
+    },
+
+    createTargetInvitation(
+      targetId: string,
+      input: AddTargetInvitationInput,
+    ): Promise<PanelInvitation> {
+      return postJson(`/api/v1/targets/${pathSegment(targetId)}/invitations`, input);
+    },
+
+    fetchInvitation(token: string): Promise<PanelInvitation> {
+      return jsonRequest(`/api/v1/invites/${pathSegment(token)}`);
+    },
+
+    reissueInvitation(
+      invitationId: string,
+      expiresInDays: InvitationDays,
+    ): Promise<PanelInvitation> {
+      return postJson(`/api/v1/invitations/${pathSegment(invitationId)}/reissue`, {
+        expires_in_days: expiresInDays,
+      });
+    },
+
+    revokeInvitation(invitationId: string): Promise<PanelInvitation> {
+      return jsonRequest(`/api/v1/invitations/${pathSegment(invitationId)}`, {
+        method: 'DELETE',
+      });
+    },
+
+    async fetchUserDecisions(accountId: string, targetId?: string): Promise<AccessDecision[]> {
+      const path =
+        targetId === undefined
+          ? `/api/v1/users/${pathSegment(accountId)}/decisions`
+          : `/api/v1/targets/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`;
+      const body = await jsonRequest<{ decisions: AccessDecision[] }>(path);
+      return body.decisions;
     },
 
     updateTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget> {
@@ -156,16 +291,18 @@ export function createPanelApi(
       await request('/api/v1/sign-out', { method: 'POST' });
     },
 
-    signInUrl(): string {
-      return panelUrl(base, '/auth/github/start');
+    signInUrl(invitation?: InvitationSignIn): string {
+      const path = panelUrl(base, '/auth/github/start');
+      if (invitation === undefined) return path;
+      const query = new URLSearchParams({
+        invite: invitation.token,
+        action: invitation.action,
+      });
+      return `${path}?${query.toString()}`;
     },
 
     openStream(handlers: PanelStreamHandlers): () => void {
-      return openPanelStream(
-        panelStreamUrl(base, window.location.href),
-        handlers,
-        createEventSource,
-      );
+      return openPanelStream(panelStreamUrl(base, window.location.href), handlers, createWebSocket);
     },
   };
 }
@@ -198,6 +335,28 @@ function withRepositoryQuery(path: string, page: RepositoryPageRequest): string 
   } else if (page.setting.mode !== 'all') {
     parameters.set('setting', page.setting.mode);
   }
+
+  return `${path}?${parameters.toString()}`;
+}
+
+function withAccessPageQuery(
+  path: string,
+  page: {
+    cursor?: string;
+    query: string;
+    sort: string;
+    limit: number;
+    roles: readonly string[];
+    statuses: readonly string[];
+  },
+): string {
+  const parameters = new URLSearchParams();
+  if (page.cursor !== undefined) parameters.set('cursor', page.cursor);
+  if (page.query !== '') parameters.set('q', page.query);
+  parameters.set('sort', page.sort);
+  parameters.set('limit', String(page.limit));
+  for (const role of page.roles) parameters.append('role', role);
+  for (const status of page.statuses) parameters.append('status', status);
 
   return `${path}?${parameters.toString()}`;
 }

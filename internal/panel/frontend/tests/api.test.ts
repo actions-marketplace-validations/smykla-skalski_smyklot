@@ -60,6 +60,16 @@ const VIEWER = {
     display_name: 'Ada Lovelace',
     avatar_url: null,
   },
+  root: true,
+  status: 'active' as const,
+  global_role: 'owner' as const,
+  capabilities: {
+    read: true,
+    write: true,
+    manage_target_users: true,
+    manage_global_users: true,
+    manage_owners: true,
+  },
   target_count: 1,
 };
 
@@ -75,6 +85,9 @@ const TARGET: PanelTarget = {
   config_sources: SOURCES,
   revision: 1,
   repository_counts: { total: 1, enabled: 0, disabled: 1 },
+  effective_role: 'owner',
+  access_source: 'root',
+  capabilities: VIEWER.capabilities,
 };
 
 const REPOSITORY = {
@@ -216,6 +229,125 @@ describe('targets and repositories', () => {
   });
 });
 
+describe('user management', () => {
+  it('uses scoped user endpoints and preserves nullable inheritance', async () => {
+    const user = {
+      account: VIEWER.account,
+      root: false,
+      status: 'active' as const,
+      global_role: 'editor' as const,
+      revision: 1,
+      created_at: '2026-08-08T10:00:00Z',
+      updated_at: '2026-08-08T10:00:00Z',
+      manageable: true,
+    };
+    const stub = stubFetch([
+      jsonResponse(200, { items: [user], next_cursor: null, total: 1 }),
+      jsonResponse(201, user),
+      jsonResponse(200, user),
+      jsonResponse(200, { items: [user], next_cursor: null, total: 1 }),
+      jsonResponse(201, user),
+      jsonResponse(200, user),
+      jsonResponse(200, { decisions: [] }),
+    ]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    const page = {
+      query: 'ada user',
+      sort: 'name_asc' as const,
+      limit: 20,
+      roles: ['editor' as const],
+      statuses: ['active' as const],
+    };
+
+    await api.fetchUsers(page);
+    await api.addUser({ login: 'ada', role: 'editor', target_id: 'target.1' });
+    await api.updateUser('github:user:1', {
+      global_role: 'viewer',
+      status: 'active',
+      expected_revision: 1,
+    });
+    await api.fetchTargetUsers('target.1', { ...page, cursor: '20' });
+    await api.addTargetUser('target.1', { login: 'ada', role: 'viewer' });
+    await api.updateTargetUser('target.1', 'github:user:1', {
+      role: null,
+      suspended: false,
+      expected_revision: 1,
+    });
+    await api.fetchUserDecisions('github:user:1', 'target.1');
+
+    expect(stub.calls.map((call) => call.url)).toEqual([
+      '/panel/api/v1/users?q=ada+user&sort=name_asc&limit=20&role=editor&status=active',
+      '/panel/api/v1/users',
+      '/panel/api/v1/users/github%3Auser%3A1',
+      '/panel/api/v1/targets/target%2E1/users?cursor=20&q=ada+user&sort=name_asc&limit=20&role=editor&status=active',
+      '/panel/api/v1/targets/target%2E1/users',
+      '/panel/api/v1/targets/target%2E1/users/github%3Auser%3A1',
+      '/panel/api/v1/targets/target%2E1/users/github%3Auser%3A1/decisions',
+    ]);
+    expect(JSON.parse(String(stub.calls[5]?.init?.body))).toMatchObject({ role: null });
+  });
+
+  it('creates, reviews, reissues, and revokes identity-locked invitations', async () => {
+    const invitation = {
+      id: 'invite.1',
+      account: VIEWER.account,
+      role: 'viewer' as const,
+      status: 'pending' as const,
+      expires_at: '2026-08-15T10:00:00Z',
+      created_by: VIEWER.account,
+      created_at: '2026-08-08T10:00:00Z',
+      invite_url: 'https://example.test/panel/invite/token',
+    };
+    const stub = stubFetch([
+      jsonResponse(200, { items: [invitation], next_cursor: null, total: 1 }),
+      jsonResponse(201, invitation),
+      jsonResponse(200, { items: [invitation], next_cursor: null, total: 1 }),
+      jsonResponse(201, invitation),
+      jsonResponse(200, invitation),
+      jsonResponse(200, invitation),
+      jsonResponse(200, invitation),
+    ]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    const page = {
+      query: 'ada',
+      sort: 'expiry_soonest' as const,
+      limit: 10,
+      roles: ['viewer' as const],
+      statuses: ['pending' as const, 'expired' as const],
+    };
+
+    await api.fetchInvitations(page);
+    await api.createInvitation({
+      login: 'ada',
+      role: 'viewer',
+      target_id: 'target.1',
+      expires_in_days: 7,
+    });
+    await api.fetchTargetInvitations('target.1', page);
+    await api.createTargetInvitation('target.1', {
+      login: 'ada',
+      role: 'viewer',
+      expires_in_days: 1,
+    });
+    await api.fetchInvitation('token/value');
+    await api.reissueInvitation('invite.1', 30);
+    await api.revokeInvitation('invite.1');
+
+    expect(stub.calls.map((call) => call.url)).toEqual([
+      '/panel/api/v1/invitations?q=ada&sort=expiry_soonest&limit=10&role=viewer&status=pending&status=expired',
+      '/panel/api/v1/invitations',
+      '/panel/api/v1/targets/target%2E1/invitations?q=ada&sort=expiry_soonest&limit=10&role=viewer&status=pending&status=expired',
+      '/panel/api/v1/targets/target%2E1/invitations',
+      '/panel/api/v1/invites/token%2Fvalue',
+      '/panel/api/v1/invitations/invite%2E1/reissue',
+      '/panel/api/v1/invitations/invite%2E1',
+    ]);
+    expect(stub.calls[6]?.init?.method).toBe('DELETE');
+  });
+});
+
 describe('history and authentication routes', () => {
   it('encodes history cursors and exposes both histories', async () => {
     const emptyPage = { items: [], next_cursor: null, total: 0 };
@@ -247,6 +379,9 @@ describe('history and authentication routes', () => {
     const api = createPanelApi('/panel', stub.fetch);
 
     expect(api.signInUrl()).toBe('/panel/auth/github/start');
+    expect(api.signInUrl({ token: 'one token', action: 'accept' })).toBe(
+      '/panel/auth/github/start?invite=one+token&action=accept',
+    );
     await api.signOut();
     expect(stub.calls[0]).toMatchObject({
       url: '/panel/api/v1/sign-out',

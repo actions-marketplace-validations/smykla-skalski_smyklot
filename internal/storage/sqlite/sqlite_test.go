@@ -65,6 +65,18 @@ var _ = Describe("SQLite store [Unit]", func() {
 		live, err := store.GetSession(ctx, second.TokenHash, now)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(live).To(Equal(second))
+		revoked, err := store.RevokeAccountSessions(
+			ctx,
+			account.ID,
+			"banned",
+			"policy breach",
+			now.Add(2*time.Second),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(revoked).To(Equal([]string{second.TokenHash}))
+		stored, err := store.GetSession(ctx, second.TokenHash, now.Add(3*time.Second))
+		Expect(errors.Is(err, storage.ErrRevoked)).To(BeTrue())
+		Expect(stored.RevokeReason).To(HaveValue(Equal("policy breach")))
 
 		expired := second
 		expired.TokenHash = "expired-token-hash"
@@ -100,9 +112,13 @@ var _ = Describe("SQLite store [Unit]", func() {
 		allowed, err = store.IsOwner(ctx, other.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(allowed).To(BeFalse())
+		panelUser, err := store.GetPanelUser(ctx, owner.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(panelUser.Root).To(BeTrue())
+		Expect(panelUser.GlobalRole).To(Equal(storage.PanelRoleOwner))
 	})
 
-	It("grants a newly discovered installation to the existing owner", func() {
+	It("makes newly discovered installations visible to the root owner", func() {
 		owner := testAccount(now)
 		Expect(store.UpsertAccount(ctx, owner)).To(Succeed())
 		claimed, err := store.ClaimOwner(ctx, owner.ID)
@@ -117,9 +133,7 @@ var _ = Describe("SQLite store [Unit]", func() {
 		firstTarget, err := store.GetTarget(ctx, first.TargetID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(firstTarget.RepositoryDefaultEnabled).To(BeFalse())
-		Expect(store.GrantOwnerAccess(ctx, first.TargetID, now)).To(Succeed())
 		Expect(store.ReconcileInstallation(ctx, second)).To(Succeed())
-		Expect(store.GrantOwnerAccess(ctx, second.TargetID, now.Add(time.Minute))).To(Succeed())
 
 		targets, err := store.ListTargets(ctx, owner.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -152,14 +166,16 @@ var _ = Describe("SQLite store [Unit]", func() {
 			testRepository("repo-1", "smykla-skalski/smyklot", false),
 			testRepository("repo-2", "smykla-skalski/platform-infra", true),
 		})
+		Expect(store.UpsertAccount(ctx, account)).To(Succeed())
+		claimed, err := store.ClaimOwner(ctx, account.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(BeTrue())
 		Expect(store.ReconcileInstallation(ctx, initial)).To(Succeed())
-		Expect(store.ReplaceAccountAccess(ctx, account.ID, []string{initial.TargetID}, now)).To(Succeed())
-		allowed, err := store.CanAccessTarget(ctx, account.ID, initial.TargetID)
+		access, err := store.ResolveTargetAccess(ctx, account.ID, initial.TargetID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(allowed).To(BeTrue())
-		allowed, err = store.CanAccessTarget(ctx, account.ID, "missing-target")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(allowed).To(BeFalse())
+		Expect(access.Role).To(Equal(storage.PanelRoleOwner))
+		_, err = store.ResolveTargetAccess(ctx, account.ID, "missing-target")
+		Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
 
 		targets, err := store.ListTargets(ctx, account.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -303,21 +319,310 @@ var _ = Describe("SQLite store [Unit]", func() {
 		second.Repositories = []storage.RepositorySnapshot{
 			testRepository("repo-2", "smykla-skalski/other", false),
 		}
+		Expect(store.UpsertAccount(ctx, account)).To(Succeed())
+		claimed, err := store.ClaimOwner(ctx, account.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(BeTrue())
 		Expect(store.ReconcileCatalog(ctx, []storage.InstallationSnapshot{first, second})).To(Succeed())
-		Expect(store.ReplaceAccountAccess(
-			ctx,
-			account.ID,
-			[]string{first.TargetID, second.TargetID},
-			now,
-		)).To(Succeed())
 
 		Expect(store.ReconcileCatalog(ctx, []storage.InstallationSnapshot{second})).To(Succeed())
-		allowed, err := store.CanAccessTarget(ctx, account.ID, first.TargetID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(allowed).To(BeFalse())
+		_, err = store.ResolveTargetAccess(ctx, account.ID, first.TargetID)
+		Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
 		target, err := store.GetTarget(ctx, first.TargetID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(target.Available).To(BeFalse())
+	})
+
+	It("resolves global roles, target overrides, and local suspension in order", func() {
+		owner, target := seedInstallation(ctx, store, now)
+		Expect(store.UpsertAccount(ctx, owner)).To(Succeed())
+		claimed, err := store.ClaimOwner(ctx, owner.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(BeTrue())
+
+		viewer := owner
+		viewer.ID = "github:viewer"
+		viewer.SubjectID = "viewer"
+		viewer.Login = "viewer"
+		Expect(store.UpsertAccount(ctx, viewer)).To(Succeed())
+		created, err := store.CreatePanelUser(ctx, storage.PanelUserCreate{
+			AccountID:      viewer.ID,
+			GlobalRole:     storage.PanelRoleViewer,
+			ActorAccountID: owner.ID,
+			ChangedAt:      now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created.GlobalRole).To(Equal(storage.PanelRoleViewer))
+
+		access, err := store.ResolveTargetAccess(ctx, viewer.ID, target.TargetID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(access.Role).To(Equal(storage.PanelRoleViewer))
+		Expect(access.Source).To(Equal(storage.AccessSourceGlobal))
+		Expect(access.Capabilities.Read).To(BeTrue())
+		Expect(access.Capabilities.Write).To(BeFalse())
+
+		override, err := store.SetTargetAccess(ctx, storage.TargetAccessChange{
+			TargetID:         target.TargetID,
+			SubjectAccountID: viewer.ID,
+			ActorAccountID:   owner.ID,
+			Role:             rolePointer(storage.PanelRoleEditor),
+			ExpectedRevision: 0,
+			ChangedAt:        now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(override.Revision).To(Equal(int64(1)))
+		access, err = store.ResolveTargetAccess(ctx, viewer.ID, target.TargetID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(access.Role).To(Equal(storage.PanelRoleEditor))
+		Expect(access.Source).To(Equal(storage.AccessSourceTarget))
+		Expect(access.Capabilities.Write).To(BeTrue())
+
+		reason := "security review"
+		_, err = store.SetTargetAccess(ctx, storage.TargetAccessChange{
+			TargetID:         target.TargetID,
+			SubjectAccountID: viewer.ID,
+			ActorAccountID:   owner.ID,
+			Role:             rolePointer(storage.PanelRoleEditor),
+			Suspended:        true,
+			SuspensionReason: &reason,
+			ExpectedRevision: override.Revision,
+			ChangedAt:        now.Add(2 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		access, err = store.ResolveTargetAccess(ctx, viewer.ID, target.TargetID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(access.Role).To(Equal(storage.PanelRoleNone))
+		Expect(access.Source).To(Equal(storage.AccessSourceSuspended))
+		Expect(access.SuspensionReason).To(HaveValue(Equal(reason)))
+	})
+
+	It("lists, bans, removes, and re-adds panel users without losing identity", func() {
+		owner, target := seedInstallation(ctx, store, now)
+		Expect(store.UpsertAccount(ctx, owner)).To(Succeed())
+		claimed, err := store.ClaimOwner(ctx, owner.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(BeTrue())
+
+		viewer := owner
+		viewer.ID = "github:user:managed"
+		viewer.SubjectID = "managed"
+		viewer.Login = "managed-user"
+		Expect(store.UpsertAccount(ctx, viewer)).To(Succeed())
+		managed, err := store.CreatePanelUser(ctx, storage.PanelUserCreate{
+			AccountID:      viewer.ID,
+			GlobalRole:     storage.PanelRoleViewer,
+			ActorAccountID: owner.ID,
+			ChangedAt:      now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = store.SetTargetAccess(ctx, storage.TargetAccessChange{
+			TargetID:         target.TargetID,
+			SubjectAccountID: viewer.ID,
+			ActorAccountID:   owner.ID,
+			Role:             rolePointer(storage.PanelRoleEditor),
+			ExpectedRevision: 0,
+			ChangedAt:        now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		users, err := store.ListPanelUsers(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(users).To(HaveLen(2))
+		targetUsers, err := store.ListTargetPanelUsers(ctx, target.TargetID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targetUsers).To(HaveLen(2))
+		managedTarget := targetUserByID(targetUsers, viewer.ID)
+		Expect(managedTarget.Override).NotTo(BeNil())
+		Expect(managedTarget.Access.Role).To(Equal(storage.PanelRoleEditor))
+
+		reason := "credential review"
+		managed, err = store.UpdatePanelUser(ctx, storage.PanelUserChange{
+			AccountID:        viewer.ID,
+			ActorAccountID:   owner.ID,
+			GlobalRole:       storage.PanelRoleViewer,
+			Status:           storage.PanelUserBanned,
+			BanReason:        &reason,
+			ExpectedRevision: managed.Revision,
+			ChangedAt:        now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(managed.Status).To(Equal(storage.PanelUserBanned))
+		Expect(managed.BanReason).To(HaveValue(Equal(reason)))
+
+		managed, err = store.UpdatePanelUser(ctx, storage.PanelUserChange{
+			AccountID:        viewer.ID,
+			ActorAccountID:   owner.ID,
+			GlobalRole:       storage.PanelRoleViewer,
+			Status:           storage.PanelUserRemoved,
+			ExpectedRevision: managed.Revision,
+			ChangedAt:        now.Add(2 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(managed.Status).To(Equal(storage.PanelUserRemoved))
+		Expect(managed.GlobalRole).To(Equal(storage.PanelRoleNone))
+		users, err = store.ListPanelUsers(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(users).To(HaveLen(1))
+
+		managed, err = store.CreatePanelUser(ctx, storage.PanelUserCreate{
+			AccountID:      viewer.ID,
+			GlobalRole:     storage.PanelRoleAdmin,
+			ActorAccountID: owner.ID,
+			ChangedAt:      now.Add(3 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(managed.Status).To(Equal(storage.PanelUserActive))
+		Expect(managed.GlobalRole).To(Equal(storage.PanelRoleAdmin))
+		Expect(managed.Revision).To(Equal(int64(4)))
+		targetUsers, err = store.ListTargetPanelUsers(ctx, target.TargetID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targetUsers).To(HaveLen(2))
+		managedTarget = targetUserByID(targetUsers, viewer.ID)
+		Expect(managedTarget.Override).To(BeNil())
+		Expect(managedTarget.Access.Role).To(Equal(storage.PanelRoleAdmin))
+
+		page, err := store.ListPanelUserPage(ctx, storage.PanelUserPageRequest{
+			Limit: 1, Query: "MANAGED", Roles: []storage.PanelRole{storage.PanelRoleAdmin},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Total).To(Equal(1))
+		Expect(page.Items).To(HaveLen(1))
+		Expect(page.Items[0].Account.ID).To(Equal(viewer.ID))
+
+		targetPage, err := store.ListTargetPanelUserPage(ctx, target.TargetID, storage.PanelUserPageRequest{
+			Limit: 1, Roles: []storage.PanelRole{storage.PanelRoleAdmin},
+			States: []storage.PanelUserListState{storage.PanelUserListActive},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targetPage.Total).To(Equal(1))
+		Expect(targetPage.Items[0].User.Account.ID).To(Equal(viewer.ID))
+
+		decisions, err := store.ListAccessDecisions(ctx, viewer.ID, nil, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(decisions).NotTo(BeEmpty())
+		Expect(decisions[0].Action).To(Equal("user.readded"))
+		Expect(decisions).To(ContainElement(And(
+			HaveField("Action", "user.banned"),
+			HaveField("Summary", ContainSubstring(reason)),
+		)))
+	})
+
+	It("creates, reissues, expires, and atomically responds to named invitations", func() {
+		owner, target := seedInstallation(ctx, store, now)
+		Expect(store.UpsertAccount(ctx, owner)).To(Succeed())
+		claimed, err := store.ClaimOwner(ctx, owner.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(claimed).To(BeTrue())
+
+		invitee := owner
+		invitee.ID = "github:user:invitee"
+		invitee.SubjectID = "invitee"
+		invitee.Login = "invitee"
+		Expect(store.UpsertAccount(ctx, invitee)).To(Succeed())
+
+		invitation, err := store.CreateInvitation(ctx, storage.InvitationCreate{
+			ID: "invitation-1", TokenHash: "token-1", AccountID: invitee.ID,
+			Role: storage.PanelRoleViewer, ExpiresAt: now.Add(7 * 24 * time.Hour),
+			CreatedByAccount: owner.ID, CreatedAt: now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(invitation.Status).To(Equal(storage.InvitationPending))
+		page, err := store.ListInvitationPage(ctx, nil, now, storage.InvitationPageRequest{
+			Limit: 10, Query: "INVITEE", Roles: []storage.PanelRole{storage.PanelRoleViewer},
+			Statuses: []storage.InvitationStatus{storage.InvitationPending},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Total).To(Equal(1))
+		Expect(page.Items).To(HaveLen(1))
+		Expect(page.Items[0].ID).To(Equal(invitation.ID))
+
+		invitation, err = store.ReissueInvitation(ctx, storage.InvitationReissue{
+			ID: invitation.ID, TokenHash: "token-2", ExpiresAt: now.Add(24 * time.Hour),
+			CreatedByAccount: owner.ID, CreatedAt: now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = store.GetInvitationByToken(ctx, "token-1", now)
+		Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+
+		_, err = store.RespondToInvitation(ctx, storage.InvitationResponse{
+			TokenHash: "token-2", AccountID: owner.ID, Accept: true, At: now.Add(2 * time.Minute),
+		})
+		Expect(errors.Is(err, storage.ErrIdentityMismatch)).To(BeTrue())
+		accepted, err := store.RespondToInvitation(ctx, storage.InvitationResponse{
+			TokenHash: "token-2", AccountID: invitee.ID, Accept: true, At: now.Add(2 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(accepted.Status).To(Equal(storage.InvitationAccepted))
+		user, err := store.GetPanelUser(ctx, invitee.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(user.GlobalRole).To(Equal(storage.PanelRoleViewer))
+		_, err = store.RespondToInvitation(ctx, storage.InvitationResponse{
+			TokenHash: "token-2", AccountID: invitee.ID, Accept: true, At: now.Add(3 * time.Minute),
+		})
+		Expect(errors.Is(err, storage.ErrConflict)).To(BeTrue())
+
+		targetInvitation, err := store.CreateInvitation(ctx, storage.InvitationCreate{
+			ID: "invitation-2", TokenHash: "token-3", AccountID: invitee.ID,
+			TargetID: &target.TargetID, Role: storage.PanelRoleEditor,
+			ExpiresAt: now.Add(time.Hour), CreatedByAccount: owner.ID, CreatedAt: now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = store.GetInvitationByToken(ctx, "token-3", now.Add(2*time.Hour))
+		Expect(errors.Is(err, storage.ErrExpired)).To(BeTrue())
+		targetInvitation, err = store.ReissueInvitation(ctx, storage.InvitationReissue{
+			ID: targetInvitation.ID, TokenHash: "token-4", ExpiresAt: now.Add(24 * time.Hour),
+			CreatedByAccount: owner.ID, CreatedAt: now.Add(3 * time.Hour),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		declined, err := store.RespondToInvitation(ctx, storage.InvitationResponse{
+			TokenHash: "token-4", AccountID: invitee.ID, Accept: false, At: now.Add(4 * time.Hour),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(declined.Status).To(Equal(storage.InvitationDeclined))
+
+		listed, err := store.ListInvitations(ctx, &target.TargetID, now.Add(4*time.Hour))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed).To(HaveLen(1))
+		Expect(listed[0].Status).To(Equal(storage.InvitationDeclined))
+	})
+
+	It("orders invitation pages by invitee name descending", func() {
+		owner, _ := seedInstallation(ctx, store, now)
+		Expect(store.UpsertAccount(ctx, owner)).To(Succeed())
+
+		alpha := owner
+		alpha.ID = "github:user:alpha"
+		alpha.SubjectID = "alpha"
+		alpha.Login = "alpha"
+		alpha.DisplayName = "Alpha User"
+		zulu := owner
+		zulu.ID = "github:user:zulu"
+		zulu.SubjectID = "zulu"
+		zulu.Login = "zulu"
+		zulu.DisplayName = "Zulu User"
+		Expect(store.UpsertAccount(ctx, alpha)).To(Succeed())
+		Expect(store.UpsertAccount(ctx, zulu)).To(Succeed())
+
+		for id, account := range map[string]storage.Account{
+			"invitation-alpha": alpha,
+			"invitation-zulu":  zulu,
+		} {
+			_, err := store.CreateInvitation(ctx, storage.InvitationCreate{
+				ID: id, TokenHash: id, AccountID: account.ID,
+				Role: storage.PanelRoleViewer, ExpiresAt: now.Add(24 * time.Hour),
+				CreatedByAccount: owner.ID, CreatedAt: now,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		page, err := store.ListInvitationPage(ctx, nil, now, storage.InvitationPageRequest{
+			Limit: 10,
+			Order: storage.InvitationNameDescending,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(HaveLen(2))
+		Expect(page.Items[0].Account.DisplayName).To(Equal("Zulu User"))
+		Expect(page.Items[1].Account.DisplayName).To(Equal("Alpha User"))
 	})
 
 	It("discovers a recreated repository that reuses an unavailable repository name", func() {
@@ -687,6 +992,20 @@ func testRepository(id, fullName string, private bool) storage.RepositorySnapsho
 	}
 
 	return storage.RepositorySnapshot{ID: id, Name: name, FullName: fullName, Private: private}
+}
+
+func rolePointer(role storage.PanelRole) *storage.PanelRole {
+	return &role
+}
+
+func targetUserByID(users []storage.TargetPanelUser, accountID string) storage.TargetPanelUser {
+	for _, user := range users {
+		if user.User.Account.ID == accountID {
+			return user
+		}
+	}
+
+	return storage.TargetPanelUser{}
 }
 
 func seedInstallation(

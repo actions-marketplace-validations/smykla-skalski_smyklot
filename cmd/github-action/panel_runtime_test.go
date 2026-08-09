@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -24,17 +25,18 @@ import (
 	"github.com/smykla-skalski/smyklot/pkg/webhook"
 )
 
-type blockingOwnerAccessStore struct {
-	storage.Store
-	started chan struct{}
-	release chan struct{}
-}
-
 type transientAbandonStore struct {
 	storage.Store
 	attempts     atomic.Int32
 	retryStarted chan struct{}
 	retryRelease chan struct{}
+}
+
+type runtimePanelEvent struct {
+	Version      int    `json:"version"`
+	Type         string `json:"type"`
+	TargetID     string `json:"target_id"`
+	RepositoryID string `json:"repository_id"`
 }
 
 func (s *transientAbandonStore) AbandonDelivery(ctx context.Context, claimID int64) error {
@@ -53,21 +55,6 @@ func (s *transientAbandonStore) AbandonDelivery(ctx context.Context, claimID int
 	}
 
 	return s.Store.AbandonDelivery(ctx, claimID)
-}
-
-func (s *blockingOwnerAccessStore) ReplaceOwnerAccess(
-	ctx context.Context,
-	targetIDs []string,
-	changedAt time.Time,
-) error {
-	close(s.started)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.release:
-	}
-
-	return s.Store.ReplaceOwnerAccess(ctx, targetIDs, changedAt)
 }
 
 var _ = Describe("Production panel runtime [Unit]", func() {
@@ -210,10 +197,10 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		Expect(newTarget.Available).To(BeTrue())
 	})
 
-	It("grants the owner access to installations discovered after sign-in", func() {
+	It("shows the root owner installations discovered after sign-in", func() {
 		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
 		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
-		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		_, err := service.SyncCatalog(GinkgoT().Context())
 		Expect(err).NotTo(HaveOccurred())
 
 		now := time.Now().UTC()
@@ -229,13 +216,6 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		claimed, err := service.store.ClaimOwner(GinkgoT().Context(), owner.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(claimed).To(BeTrue())
-		Expect(service.store.ReplaceAccountAccess(
-			GinkgoT().Context(),
-			owner.ID,
-			targetIDs,
-			now,
-		)).To(Succeed())
-
 		stub.installations = `[
 			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
 			{"id":222,"account":{"id":8,"login":"another-org","type":"Organization"}}
@@ -247,10 +227,10 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		Expect(targets).To(HaveLen(2))
 	})
 
-	It("announces catalog changes only after refreshing owner access", func() {
+	It("announces catalog changes after the catalog commits", func() {
 		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
 		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
-		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		_, err := service.SyncCatalog(GinkgoT().Context())
 		Expect(err).NotTo(HaveOccurred())
 
 		now := time.Now().UTC()
@@ -266,13 +246,6 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		claimed, err := service.store.ClaimOwner(GinkgoT().Context(), owner.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(claimed).To(BeTrue())
-		Expect(service.store.ReplaceAccountAccess(
-			GinkgoT().Context(),
-			owner.ID,
-			targetIDs,
-			now,
-		)).To(Succeed())
-
 		const sessionToken = "catalog-event-session"
 		digest := sha256.Sum256([]byte(sessionToken))
 		Expect(service.store.CreateSession(GinkgoT().Context(), storage.Session{
@@ -284,54 +257,43 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 
 		panelEndpoint := httptest.NewServer(service.panel.Handler())
 		DeferCleanup(panelEndpoint.Close)
-		streamContext, cancelStream := context.WithCancel(GinkgoT().Context())
-		DeferCleanup(cancelStream)
-		request, err := http.NewRequestWithContext(
-			streamContext,
-			http.MethodGet,
-			panelEndpoint.URL+"/panel/api/v1/events",
-			nil,
+		headers := http.Header{}
+		headers.Set("Cookie", (&http.Cookie{
+			Name:  "smyklot_panel_session",
+			Value: sessionToken,
+		}).String())
+		headers.Set("Origin", "https://smyklot.example")
+		connection, response, err := websocket.Dial(
+			GinkgoT().Context(),
+			"ws"+strings.TrimPrefix(panelEndpoint.URL, "http")+"/panel/api/v1/events",
+			&websocket.DialOptions{HTTPHeader: headers},
 		)
 		Expect(err).NotTo(HaveOccurred())
-		request.AddCookie(&http.Cookie{Name: "smyklot_panel_session", Value: sessionToken})
-		response, err := panelEndpoint.Client().Do(request)
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(response.Body.Close)
-		Expect(response.StatusCode).To(Equal(http.StatusOK))
+		Expect(response.StatusCode).To(Equal(http.StatusSwitchingProtocols))
+		DeferCleanup(connection.CloseNow)
 
-		events := make(chan string, 4)
+		events := make(chan runtimePanelEvent, 4)
 		go func() {
-			scanner := bufio.NewScanner(response.Body)
-			for scanner.Scan() {
-				if event, found := strings.CutPrefix(scanner.Text(), "data: "); found {
-					events <- event
+			for {
+				var event runtimePanelEvent
+				if err := wsjson.Read(GinkgoT().Context(), connection, &event); err != nil {
+					return
 				}
+				events <- event
 			}
 		}()
-		Eventually(events).Should(Receive(Equal("{}")))
+		var event runtimePanelEvent
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Version).To(Equal(1))
+		Expect(event.Type).To(Equal("ready"))
 
 		stub.installations = `[
 			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
 			{"id":222,"account":{"id":8,"login":"another-org","type":"Organization"}}
 		]`
-		blockedStore := &blockingOwnerAccessStore{
-			Store:   service.store,
-			started: make(chan struct{}),
-			release: make(chan struct{}),
-		}
-		service.store = blockedStore
-		maintenanceDone := make(chan struct{})
-		maintenanceContext := GinkgoT().Context()
-		go func() {
-			defer close(maintenanceDone)
-			service.maintainPanel(maintenanceContext)
-		}()
-		Eventually(blockedStore.started).Should(BeClosed())
-		Consistently(events).ShouldNot(Receive())
-
-		close(blockedStore.release)
-		Eventually(maintenanceDone).Should(BeClosed())
-		Eventually(events).Should(Receive(Equal(`{"type":"resync"}`)))
+		service.maintainPanel(GinkgoT().Context())
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Type).To(Equal("resync"))
 
 		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -349,9 +311,10 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 			"smyklot",
 		)
 		Expect(err).NotTo(HaveOccurred())
-		Eventually(events).Should(Receive(Equal(
-			`{"type":"repository","target_id":"github:installation:222","repository_id":"github:repository:31"}`,
-		)))
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Type).To(Equal("repository.changed"))
+		Expect(event.TargetID).To(Equal("github:installation:222"))
+		Expect(event.RepositoryID).To(Equal("github:repository:31"))
 		_, err = service.serviceConfig(
 			GinkgoT().Context(),
 			client,
@@ -363,11 +326,11 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Consistently(events).ShouldNot(Receive())
 
-		service.store = blockedStore.Store
 		stub.installations = `[]`
 		_, err = service.SyncCatalog(GinkgoT().Context())
 		Expect(err).NotTo(HaveOccurred())
-		Eventually(events).Should(Receive(Equal(`{"type":"resync"}`)))
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Type).To(Equal("resync"))
 		targets, err = service.store.ListTargets(GinkgoT().Context(), owner.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(targets).To(BeEmpty())

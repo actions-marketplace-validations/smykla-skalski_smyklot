@@ -16,18 +16,42 @@ type AuthStore interface {
 	CreateSession(context.Context, Session, int) error
 	GetSession(context.Context, string, time.Time) (Session, error)
 	DeleteSession(context.Context, string) error
+	RevokeAccountSessions(context.Context, string, string, string, time.Time) ([]string, error)
 	DeleteExpiredAuth(context.Context, time.Time) error
+}
+
+// AccessStore owns panel-user roles and resolves installation permissions.
+type AccessStore interface {
+	GetPanelUser(context.Context, string) (PanelUser, error)
+	ListPanelUsers(context.Context) ([]PanelUser, error)
+	ListPanelUserPage(context.Context, PanelUserPageRequest) (PanelUserPage, error)
+	ListTargetPanelUsers(context.Context, string) ([]TargetPanelUser, error)
+	ListTargetPanelUserPage(context.Context, string, PanelUserPageRequest) (TargetPanelUserPage, error)
+	ListAccessDecisions(context.Context, string, *string, int) ([]AccessDecision, error)
+	CreatePanelUser(context.Context, PanelUserCreate) (PanelUser, error)
+	UpdatePanelUser(context.Context, PanelUserChange) (PanelUser, error)
+	GetTargetAccessOverride(context.Context, string, string) (TargetAccessOverride, error)
+	SetTargetAccess(context.Context, TargetAccessChange) (TargetAccessOverride, error)
+	ResolveTargetAccess(context.Context, string, string) (TargetAccess, error)
+	ListTargets(context.Context, string) ([]Target, error)
+}
+
+// InvitationStore owns identity-locked panel invitations and acceptance.
+type InvitationStore interface {
+	ListInvitations(context.Context, *string, time.Time) ([]Invitation, error)
+	ListInvitationPage(context.Context, *string, time.Time, InvitationPageRequest) (InvitationPage, error)
+	GetInvitation(context.Context, string, time.Time) (Invitation, error)
+	GetInvitationByToken(context.Context, string, time.Time) (Invitation, error)
+	CreateInvitation(context.Context, InvitationCreate) (Invitation, error)
+	ReissueInvitation(context.Context, InvitationReissue) (Invitation, error)
+	RevokeInvitation(context.Context, InvitationRevoke) (Invitation, error)
+	RespondToInvitation(context.Context, InvitationResponse) (Invitation, error)
 }
 
 // CatalogStore persists GitHub-owned installation and repository snapshots.
 type CatalogStore interface {
 	ReconcileCatalog(context.Context, []InstallationSnapshot) error
 	ReconcileInstallation(context.Context, InstallationSnapshot) error
-	ReplaceAccountAccess(context.Context, string, []string, time.Time) error
-	ReplaceOwnerAccess(context.Context, []string, time.Time) error
-	GrantOwnerAccess(context.Context, string, time.Time) error
-	ListTargets(context.Context, string) ([]Target, error)
-	CanAccessTarget(context.Context, string, string) (bool, error)
 	GetTarget(context.Context, string) (Target, error)
 	ListRepositories(context.Context, string) ([]Repository, error)
 	ListRepositoryPage(context.Context, string, RepositoryPageRequest) (RepositoryPage, error)
@@ -61,6 +85,8 @@ type AuditReader interface {
 // not expose SQL handles or transactions to callers.
 type Store interface {
 	AuthStore
+	AccessStore
+	InvitationStore
 	CatalogStore
 	ConfigStore
 	DeliveryStore

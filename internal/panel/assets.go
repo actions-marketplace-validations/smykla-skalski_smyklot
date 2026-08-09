@@ -69,21 +69,31 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 
 func isPanelNavigationPath(relative string) bool {
 	trimmed := strings.Trim(relative, "/")
-	if trimmed == "help" {
+	if trimmed == "help" || trimmed == panelUsersResource {
 		return true
 	}
 
 	parts := strings.Split(trimmed, "/")
+	if len(parts) == 2 && parts[0] == "invite" && validInvitationToken(parts[1]) {
+		return true
+	}
 	if len(parts) != 3 || parts[0] != "i" || parts[1] == "" {
 		return false
 	}
 
 	switch parts[2] {
-	case "settings", "repositories", "history":
+	case "settings", "repositories", panelUsersResource, "history":
 		return true
 	default:
 		return false
 	}
+}
+
+func validInvitationToken(token string) bool {
+	return len(token) == 43 && !strings.ContainsFunc(token, func(r rune) bool {
+		return r != '-' && r != '_' && (r < '0' || r > '9') &&
+			(r < 'A' || r > 'Z') && (r < 'a' || r > 'z')
+	})
 }
 
 func (s *Server) writeIndex(w http.ResponseWriter) {

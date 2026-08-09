@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createPanelRouter,
   panelRoutePath,
+  parseInvitationToken,
   parsePanelRoute,
   resolvePanelRoute,
   type PanelRoute,
@@ -49,10 +50,15 @@ describe('panel routes', () => {
     });
   });
 
-  it('keeps help global', () => {
+  it('keeps help and global users outside installation routes', () => {
     expect(parsePanelRoute('', '/help')).toEqual({ view: 'help' });
     expect(parsePanelRoute('/panel', '/panel/help/')).toEqual({ view: 'help' });
     expect(parsePanelRoute('', '/i/smykla-skalski/help')).toBeNull();
+    expect(parsePanelRoute('', '/users')).toEqual({ view: 'users' });
+    expect(parsePanelRoute('', '/i/smykla-skalski/users')).toEqual({
+      account: 'smykla-skalski',
+      view: 'users',
+    });
   });
 
   it('treats the panel root as an unresolved destination', () => {
@@ -70,6 +76,13 @@ describe('panel routes', () => {
     expect(parsePanelRoute('/panel', '/panel/too/many/parts')).toBeNull();
   });
 
+  it('recognizes only exact invitation review routes', () => {
+    expect(parseInvitationToken('', '/invite/single-use-token')).toBe('single-use-token');
+    expect(parseInvitationToken('/panel', '/panel/invite/token%5F1')).toBe('token_1');
+    expect(parseInvitationToken('/panel', '/invite/token')).toBeNull();
+    expect(parseInvitationToken('', '/invite/token/more')).toBeNull();
+  });
+
   it('encodes account slugs when building links', () => {
     expect(panelRoutePath('', { account: 'smykla skalski', view: 'history' })).toBe(
       '/i/smykla%20skalski/history',
@@ -78,6 +91,10 @@ describe('panel routes', () => {
       '/panel/i/bartsmykla/settings',
     );
     expect(panelRoutePath('/panel', { view: 'help' })).toBe('/panel/help');
+    expect(panelRoutePath('/panel', { view: 'users' })).toBe('/panel/users');
+    expect(panelRoutePath('/panel', { account: 'bartsmykla', view: 'users' })).toBe(
+      '/panel/i/bartsmykla/users',
+    );
   });
 });
 

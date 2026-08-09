@@ -1,12 +1,12 @@
 import { normalizeBasePath } from './base';
 
-export const PANEL_VIEWS = ['settings', 'repositories', 'history', 'help'] as const;
-const SCOPED_PANEL_VIEWS = ['settings', 'repositories', 'history'] as const;
+export const PANEL_VIEWS = ['settings', 'repositories', 'users', 'history', 'help'] as const;
+const SCOPED_PANEL_VIEWS = ['settings', 'repositories', 'users', 'history'] as const;
 
 export type PanelView = (typeof PANEL_VIEWS)[number];
 export type ScopedPanelView = (typeof SCOPED_PANEL_VIEWS)[number];
 
-export type PanelRoute = { account: string; view: ScopedPanelView } | { view: 'help' };
+export type PanelRoute = { account: string; view: ScopedPanelView } | { view: 'help' | 'users' };
 
 export interface ResolvedPanelRoute {
   account: string;
@@ -34,7 +34,7 @@ export function parsePanelRoute(basePath: string, pathname: string): PanelRoute 
 
   const relative = pathname.slice(base.length).replace(/^\/+|\/+$/g, '');
   if (relative === '') return null;
-  if (relative === 'help') return { view: 'help' };
+  if (relative === 'help' || relative === 'users') return { view: relative };
 
   const parts = relative.split('/');
   if (parts.length !== 3) return null;
@@ -59,9 +59,23 @@ export function parsePanelRoute(basePath: string, pathname: string): PanelRoute 
   return account.trim() === '' ? null : { account, view: rawView };
 }
 
+export function parseInvitationToken(basePath: string, pathname: string): string | null {
+  const base = normalizeBasePath(basePath);
+  if (base !== '' && !pathname.startsWith(`${base}/`)) return null;
+  const relative = pathname.slice(base.length).replace(/^\/+|\/+$/g, '');
+  const parts = relative.split('/');
+  if (parts.length !== 2 || parts[0] !== 'invite' || parts[1] === undefined) return null;
+  try {
+    const token = decodeURIComponent(parts[1]);
+    return token.trim() === '' ? null : token;
+  } catch {
+    return null;
+  }
+}
+
 export function panelRoutePath(basePath: string, route: PanelRoute): string {
   const base = normalizeBasePath(basePath);
-  if (route.view === 'help') return `${base}/help`;
+  if (!('account' in route)) return `${base}/${route.view}`;
   return `${base}/i/${encodeURIComponent(route.account)}/${route.view}`;
 }
 
@@ -72,7 +86,7 @@ export function resolvePanelRoute(
 ): ResolvedPanelRoute | null {
   const requestedAccount = findAccount(
     availableAccounts,
-    requested?.view === 'help' ? null : (requested?.account ?? null),
+    requested !== null && 'account' in requested ? requested.account : null,
   );
   const account =
     requestedAccount ?? findAccount(availableAccounts, preferredAccount) ?? availableAccounts[0];

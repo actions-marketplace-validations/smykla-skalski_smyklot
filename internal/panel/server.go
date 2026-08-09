@@ -20,10 +20,15 @@ type catalogSyncer interface {
 	SyncCatalog(context.Context) ([]string, error)
 }
 
+type userResolver interface {
+	ResolveUser(context.Context, string, string) (storage.Account, error)
+}
+
 // Dependencies are the service capabilities used by panel handlers.
 type Dependencies struct {
 	Store   storage.Store
 	Catalog catalogSyncer
+	Users   userResolver
 	SignIn  signInProvider
 	Random  io.Reader
 	Now     func() time.Time
@@ -34,6 +39,7 @@ type Server struct {
 	cfg     Config
 	store   storage.Store
 	catalog catalogSyncer
+	users   userResolver
 	signIn  signInProvider
 	random  io.Reader
 	now     func() time.Time
@@ -47,8 +53,11 @@ func New(cfg Config, deps Dependencies) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if deps.Store == nil || deps.Catalog == nil {
-		return nil, fmt.Errorf("%w: storage and catalog sync are required", errInvalidConfig)
+	if deps.Store == nil || deps.Catalog == nil || deps.Users == nil {
+		return nil, fmt.Errorf(
+			"%w: storage, catalog sync, and user lookup are required",
+			errInvalidConfig,
+		)
 	}
 	if deps.SignIn == nil {
 		deps.SignIn, err = newGitHubSignIn(validated)
@@ -71,6 +80,7 @@ func New(cfg Config, deps Dependencies) (*Server, error) {
 		cfg:     validated,
 		store:   deps.Store,
 		catalog: deps.Catalog,
+		users:   deps.Users,
 		signIn:  deps.SignIn,
 		random:  deps.Random,
 		now:     deps.Now,
@@ -89,7 +99,28 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+base+"/api/v1/sign-out", s.signOut)
 	mux.HandleFunc("GET "+base+"/api/v1/session", s.getSession)
 	mux.HandleFunc("GET "+base+"/api/v1/targets", s.getTargets)
+	mux.HandleFunc("GET "+base+"/api/v1/users", s.getUsers)
+	mux.HandleFunc("POST "+base+"/api/v1/users", s.postUser)
+	mux.HandleFunc("GET "+base+"/api/v1/users/{account}/decisions", s.getUserDecisions)
+	mux.HandleFunc("PUT "+base+"/api/v1/users/{account}", s.putUser)
+	mux.HandleFunc("GET "+base+"/api/v1/invitations", s.getInvitations)
+	mux.HandleFunc("POST "+base+"/api/v1/invitations", s.postInvitation)
+	mux.HandleFunc("GET "+base+"/api/v1/invites/{token}", s.reviewInvitation)
+	mux.HandleFunc("POST "+base+"/api/v1/invitations/{invitation}/reissue", s.reissueInvitation)
+	mux.HandleFunc("DELETE "+base+"/api/v1/invitations/{invitation}", s.deleteInvitation)
 	mux.HandleFunc("PUT "+base+"/api/v1/targets/{target}/settings", s.putTargetSettings)
+	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/users", s.getTargetUsers)
+	mux.HandleFunc("POST "+base+"/api/v1/targets/{target}/users", s.postTargetUser)
+	mux.HandleFunc(
+		"GET "+base+"/api/v1/targets/{target}/users/{account}/decisions",
+		s.getTargetUserDecisions,
+	)
+	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/invitations", s.getTargetInvitations)
+	mux.HandleFunc("POST "+base+"/api/v1/targets/{target}/invitations", s.postTargetInvitation)
+	mux.HandleFunc(
+		"PUT "+base+"/api/v1/targets/{target}/users/{account}",
+		s.putTargetUser,
+	)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/repositories", s.getRepositories)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/repositories/{repository}", s.getRepository)
 	mux.HandleFunc(
@@ -112,9 +143,9 @@ func (s *Server) Handler() http.Handler {
 
 // Announce tells connected browsers which catalog or setting scope changed.
 func (s *Server) Announce(targetID, repositoryID string) {
-	event := panelEvent{Type: "target", TargetID: targetID}
+	event := panelEvent{Type: "target.changed", TargetID: targetID}
 	if repositoryID != "" {
-		event.Type = "repository"
+		event.Type = "repository.changed"
 		event.RepositoryID = repositoryID
 	}
 	s.events.announce(event)
@@ -124,7 +155,7 @@ func (s *Server) Announce(targetID, repositoryID string) {
 // committed. It emits even when the new snapshot is empty, so removing the
 // final installation cannot leave an open panel displaying stale targets.
 func (s *Server) AnnounceCatalog() {
-	s.events.announce(panelEvent{Type: "resync"})
+	s.events.announce(panelEvent{Type: panelEventResync})
 }
 
 func (s *Server) secureHeaders(next http.Handler) http.Handler {
@@ -148,8 +179,24 @@ func (s *Server) viewer(r *http.Request) (storage.Account, string, error) {
 		return storage.Account{}, "", err
 	}
 	account, err := s.store.GetAccount(r.Context(), session.AccountID)
+	if err != nil {
+		return storage.Account{}, "", err
+	}
+	user, err := s.store.GetPanelUser(r.Context(), session.AccountID)
+	if err != nil {
+		return storage.Account{}, "", err
+	}
+	if user.Status != storage.PanelUserActive {
+		reason := "Your panel access was revoked"
+		if user.BanReason != nil {
+			reason = *user.BanReason
+		}
+		return storage.Account{}, "", storage.SessionRevokedError{
+			Code: string(user.Status), Reason: reason,
+		}
+	}
 
-	return account, hash, err
+	return account, hash, nil
 }
 
 func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request) (storage.Account, bool) {
@@ -157,6 +204,8 @@ func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request) (storage.
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrExpired) {
 			s.writeError(w, http.StatusUnauthorized, "unauthenticated", "sign in to use the panel")
+		} else if errors.Is(err, storage.ErrRevoked) {
+			s.writeError(w, http.StatusUnauthorized, "session_revoked", err.Error())
 		} else {
 			s.writeInternal(w, err)
 		}
@@ -170,28 +219,33 @@ func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request) (storage.
 func (s *Server) requireTarget(
 	w http.ResponseWriter,
 	r *http.Request,
-) (storage.Account, storage.Target, bool) {
+	write bool,
+) (storage.Account, storage.Target, storage.TargetAccess, bool) {
 	account, ok := s.requireViewer(w, r)
 	if !ok {
-		return storage.Account{}, storage.Target{}, false
+		return storage.Account{}, storage.Target{}, storage.TargetAccess{}, false
 	}
 	targetID := r.PathValue("target")
-	allowed, err := s.store.CanAccessTarget(r.Context(), account.ID, targetID)
+	access, err := s.store.ResolveTargetAccess(r.Context(), account.ID, targetID)
 	if err != nil {
-		s.writeInternal(w, err)
-		return storage.Account{}, storage.Target{}, false
+		if errors.Is(err, storage.ErrNotFound) {
+			s.writeError(w, http.StatusNotFound, "not_found", "installation target not found")
+		} else {
+			s.writeInternal(w, err)
+		}
+		return storage.Account{}, storage.Target{}, storage.TargetAccess{}, false
 	}
-	if !allowed {
+	if !access.Capabilities.Read || write && !access.Capabilities.Write {
 		s.writeError(w, http.StatusNotFound, "not_found", "installation target not found")
-		return storage.Account{}, storage.Target{}, false
+		return storage.Account{}, storage.Target{}, storage.TargetAccess{}, false
 	}
 	target, err := s.store.GetTarget(r.Context(), targetID)
 	if err != nil {
 		s.writeStorageError(w, err)
-		return storage.Account{}, storage.Target{}, false
+		return storage.Account{}, storage.Target{}, storage.TargetAccess{}, false
 	}
 
-	return account, target, true
+	return account, target, access, true
 }
 
 func (s *Server) requireSameOrigin(w http.ResponseWriter, r *http.Request) bool {

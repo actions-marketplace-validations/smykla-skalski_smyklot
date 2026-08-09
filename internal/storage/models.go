@@ -17,12 +17,301 @@ type Account struct {
 	UpdatedAt   time.Time
 }
 
-// Session is a panel session. TokenHash is a digest of the cookie token.
-type Session struct {
+// PanelRole is a user's default or installation-specific authorization level.
+type PanelRole string
+
+const (
+	PanelRoleNone   PanelRole = "none"
+	PanelRoleViewer PanelRole = "viewer"
+	PanelRoleEditor PanelRole = "editor"
+	PanelRoleAdmin  PanelRole = "admin"
+	PanelRoleOwner  PanelRole = "owner"
+)
+
+// PanelUserStatus is the account-wide lifecycle of a panel user.
+type PanelUserStatus string
+
+const (
+	PanelUserActive  PanelUserStatus = "active"
+	PanelUserBanned  PanelUserStatus = "banned"
+	PanelUserRemoved PanelUserStatus = "removed"
+)
+
+// PanelUserOrder controls how user-management pages are ordered.
+type PanelUserOrder string
+
+const (
+	PanelUserNameAscending  PanelUserOrder = "name_asc"
+	PanelUserNameDescending PanelUserOrder = "name_desc"
+	PanelUserUpdatedNewest  PanelUserOrder = "updated_newest"
+	PanelUserUpdatedOldest  PanelUserOrder = "updated_oldest"
+	PanelUserLoginNewest    PanelUserOrder = "login_newest"
+	PanelUserLoginOldest    PanelUserOrder = "login_oldest"
+)
+
+// PanelUserListState includes the installation-only suspended state alongside
+// account-wide lifecycle states used by user-management filters.
+type PanelUserListState string
+
+const (
+	PanelUserListActive    PanelUserListState = "active"
+	PanelUserListBanned    PanelUserListState = "banned"
+	PanelUserListSuspended PanelUserListState = "suspended"
+)
+
+// PanelUserPageRequest selects one filtered, numbered user-management page.
+type PanelUserPageRequest struct {
+	Offset int
+	Limit  int
+	Order  PanelUserOrder
+	Query  string
+	Roles  []PanelRole
+	States []PanelUserListState
+}
+
+// PanelUserPage is one account-wide user page.
+type PanelUserPage struct {
+	Items      []PanelUser
+	NextOffset int
+	Total      int
+}
+
+// TargetPanelUserPage is one installation-scoped user page.
+type TargetPanelUserPage struct {
+	Items      []TargetPanelUser
+	NextOffset int
+	Total      int
+}
+
+// PanelUser is one persisted panel identity and its global access policy.
+type PanelUser struct {
+	Account     Account
+	Root        bool
+	Status      PanelUserStatus
+	GlobalRole  PanelRole
+	BanReason   *string
+	BannedAt    *time.Time
+	RemovedAt   *time.Time
+	LastLoginAt *time.Time
+	Revision    int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// PanelUserCreate activates a known provider identity and records its actor.
+type PanelUserCreate struct {
+	AccountID      string
+	GlobalRole     PanelRole
+	ActorAccountID string
+	ChangedAt      time.Time
+}
+
+// PanelUserChange atomically replaces one user's global role and lifecycle.
+type PanelUserChange struct {
+	AccountID        string
+	ActorAccountID   string
+	GlobalRole       PanelRole
+	Status           PanelUserStatus
+	BanReason        *string
+	ExpectedRevision int64
+	ChangedAt        time.Time
+}
+
+// InvitationStatus is the lifecycle of one single-use access invitation.
+type InvitationStatus string
+
+const (
+	InvitationPending  InvitationStatus = "pending"
+	InvitationAccepted InvitationStatus = "accepted"
+	InvitationDeclined InvitationStatus = "declined"
+	InvitationRevoked  InvitationStatus = "revoked"
+	InvitationExpired  InvitationStatus = "expired"
+)
+
+// InvitationOrder controls invitation-management page ordering.
+type InvitationOrder string
+
+const (
+	InvitationCreatedNewest  InvitationOrder = "created_newest"
+	InvitationCreatedOldest  InvitationOrder = "created_oldest"
+	InvitationExpirySoonest  InvitationOrder = "expiry_soonest"
+	InvitationExpiryLatest   InvitationOrder = "expiry_latest"
+	InvitationNameAscending  InvitationOrder = "name_asc"
+	InvitationNameDescending InvitationOrder = "name_desc"
+)
+
+// InvitationPageRequest selects one filtered invitation-management page.
+type InvitationPageRequest struct {
+	Offset   int
+	Limit    int
+	Order    InvitationOrder
+	Query    string
+	Roles    []PanelRole
+	Statuses []InvitationStatus
+}
+
+// InvitationPage is one page of identity-locked invitations.
+type InvitationPage struct {
+	Items      []Invitation
+	NextOffset int
+	Total      int
+}
+
+// AccessDecision is one immutable role, lifecycle, or invitation decision for
+// a panel identity in exactly one global or installation scope.
+type AccessDecision struct {
+	ID        int64
+	TargetID  *string
+	Actor     Account
+	Action    string
+	Summary   string
+	CreatedAt time.Time
+}
+
+// Invitation is an identity-locked offer of global or installation access.
+type Invitation struct {
+	ID          string
+	Account     Account
+	TargetID    *string
+	TargetName  *string
+	Role        PanelRole
+	Status      InvitationStatus
+	ExpiresAt   time.Time
+	CreatedBy   Account
+	CreatedAt   time.Time
+	RespondedAt *time.Time
+}
+
+// InvitationCreate creates a new token and invalidates earlier pending offers
+// for the same identity and scope.
+type InvitationCreate struct {
+	ID               string
+	TokenHash        string
+	AccountID        string
+	TargetID         *string
+	Role             PanelRole
+	ExpiresAt        time.Time
+	CreatedByAccount string
+	CreatedAt        time.Time
+}
+
+// InvitationReissue replaces a pending or expired invitation token.
+type InvitationReissue struct {
+	ID               string
+	TokenHash        string
+	ExpiresAt        time.Time
+	CreatedByAccount string
+	CreatedAt        time.Time
+}
+
+// InvitationRevoke invalidates an invitation without deleting its audit trail.
+type InvitationRevoke struct {
+	ID             string
+	ActorAccountID string
+	RevokedAt      time.Time
+}
+
+// InvitationResponse accepts or declines an invitation as its named identity.
+type InvitationResponse struct {
 	TokenHash string
 	AccountID string
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	Accept    bool
+	At        time.Time
+}
+
+// TargetPanelUser combines global identity with one installation policy.
+type TargetPanelUser struct {
+	User     PanelUser
+	Override *TargetAccessOverride
+	Access   TargetAccess
+}
+
+// AccessSource identifies which policy decided an installation role.
+type AccessSource string
+
+const (
+	AccessSourceRoot      AccessSource = "root"
+	AccessSourceGlobal    AccessSource = "global"
+	AccessSourceTarget    AccessSource = "target"
+	AccessSourceSuspended AccessSource = "suspended"
+	AccessSourceDenied    AccessSource = "denied"
+)
+
+// AccessCapabilities contains server-authoritative actions for one role.
+type AccessCapabilities struct {
+	Read              bool
+	Write             bool
+	ManageTargetUsers bool
+	ManageGlobalUsers bool
+	ManageOwners      bool
+}
+
+// EffectiveCapabilities returns the fixed capability set for a resolved role.
+func EffectiveCapabilities(role PanelRole, root bool) AccessCapabilities {
+	capabilities := AccessCapabilities{ManageOwners: root}
+	switch role {
+	case PanelRoleOwner:
+		capabilities.Read = true
+		capabilities.Write = true
+		capabilities.ManageTargetUsers = true
+		capabilities.ManageGlobalUsers = true
+	case PanelRoleAdmin:
+		capabilities.Read = true
+		capabilities.Write = true
+		capabilities.ManageTargetUsers = true
+	case PanelRoleEditor:
+		capabilities.Read = true
+		capabilities.Write = true
+	case PanelRoleViewer:
+		capabilities.Read = true
+	}
+
+	return capabilities
+}
+
+// TargetAccess is the effective authorization for one user and installation.
+type TargetAccess struct {
+	Role             PanelRole
+	Source           AccessSource
+	Root             bool
+	SuspensionReason *string
+	Capabilities     AccessCapabilities
+}
+
+// TargetAccessOverride is a persisted replacement for a user's global role.
+// A nil Role means inherit the global role. Suspension remains an independent
+// overlay so unbanning restores the previous role.
+type TargetAccessOverride struct {
+	TargetID         string
+	AccountID        string
+	Role             *PanelRole
+	Suspended        bool
+	SuspensionReason *string
+	Revision         int64
+	UpdatedAt        time.Time
+}
+
+// TargetAccessChange atomically replaces one installation override and audit.
+type TargetAccessChange struct {
+	TargetID         string
+	SubjectAccountID string
+	ActorAccountID   string
+	Role             *PanelRole
+	Suspended        bool
+	SuspensionReason *string
+	ExpectedRevision int64
+	ChangedAt        time.Time
+}
+
+// Session is a panel session. TokenHash is a digest of the cookie token.
+type Session struct {
+	TokenHash    string
+	AccountID    string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	RevokedAt    *time.Time
+	RevokeCode   *string
+	RevokeReason *string
 }
 
 // DeliveryClaimDisposition explains whether a delivery was accepted, is still
