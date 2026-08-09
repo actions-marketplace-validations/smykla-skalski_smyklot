@@ -1,5 +1,5 @@
 <script lang="ts">
-  type SegmentTone = 'default' | 'on' | 'off';
+  type SegmentTone = 'default' | 'accent' | 'on' | 'off';
 
   interface SegmentOption {
     value: string;
@@ -15,6 +15,7 @@
     value,
     disabled = false,
     align = 'start',
+    compact = false,
     onSelect,
   }: {
     name: string;
@@ -24,6 +25,7 @@
     value: string;
     disabled?: boolean;
     align?: 'start' | 'end';
+    compact?: boolean;
     onSelect: (value: string) => void;
   } = $props();
 
@@ -106,14 +108,18 @@
 </script>
 
 <fieldset
-  class:align-end={align === 'end'}
+  class={[align === 'end' && 'align-end', compact && 'compact']}
   aria-describedby={descriptionId}
   use:animateSelection={value}
   {disabled}
 >
   <legend>{label}</legend>
   {#each options as option (option.value)}
-    <label class:segment-on={option.tone === 'on'} class:segment-off={option.tone === 'off'}>
+    <label
+      class:segment-accent={option.tone === 'accent'}
+      class:segment-on={option.tone === 'on'}
+      class:segment-off={option.tone === 'off'}
+    >
       <input
         type="radio"
         {name}
@@ -145,6 +151,16 @@
 
   fieldset.align-end {
     justify-self: end;
+  }
+
+  fieldset.compact {
+    height: var(--control-height-compact);
+  }
+
+  fieldset.compact .segment-label {
+    font-size: var(--font-size-micro);
+    min-width: 2.25rem;
+    padding: 0 8px;
   }
 
   legend {
@@ -205,14 +221,21 @@
     font-weight: 600;
     height: 100%;
     justify-content: center;
+    line-height: 1;
     padding: 0 0.5rem;
     position: relative;
-    transition: color 180ms ease-out;
+    transition:
+      color 180ms ease-out,
+      transform var(--duration-press) var(--ease-standard);
     z-index: 3;
   }
 
   input:checked ~ .segment-label {
     color: var(--signal);
+  }
+
+  .segment-accent input:checked ~ .segment-label {
+    color: var(--brand-action-text);
   }
 
   .segment-on input:checked ~ .segment-label {
@@ -227,6 +250,10 @@
     color: var(--text);
   }
 
+  label:active input:not(:disabled) ~ .segment-label {
+    transform: scale(0.97);
+  }
+
   .segment-fill {
     background: var(--signal-tint);
     border-radius: calc(var(--r-ctl) - 3px);
@@ -237,6 +264,10 @@
     transform-origin: left center;
     will-change: transform;
     z-index: 2;
+  }
+
+  .segment-accent .segment-fill {
+    background: var(--brand-action-tint);
   }
 
   .segment-on .segment-fill {

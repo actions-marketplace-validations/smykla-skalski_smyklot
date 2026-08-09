@@ -2,6 +2,7 @@
   import { fuzzyCandidates } from '../lib/fuzzy';
   import type { PanelTarget } from '../lib/types';
   import Avatar from './Avatar.svelte';
+  import Icon from './Icon.svelte';
 
   const {
     global,
@@ -90,7 +91,7 @@
   }
 </script>
 
-<svelte:document onpointerdown={outside} onkeydown={escape} />
+<svelte:document onpointerdown={outside} onkeydowncapture={escape} />
 
 {#snippet scopeOption(target: PanelTarget)}
   {@const selected = !global && target.id === targetId}
@@ -106,13 +107,11 @@
     <Avatar account={target.account} size={26} />
     <span class="option-copy">
       <strong>{target.account.display_name}</strong>
-      <span
-        >@{target.account.login} · {target.type === 'Organization'
-          ? 'Organization'
-          : 'Personal'}</span
-      >
+      <span>@{target.account.login}</span>
     </span>
-    <span class="option-check" aria-hidden="true">{selected ? '✓' : ''}</span>
+    <span class="option-check" aria-hidden="true">
+      {#if selected}<Icon name="success" size={16} />{/if}
+    </span>
   </button>
 {/snippet}
 
@@ -124,7 +123,7 @@
 >
   <summary bind:this={trigger} aria-label={label}>
     {#if global}
-      <span class="global-mark" aria-hidden="true"></span>
+      <span class="global-mark" aria-hidden="true"><Icon name="globe" size={16} /></span>
       <span class="scope-copy">
         <strong>Global</strong>
         {#if variant === 'field'}<small>All installations</small>{/if}
@@ -136,13 +135,13 @@
         {#if variant === 'field'}<small>@{selectedTarget.account.login}</small>{/if}
       </span>
     {/if}
-    <span class="scope-chevron" aria-hidden="true"></span>
+    <span class="scope-chevron" aria-hidden="true"><Icon name="chevron-down" size={16} /></span>
   </summary>
 
   <div class="scope-popover">
     <label class="scope-search">
       <span class="visually-hidden">Search user scopes</span>
-      <span class="search-icon" aria-hidden="true"></span>
+      <span class="search-icon" aria-hidden="true"><Icon name="search" size={18} /></span>
       <input
         class="text-input"
         type="search"
@@ -163,12 +162,14 @@
           onclick={() => choose(null)}
           onkeydown={move}
         >
-          <span class="global-mark" aria-hidden="true"></span>
+          <span class="global-mark" aria-hidden="true"><Icon name="globe" size={16} /></span>
           <span class="option-copy">
             <strong>Global</strong>
             <span>Access across all installations</span>
           </span>
-          <span class="option-check" aria-hidden="true">{global ? '✓' : ''}</span>
+          <span class="option-check" aria-hidden="true">
+            {#if global}<Icon name="success" size={16} />{/if}
+          </span>
         </button>
         <div class="scope-separator" aria-hidden="true"></div>
       {/if}
@@ -181,7 +182,7 @@
       {/if}
 
       {#if personalCandidates.length > 0}
-        <p class="scope-group-label" aria-hidden="true">Personal installations</p>
+        <p class="scope-group-label" aria-hidden="true">Personal</p>
         {#each personalCandidates as target (target.id)}
           {@render scopeOption(target)}
         {/each}
@@ -198,24 +199,28 @@
   .scope-picker {
     min-width: 0;
     position: relative;
-    z-index: 30;
+  }
+
+  .scope-picker[open] {
+    z-index: var(--layer-popover);
   }
 
   summary {
     align-items: center;
-    background: var(--control-surface);
+    background: var(--control-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--r-ctl);
     display: flex;
     gap: 0.5rem;
-    height: var(--control-height);
+    height: var(--local-control-height, var(--control-height));
+    line-height: 1;
     max-width: 18rem;
     min-width: 11rem;
     padding: 0 0.625rem;
     transition:
-      background-color 120ms ease-out,
-      border-color 120ms ease-out,
-      transform 80ms ease-out;
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out),
+      transform var(--duration-press) var(--ease-out);
     user-select: none;
   }
 
@@ -229,8 +234,8 @@
 
   summary:hover,
   .scope-picker[open] summary {
-    background: var(--strip-lift);
-    border-color: color-mix(in srgb, var(--dim) 56%, transparent);
+    background: var(--control-bg-hover);
+    border-color: var(--control-border-hover);
   }
 
   summary:active {
@@ -279,54 +284,32 @@
     flex: none;
     height: 1.375rem;
     justify-content: center;
-    position: relative;
     width: 1.375rem;
   }
 
-  .global-mark::before {
-    border: 1px solid currentColor;
-    border-radius: 50%;
-    content: '';
-    height: 0.62rem;
-    position: absolute;
-    width: 0.62rem;
-  }
-
-  .global-mark::after {
-    border-bottom: 1px solid currentColor;
-    border-top: 1px solid currentColor;
-    content: '';
-    height: 0.22rem;
-    position: absolute;
-    width: 0.62rem;
-  }
-
   .scope-chevron {
-    border-bottom: 1.5px solid var(--dim);
-    border-right: 1.5px solid var(--dim);
+    color: var(--text-muted);
+    display: grid;
     flex: none;
-    height: 0.35rem;
-    margin: -0.2rem 0.05rem 0 0.2rem;
-    transform: rotate(45deg);
-    width: 0.35rem;
+    place-items: center;
+    transition: transform var(--duration-fast) var(--ease-standard);
   }
 
   .scope-picker[open] .scope-chevron {
-    margin-top: 0.2rem;
-    transform: rotate(225deg);
+    transform: rotate(180deg);
   }
 
   .scope-popover {
-    background: var(--strip);
-    border: 1px solid var(--rule);
-    border-radius: var(--r-ctl);
-    box-shadow: 0 16px 40px var(--shadow);
+    background: var(--popover-bg);
+    border: 1px solid var(--popover-border);
+    border-radius: var(--radius-popover);
+    box-shadow: var(--shadow-popover);
     overflow: hidden;
     position: absolute;
     right: 0;
     top: calc(100% + 0.35rem);
     width: min(22rem, calc(100vw - 2rem));
-    z-index: 35;
+    z-index: var(--layer-popover);
   }
 
   .scope-field .scope-popover {
@@ -348,24 +331,12 @@
   }
 
   .search-icon {
-    border: 1.5px solid var(--dim);
-    border-radius: 50%;
-    height: 0.55rem;
+    color: var(--text-muted);
+    display: grid;
     left: 1.25rem;
+    place-items: center;
     position: absolute;
-    top: 1.35rem;
-    width: 0.55rem;
-  }
-
-  .search-icon::after {
-    background: var(--dim);
-    content: '';
-    height: 1px;
-    left: 0.42rem;
-    position: absolute;
-    top: 0.48rem;
-    transform: rotate(45deg);
-    width: 0.35rem;
+    top: 1.28rem;
   }
 
   .scope-options {
@@ -391,15 +362,18 @@
     padding: 0.45rem 0.55rem;
     text-align: left;
     transition:
-      background-color 120ms ease-out,
-      transform 80ms ease-out;
+      background-color var(--duration-fast) var(--ease-out),
+      transform var(--duration-press) var(--ease-out);
     width: 100%;
   }
 
   .scope-option:hover,
-  .scope-option:focus-visible,
+  .scope-option:focus-visible {
+    background: var(--interactive-hover);
+  }
+
   .scope-option.selected {
-    background: var(--strip-lift);
+    background: var(--brand-action-tint);
   }
 
   .scope-option:active {
@@ -408,7 +382,7 @@
   }
 
   .global-option {
-    background: color-mix(in srgb, var(--accent-tint) 52%, transparent);
+    background: var(--brand-action-tint);
   }
 
   .option-copy {
@@ -444,12 +418,16 @@
   }
 
   .scope-group-label {
+    background: var(--popover-bg);
     color: var(--dim);
-    font: 600 0.5625rem/1 var(--mono);
-    letter-spacing: 0.1em;
+    font: 650 var(--font-size-compact) / 1 var(--sans);
+    letter-spacing: 0.04em;
     margin: 0;
     padding: 0.45rem 0.55rem 0.25rem;
+    position: sticky;
+    top: -0.3rem;
     text-transform: uppercase;
+    z-index: 1;
   }
 
   .scope-empty {

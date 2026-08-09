@@ -14,7 +14,6 @@
     Page,
     PanelInvitation,
     PanelRole,
-    PanelTarget,
     PanelUser,
     PanelUserListStatus,
     PanelUserPageRequest,
@@ -27,11 +26,13 @@
   import Chip, { type ChipTone } from './Chip.svelte';
   import DecisionHistory from './DecisionHistory.svelte';
   import FilterMenu from './FilterMenu.svelte';
+  import Icon, { type IconName } from './Icon.svelte';
   import Modal from './Modal.svelte';
-  import PageNavigation from './PageNavigation.svelte';
-  import PageSizeSelect from './PageSizeSelect.svelte';
-  import Plate from './Plate.svelte';
-  import ScopePicker from './ScopePicker.svelte';
+  import PaginationBar from './PaginationBar.svelte';
+  import PanelHeader from './PanelHeader.svelte';
+  import RolePicker, { type RolePickerOption } from './RolePicker.svelte';
+  import SearchField from './SearchField.svelte';
+  import SegmentedControl from './SegmentedControl.svelte';
 
   type UserScope = 'global' | 'target';
   type ManagementSection = 'users' | 'invitations';
@@ -49,29 +50,32 @@
 
   const ROLE_FILTERS: FilterSection[] = [
     {
+      label: 'Roles',
       options: [
-        { value: 'owner', label: 'Owner', tone: 'bypassed' },
-        { value: 'admin', label: 'Admin', tone: 'bypassed' },
-        { value: 'editor', label: 'Editor', tone: 'default' },
-        { value: 'viewer', label: 'Viewer', tone: 'valid' },
-        { value: 'none', label: 'No access', tone: 'default' },
+        { value: 'owner', label: 'Owner' },
+        { value: 'admin', label: 'Admin' },
+        { value: 'editor', label: 'Editor' },
+        { value: 'viewer', label: 'Viewer' },
+        { value: 'none', label: 'No access' },
       ],
     },
   ];
 
   const INVITATION_ROLE_FILTERS: FilterSection[] = [
     {
+      label: 'Roles',
       options: [
-        { value: 'owner', label: 'Owner', tone: 'bypassed' },
-        { value: 'admin', label: 'Admin', tone: 'bypassed' },
-        { value: 'editor', label: 'Editor', tone: 'default' },
-        { value: 'viewer', label: 'Viewer', tone: 'valid' },
+        { value: 'owner', label: 'Owner' },
+        { value: 'admin', label: 'Admin' },
+        { value: 'editor', label: 'Editor' },
+        { value: 'viewer', label: 'Viewer' },
       ],
     },
   ];
 
   const INVITATION_STATUS_FILTERS: FilterSection[] = [
     {
+      label: 'Status',
       options: [
         { value: 'pending', label: 'Pending', tone: 'default' },
         { value: 'accepted', label: 'Accepted', tone: 'valid' },
@@ -86,7 +90,6 @@
     scope,
     targetId,
     targetName,
-    targets,
     actorTargetRole,
     canManageGlobal,
     canManageOwners,
@@ -109,7 +112,6 @@
     scope: UserScope;
     targetId: string;
     targetName: string;
-    targets: readonly PanelTarget[];
     actorTargetRole: PanelRole;
     canManageGlobal: boolean;
     canManageOwners: boolean;
@@ -171,6 +173,7 @@
 
   let addModalOpen = $state(false);
   let addButton = $state<HTMLButtonElement | null>(null);
+  let addReturnFocus = $state<HTMLElement | null>(null);
   let addScopeTargetId = $state<string | null>(null);
   let login = $state('');
   let addRole = $state<PanelRole>('viewer');
@@ -184,6 +187,7 @@
   let actionTrigger = $state<HTMLElement | null>(null);
   let reason = $state('');
   let pendingInvitation = $state<PanelInvitation | null>(null);
+  let invitationActionTrigger = $state<HTMLElement | null>(null);
   let invitationBusy = $state<string | null>(null);
   let savingAccount = $state<string | null>(null);
   let historyUser = $state<PanelUser | null>(null);
@@ -202,10 +206,12 @@
   const failure = $derived(
     actionFailure ?? (activeSection === 'users' ? userFailure : invitationFailure),
   );
-  const addScopeTarget = $derived(
-    addScopeTargetId === null
-      ? undefined
-      : targets.find((target) => target.id === addScopeTargetId),
+  const scopeOptions = $derived([
+    { value: 'global', label: 'Global', tone: 'accent' as const },
+    { value: 'target', label: targetName, tone: 'accent' as const },
+  ]);
+  const addRoleOptions = $derived(
+    addRoles().map((role) => ({ value: role, label: roleLabel(role), icon: roleIcon(role) })),
   );
   const userRequestKey = $derived(
     JSON.stringify([
@@ -231,8 +237,10 @@
       refreshVersion,
     ]),
   );
-  const userStatusFilters = $derived<FilterSection[]>([
+  const userFilterSections = $derived<FilterSection[]>([
+    ...ROLE_FILTERS,
     {
+      label: 'Status',
       options: [
         { value: 'active', label: 'Active', tone: 'valid' },
         { value: 'banned', label: 'Banned', tone: 'invalid' },
@@ -337,6 +345,20 @@
     }
   }
 
+  function clearUserFilters(): void {
+    userSearch = '';
+    userQuery = '';
+    userRoles = [];
+    userStatuses = [];
+  }
+
+  function clearInvitationFilters(): void {
+    invitationSearch = '';
+    invitationQuery = '';
+    invitationRoles = [];
+    invitationStatuses = [];
+  }
+
   async function submitAdd(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const normalizedLogin = login.trim();
@@ -344,10 +366,7 @@
     adding = true;
     actionFailure = null;
     const selectedTargetId = addScopeTargetId;
-    const destination =
-      selectedTargetId === null
-        ? 'global access'
-        : (addScopeTarget?.account.display_name ?? 'the selected organization');
+    const destination = selectedTargetId === null ? 'global access' : targetName;
     try {
       if (accessMethod === 'invite') {
         const created =
@@ -483,7 +502,7 @@
     }
   }
 
-  async function reissue(invitation: PanelInvitation): Promise<void> {
+  async function reissue(invitation: PanelInvitation, trigger: HTMLElement | null): Promise<void> {
     invitationBusy = invitation.id;
     actionFailure = null;
     try {
@@ -491,6 +510,7 @@
       generatedLink = updated.invite_url ?? '';
       accessMethod = 'invite';
       addScopeTargetId = scope === 'global' ? null : targetId;
+      addReturnFocus = trigger;
       addModalOpen = true;
       feedback = `Reissued invitation for @${invitation.account.login}`;
       await loadInvitations(invitationPageIndex);
@@ -533,6 +553,7 @@
     addScopeTargetId = scope === 'global' ? null : targetId;
     addRole = 'viewer';
     accessMethod = 'add';
+    addReturnFocus = addButton;
     addModalOpen = true;
   }
 
@@ -540,12 +561,6 @@
     addModalOpen = false;
     generatedLink = '';
     login = '';
-  }
-
-  function selectAddScope(nextTarget: string | null): void {
-    addScopeTargetId = nextTarget;
-    const roles = addRoles(nextTarget);
-    if (!roles.includes(addRole)) addRole = roles[0] ?? 'viewer';
   }
 
   function addScopeMatchesCurrent(): boolean {
@@ -563,10 +578,15 @@
     event.preventDefault();
     const next = event.key === 'ArrowLeft' || event.key === 'Home' ? 'users' : 'invitations';
     activeSection = next;
-    const tab = (event.currentTarget as HTMLElement)
-      .closest<HTMLElement>('[role="tablist"]')
-      ?.querySelector<HTMLButtonElement>(`#${next}-list-tab`);
-    tab?.focus();
+    queueMicrotask(() => document.querySelector<HTMLButtonElement>(`#${next}-list-tab`)?.focus());
+  }
+
+  function selectScopeMode(value: string): void {
+    if (value === 'global') {
+      onScope(null);
+    } else if (value === 'target') {
+      onScope(targetId);
+    }
   }
 
   function selectUserSort(column: UserSortColumn): void {
@@ -613,12 +633,6 @@
     return undefined;
   }
 
-  function sortGlyph(direction: SortDirection | undefined): string {
-    if (direction === 'ascending') return '▲';
-    if (direction === 'descending') return '▼';
-    return '◇';
-  }
-
   function hasDecisionHistory(user: PanelUser): boolean {
     return user.status === 'banned' || user.target_access?.suspended === true;
   }
@@ -649,10 +663,6 @@
     historyUser = null;
   }
 
-  function selectScope(nextTarget: string | null): void {
-    onScope(nextTarget);
-  }
-
   function selectUserPage(index: number): void {
     if (loadingUsers || index === userPageIndex) return;
     userPageIndex = Math.min(userPageCount - 1, Math.max(0, index));
@@ -670,15 +680,22 @@
     if (scope === 'global') {
       return [
         user.status === 'banned'
-          ? { id: 'unban', label: 'Unban user', description: 'Restore global access' }
+          ? {
+              id: 'unban',
+              icon: 'success',
+              label: 'Unban user',
+              description: 'Restore global access',
+            }
           : {
               id: 'ban',
+              icon: 'ban',
               label: 'Ban user',
               description: 'Suspend all panel access',
               tone: 'danger',
             },
         {
           id: 'remove',
+          icon: 'trash',
           label: 'Remove user',
           description: 'Revoke roles and active invitations',
           tone: 'danger',
@@ -687,15 +704,22 @@
     }
     return [
       user.target_access?.suspended === true
-        ? { id: 'restore', label: 'Restore access', description: `Allow access to ${targetName}` }
+        ? {
+            id: 'restore',
+            icon: 'success',
+            label: 'Restore access',
+            description: `Allow access to ${targetName}`,
+          }
         : {
             id: 'suspend',
+            icon: 'ban',
             label: 'Suspend access',
             description: `Block access to ${targetName}`,
             tone: 'danger',
           },
       {
         id: 'remove_access',
+        icon: 'no-access',
         label: 'Remove access',
         description: 'Set the installation role to No access',
         tone: 'danger',
@@ -706,9 +730,15 @@
   function invitationActionItems(invitation: PanelInvitation): ActionMenuItem[] {
     if (invitation.status !== 'pending' && invitation.status !== 'expired') return [];
     return [
-      { id: 'reissue', label: 'Reissue invitation', description: 'Create a new 7-day link' },
+      {
+        id: 'reissue',
+        icon: 'refresh',
+        label: 'Reissue invitation',
+        description: 'Create a new 7-day link',
+      },
       {
         id: 'revoke',
+        icon: 'ban',
         label: 'Revoke invitation',
         description: 'Invalidate this invitation',
         tone: 'danger',
@@ -716,10 +746,15 @@
     ];
   }
 
-  function chooseInvitationAction(invitation: PanelInvitation, action: string): void {
+  function chooseInvitationAction(
+    invitation: PanelInvitation,
+    action: string,
+    trigger: HTMLElement | null,
+  ): void {
     if (action === 'reissue') {
-      void reissue(invitation);
+      void reissue(invitation, trigger);
     } else if (action === 'revoke') {
+      invitationActionTrigger = trigger;
       pendingInvitation = invitation;
     }
   }
@@ -736,10 +771,7 @@
         ? ['viewer', 'editor', 'admin', 'owner']
         : ['viewer', 'editor', 'admin'];
     }
-    const target = targets.find((candidate) => candidate.id === selectedTargetId);
-    return target?.effective_role === 'owner'
-      ? ['viewer', 'editor', 'admin']
-      : ['viewer', 'editor'];
+    return actorTargetRole === 'owner' ? ['viewer', 'editor', 'admin'] : ['viewer', 'editor'];
   }
 
   function targetRoleOptions(): Array<{ value: string; label: string }> {
@@ -762,6 +794,22 @@
     ];
     if (canManageOwners) options.push({ value: 'owner', label: 'Owner' });
     return options;
+  }
+
+  function selectableRoleOptions(user: PanelUser): RolePickerOption[] {
+    if (scope === 'global') {
+      return globalRoleOptions().map((option) => ({
+        ...option,
+        icon: roleIcon(option.value),
+      }));
+    }
+    return targetRoleOptions().map((option) => ({
+      ...option,
+      icon:
+        option.value === 'inherit'
+          ? roleIcon(user.global_role)
+          : roleIcon(option.value as PanelRole),
+    }));
   }
 
   function selectedRole(user: PanelUser): string {
@@ -808,26 +856,44 @@
     return 'stop';
   }
 
+  function invitationStatusLabel(status: InvitationStatus): string {
+    return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+
   function roleLabel(role: PanelRole): string {
     if (role === 'none') return 'No access';
     return role[0]?.toLocaleUpperCase() + role.slice(1);
   }
 
-  function roleLevel(role: PanelRole): number {
-    return ['none', 'viewer', 'editor', 'admin', 'owner'].indexOf(role);
+  function roleIcon(role: PanelRole): IconName {
+    if (role === 'owner') return 'owner';
+    if (role === 'admin') return 'admin';
+    if (role === 'editor') return 'editor';
+    if (role === 'viewer') return 'viewer';
+    return 'no-access';
   }
 
-  function selectedSummary(values: readonly string[], fallback: string): string {
-    if (values.length === 0) return fallback;
-    if (values.length === 1) return roleLabel(values[0] as PanelRole);
-    return `${values.length} selected`;
+  function filterSummary(count: number): string {
+    if (count === 0) return 'Filters';
+    return `${count} filter${count === 1 ? '' : 's'}`;
   }
 
-  function resultSummary(page: Page<unknown> | null, index: number, limit: number): string {
-    if (page === null || page.total === 0) return '0 results';
-    const start = index * limit + 1;
-    const end = Math.min(start + page.items.length - 1, page.total);
-    return `${start}–${end} of ${page.total}`;
+  function selectUserFilters(values: string[]): void {
+    userRoles = values.filter((value): value is PanelRole =>
+      ['owner', 'admin', 'editor', 'viewer', 'none'].includes(value),
+    );
+    userStatuses = values.filter((value): value is PanelUserListStatus =>
+      ['active', 'banned', 'suspended'].includes(value),
+    );
+  }
+
+  function selectInvitationFilters(values: string[]): void {
+    invitationRoles = values.filter((value): value is Exclude<PanelRole, 'none'> =>
+      ['owner', 'admin', 'editor', 'viewer'].includes(value),
+    );
+    invitationStatuses = values.filter((value): value is InvitationStatus =>
+      ['pending', 'accepted', 'expired', 'declined', 'revoked'].includes(value),
+    );
   }
 
   function actionTitle(): string {
@@ -876,391 +942,387 @@
 {#snippet sortButton(label: string, direction: SortDirection | undefined, onSelect: () => void)}
   <button class="sort-button" type="button" onclick={onSelect}>
     <span>{label}</span>
-    <span class="sort-indicator" aria-hidden="true">{sortGlyph(direction)}</span>
+    <span
+      class:ascending={direction === 'ascending'}
+      class:descending={direction === 'descending'}
+      class="sort-indicator"
+      aria-hidden="true"
+    >
+      <Icon name="sort" size={14} />
+    </span>
   </button>
 {/snippet}
 
 {#snippet roleBadge(role: PanelRole)}
   <span class="role-badge role-{role}">
-    <span class="role-level" aria-hidden="true">
-      {#each [0, 1, 2, 3] as level (level)}
-        <span class:filled={level < roleLevel(role)}></span>
-      {/each}
-    </span>
+    <Icon name={roleIcon(role)} size={14} />
     <span>{roleLabel(role)}</span>
   </span>
 {/snippet}
 
 {#snippet headerActions()}
-  <div class="header-actions">
-    <div class="scope-control">
-      <span class="scope-label">Scope</span>
-      <ScopePicker
-        global={scope === 'global'}
-        {targetId}
-        {targets}
-        canSelectGlobal={canManageGlobal}
-        onSelect={selectScope}
+  {#if canManageGlobal}
+    <div class="scope-mode">
+      <span>Access scope</span>
+      <SegmentedControl
+        name="user-access-scope"
+        label="Access scope"
+        options={scopeOptions}
+        value={scope}
+        align="end"
+        compact
+        onSelect={selectScopeMode}
       />
     </div>
-  </div>
+  {:else}
+    <span class="scope-context">
+      <Icon name="organization" size={16} />
+      <span>{targetName}</span>
+    </span>
+  {/if}
 {/snippet}
 
-<Plate label="Users" status={headerActions}>
-  <div class="list-tabs">
-    <div class="tab-options" role="tablist" aria-label="User management lists">
+<section class="plate user-management" aria-labelledby="user-management-heading">
+  <PanelHeader
+    id="user-management-heading"
+    title="Users"
+    description="Manage roles, invitations, and access decisions"
+    actions={headerActions}
+  />
+
+  <div class="user-management-body">
+    <div class="management-navigation">
+      <div class="section-tabs" role="tablist" aria-label="User management lists">
+        <button
+          id="users-list-tab"
+          class="section-tab"
+          class:selected={activeSection === 'users'}
+          type="button"
+          role="tab"
+          aria-selected={activeSection === 'users'}
+          aria-controls="users-list-panel"
+          tabindex={activeSection === 'users' ? 0 : -1}
+          onclick={() => selectSection('users')}
+          onkeydown={moveSection}
+        >
+          <span>Users</span>
+          <span class="section-count">{userPage?.total ?? '…'}</span>
+        </button>
+        <button
+          id="invitations-list-tab"
+          class="section-tab"
+          class:selected={activeSection === 'invitations'}
+          type="button"
+          role="tab"
+          aria-selected={activeSection === 'invitations'}
+          aria-controls="invitations-list-panel"
+          tabindex={activeSection === 'invitations' ? 0 : -1}
+          onclick={() => selectSection('invitations')}
+          onkeydown={moveSection}
+        >
+          <span>Invitations</span>
+          <span class="section-count">{invitationPage?.total ?? '…'}</span>
+        </button>
+      </div>
+      <div class="stable-feedback" aria-live="polite">{feedback}</div>
       <button
-        id="users-list-tab"
-        class="list-tab"
-        class:selected={activeSection === 'users'}
+        class="btn btn-signal tab-add"
         type="button"
-        role="tab"
-        aria-selected={activeSection === 'users'}
-        aria-controls="users-list-panel"
-        tabindex={activeSection === 'users' ? 0 : -1}
-        onclick={() => selectSection('users')}
-        onkeydown={moveSection}
+        bind:this={addButton}
+        onclick={openAddModal}
       >
-        <span>Users</span>
-        <span class="tab-count mono">{userPage?.total ?? '—'}</span>
-      </button>
-      <button
-        id="invitations-list-tab"
-        class="list-tab"
-        class:selected={activeSection === 'invitations'}
-        type="button"
-        role="tab"
-        aria-selected={activeSection === 'invitations'}
-        aria-controls="invitations-list-panel"
-        tabindex={activeSection === 'invitations' ? 0 : -1}
-        onclick={() => selectSection('invitations')}
-        onkeydown={moveSection}
-      >
-        <span>Invitations</span>
-        <span class="tab-count mono">{invitationPage?.total ?? '—'}</span>
+        <Icon name="user-plus" size={17} />
+        <span class="button-label">Add user</span>
       </button>
     </div>
-    <button
-      class="btn btn-signal tab-add"
-      type="button"
-      bind:this={addButton}
-      onclick={openAddModal}
-    >
-      <span class="add-icon" aria-hidden="true"></span>
-      Add user
-    </button>
-  </div>
 
-  <div class="stable-feedback" aria-live="polite">{feedback}</div>
-  {#if failure !== null}<p class="form-error" role="alert">{failure}</p>{/if}
+    {#if failure !== null}<p class="form-error" role="alert">{failure}</p>{/if}
 
-  {#if activeSection === 'users'}
-    <div id="users-list-panel" role="tabpanel" aria-labelledby="users-list-tab">
-      <div class="management-toolbar" aria-label="User list controls">
-        <label class="search-field">
-          <span class="visually-hidden">Search users</span>
-          <span class="search-icon" aria-hidden="true"></span>
-          <input
-            class="text-input"
-            type="search"
+    {#if activeSection === 'users'}
+      <div id="users-list-panel" role="tabpanel" aria-labelledby="users-list-tab">
+        <div class="management-toolbar" aria-label="User list controls">
+          <SearchField
+            label="Search users"
             placeholder="Search users"
-            bind:value={userSearch}
+            value={userSearch}
+            onInput={(value) => (userSearch = value)}
           />
-        </label>
-        <FilterMenu
-          label="Roles"
-          summary={selectedSummary(userRoles, 'All roles')}
-          hint="Show users with any selected role"
-          sections={ROLE_FILTERS}
-          selected={userRoles}
-          multiple
-          onChange={(values) => (userRoles = values as PanelRole[])}
-        />
-        <FilterMenu
-          label="Status"
-          summary={userStatuses.length === 0 ? 'All statuses' : `${userStatuses.length} selected`}
-          hint="Show users with any selected status"
-          sections={userStatusFilters}
-          selected={userStatuses}
-          multiple
-          onChange={(values) => (userStatuses = values as PanelUserListStatus[])}
-        />
-        <PageSizeSelect
-          value={userLimit}
-          label="Users per page above results"
-          onSelect={(value) => (userLimit = value)}
-        />
-      </div>
-
-      <div class:loading={loadingUsers} class="user-results" aria-busy={loadingUsers}>
-        {#if loadingUsers && userPage === null}
-          <p class="result-state dim">Reading users…</p>
-        {:else if users.length === 0}
-          <p class="result-state dim">
-            {userQuery === '' && userRoles.length === 0 && userStatuses.length === 0
-              ? 'No users in this scope'
-              : 'No users match these filters'}
-          </p>
-        {:else}
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <div class="user-table-wrap" role="region" aria-label="Panel users" tabindex="0">
-            <table class="user-table">
-              <caption class="visually-hidden">
-                Panel users. Select a sortable column header to change the sort order.
-              </caption>
-              <thead>
-                <tr>
-                  <th aria-sort={userSortDirection('name')}>
-                    {@render sortButton('User', userSortDirection('name'), () =>
-                      selectUserSort('name'),
-                    )}
-                  </th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th aria-sort={userSortDirection('last_login')}>
-                    {@render sortButton('Last login', userSortDirection('last_login'), () =>
-                      selectUserSort('last_login'),
-                    )}
-                  </th>
-                  <th><span class="visually-hidden">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each users as user (user.account.id)}
-                  <tr
-                    class:history-row={hasDecisionHistory(user)}
-                    tabindex={hasDecisionHistory(user) ? 0 : undefined}
-                    onclick={(event) => clickHistoryRow(event, user)}
-                    onkeydown={(event) => keyHistoryRow(event, user)}
-                  >
-                    <th scope="row">
-                      <span class="user-identity">
-                        <Avatar account={user.account} size={32} />
-                        <span>
-                          <strong>{user.account.display_name}</strong>
-                          <span class="user-login mono">@{user.account.login}</span>
-                          {#if hasDecisionHistory(user)}
-                            <span class="visually-hidden">
-                              Select this row to review access decision history
-                            </span>
-                          {/if}
-                        </span>
-                      </span>
-                    </th>
-                    <td>
-                      {#if user.manageable}
-                        <select
-                          class="select-input role-select"
-                          aria-label="Role for {user.account.login}"
-                          value={selectedRole(user)}
-                          disabled={savingAccount === user.account.id}
-                          onchange={(event) => void changeRole(user, event.currentTarget.value)}
-                        >
-                          {#if scope === 'global'}
-                            {#each globalRoleOptions() as role (role.value)}
-                              <option value={role.value}>{role.label}</option>
-                            {/each}
-                          {:else}
-                            {#each targetRoleOptions() as role (role.value)}
-                              <option value={role.value}>{role.label}</option>
-                            {/each}
-                          {/if}
-                        </select>
-                      {:else}
-                        {@render roleBadge(shownRole(user))}
-                      {/if}
-                    </td>
-                    <td>
-                      <Chip tone={statusTone(user)} dot>{statusLabel(user)}</Chip>
-                    </td>
-                    <td class="last-login">
-                      {#if user.last_login_at === undefined}
-                        <span class="dim">Never</span>
-                      {:else}
-                        <time
-                          datetime={user.last_login_at}
-                          title={formatTimestamp(user.last_login_at)}
-                        >
-                          {formatRelative(user.last_login_at, now)}
-                        </time>
-                      {/if}
-                    </td>
-                    <td class="row-actions">
-                      {#if user.manageable}
-                        <ActionMenu
-                          label={`Actions for @${user.account.login}`}
-                          items={userActionItems(user)}
-                          onSelect={(action) => beginAction(user, action as UserAction)}
-                        />
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
-      </div>
-
-      <div class="pagination-footer">
-        <span class="result-summary mono">{resultSummary(userPage, userPageIndex, userLimit)}</span>
-        <div class="pagination-actions">
-          <PageNavigation
-            pageIndex={userPageIndex}
-            pageCount={userPageCount}
-            disabled={loadingUsers}
-            onSelect={selectUserPage}
-          />
-          <PageSizeSelect
-            value={userLimit}
-            label="Users per page below results"
-            onSelect={(value) => (userLimit = value)}
+          <FilterMenu
+            label="User filters"
+            summary={filterSummary(userRoles.length + userStatuses.length)}
+            hint="Filter by role or access status"
+            sections={userFilterSections}
+            selected={[...userRoles, ...userStatuses]}
+            multiple
+            align="end"
+            wide
+            showIcon
+            onChange={selectUserFilters}
           />
         </div>
-      </div>
-    </div>
-  {:else}
-    <div id="invitations-list-panel" role="tabpanel" aria-labelledby="invitations-list-tab">
-      <div class="management-toolbar" aria-label="Invitation list controls">
-        <label class="search-field">
-          <span class="visually-hidden">Search invitations</span>
-          <span class="search-icon" aria-hidden="true"></span>
-          <input
-            class="text-input"
-            type="search"
-            placeholder="Search invitations"
-            bind:value={invitationSearch}
-          />
-        </label>
-        <FilterMenu
-          label="Invitation roles"
-          summary={selectedSummary(invitationRoles, 'All roles')}
-          hint="Show invitations with any selected role"
-          sections={INVITATION_ROLE_FILTERS}
-          selected={invitationRoles}
-          multiple
-          onChange={(values) => (invitationRoles = values as Exclude<PanelRole, 'none'>[])}
-        />
-        <FilterMenu
-          label="Invitation status"
-          summary={invitationStatuses.length === 0
-            ? 'All statuses'
-            : `${invitationStatuses.length} selected`}
-          hint="Show invitations with any selected status"
-          sections={INVITATION_STATUS_FILTERS}
-          selected={invitationStatuses}
-          multiple
-          onChange={(values) => (invitationStatuses = values as InvitationStatus[])}
-        />
-        <PageSizeSelect
-          value={invitationLimit}
-          label="Invitations per page above results"
-          onSelect={(value) => (invitationLimit = value)}
-        />
-      </div>
 
-      <div
-        class:loading={loadingInvitations}
-        class="invitation-results"
-        aria-busy={loadingInvitations}
-      >
-        {#if loadingInvitations && invitationPage === null}
-          <p class="result-state dim">Reading invitations…</p>
-        {:else if invitations.length === 0}
-          <p class="result-state dim">
-            {invitationQuery === '' &&
-            invitationRoles.length === 0 &&
-            invitationStatuses.length === 0
-              ? 'No invitations in this scope'
-              : 'No invitations match these filters'}
-          </p>
-        {:else}
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <div class="user-table-wrap" role="region" aria-label="Panel invitations" tabindex="0">
-            <table class="user-table invitation-table">
-              <caption class="visually-hidden">
-                Panel invitations. Select a sortable column header to change the sort order.
-              </caption>
-              <thead>
-                <tr>
-                  <th aria-sort={invitationSortDirection('name')}>
-                    {@render sortButton('User', invitationSortDirection('name'), () =>
-                      selectInvitationSort('name'),
-                    )}
-                  </th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th aria-sort={invitationSortDirection('expires')}>
-                    {@render sortButton('Expires', invitationSortDirection('expires'), () =>
-                      selectInvitationSort('expires'),
-                    )}
-                  </th>
-                  <th><span class="visually-hidden">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each invitations as invitation (invitation.id)}
+        <div class:loading={loadingUsers} class="user-results" aria-busy={loadingUsers}>
+          {#if loadingUsers && userPage === null}
+            <div class="table-skeleton" aria-hidden="true">
+              {#each [0, 1, 2, 3, 4, 5] as index (index)}
+                <span></span>
+              {/each}
+            </div>
+            <p class="visually-hidden" role="status">Loading users</p>
+          {:else if users.length === 0}
+            {@const hasUserFilters =
+              userQuery !== '' || userRoles.length > 0 || userStatuses.length > 0}
+            <div class="result-state dim">
+              <strong>{hasUserFilters ? 'No users match' : 'No users in this scope'}</strong>
+              <span>
+                {hasUserFilters
+                  ? 'Try another search or clear the current filters'
+                  : 'Added users will appear here'}
+              </span>
+              {#if hasUserFilters}
+                <button class="btn" type="button" onclick={clearUserFilters}>Clear filters</button>
+              {/if}
+            </div>
+          {:else}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <div class="user-table-wrap" role="region" aria-label="Panel users" tabindex="0">
+              <table class="user-table">
+                <caption class="visually-hidden">
+                  Panel users. Select a sortable column header to change the sort order.
+                </caption>
+                <thead>
                   <tr>
-                    <th scope="row">
-                      <span class="user-identity">
-                        <Avatar account={invitation.account} size={32} />
-                        <span>
-                          <strong>{invitation.account.display_name}</strong>
-                          <span class="user-login mono">@{invitation.account.login}</span>
-                        </span>
-                      </span>
+                    <th aria-sort={userSortDirection('name')}>
+                      {@render sortButton('User', userSortDirection('name'), () =>
+                        selectUserSort('name'),
+                      )}
                     </th>
-                    <td>{@render roleBadge(invitation.role)}</td>
-                    <td
-                      ><Chip tone={invitationTone(invitation.status)} dot>{invitation.status}</Chip
-                      ></td
-                    >
-                    <td class="last-login">
-                      <time
-                        datetime={invitation.expires_at}
-                        title={formatTimestamp(invitation.expires_at)}
-                      >
-                        {formatDateTime(invitation.expires_at)}
-                      </time>
-                    </td>
-                    <td class="row-actions">
-                      {#if invitationActionItems(invitation).length > 0}
-                        <ActionMenu
-                          label={`Actions for @${invitation.account.login} invitation`}
-                          items={invitationActionItems(invitation)}
-                          onSelect={(action) => chooseInvitationAction(invitation, action)}
-                        />
-                      {/if}
-                    </td>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th aria-sort={userSortDirection('last_login')}>
+                      {@render sortButton('Last login', userSortDirection('last_login'), () =>
+                        selectUserSort('last_login'),
+                      )}
+                    </th>
+                    <th><span class="visually-hidden">Actions</span></th>
                   </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
-      </div>
+                </thead>
+                <tbody>
+                  {#each users as user (user.account.id)}
+                    <tr
+                      class:history-row={hasDecisionHistory(user)}
+                      tabindex={hasDecisionHistory(user) ? 0 : undefined}
+                      onclick={(event) => clickHistoryRow(event, user)}
+                      onkeydown={(event) => keyHistoryRow(event, user)}
+                    >
+                      <th scope="row">
+                        <span class="user-identity">
+                          <Avatar account={user.account} size={32} />
+                          <span>
+                            <strong>{user.account.display_name}</strong>
+                            <span class="user-login mono">@{user.account.login}</span>
+                            {#if hasDecisionHistory(user)}
+                              <span class="visually-hidden">
+                                Select this row to review access decision history
+                              </span>
+                            {/if}
+                          </span>
+                        </span>
+                      </th>
+                      <td data-label="Role">
+                        {#if user.manageable}
+                          <RolePicker
+                            label="Role for {user.account.login}"
+                            value={selectedRole(user)}
+                            options={selectableRoleOptions(user)}
+                            disabled={savingAccount === user.account.id}
+                            onSelect={(value) => void changeRole(user, value)}
+                          />
+                        {:else}
+                          {@render roleBadge(shownRole(user))}
+                        {/if}
+                      </td>
+                      <td data-label="Status">
+                        <Chip tone={statusTone(user)} dot>{statusLabel(user)}</Chip>
+                      </td>
+                      <td class="last-login" data-label="Last login">
+                        {#if user.last_login_at === undefined}
+                          <span class="dim">Never</span>
+                        {:else}
+                          <time
+                            datetime={user.last_login_at}
+                            title={formatTimestamp(user.last_login_at)}
+                          >
+                            {formatRelative(user.last_login_at, now)}
+                          </time>
+                        {/if}
+                      </td>
+                      <td class="row-actions" data-label="Actions">
+                        {#if user.manageable}
+                          <ActionMenu
+                            label={`Actions for @${user.account.login}`}
+                            items={userActionItems(user)}
+                            onSelect={(action, trigger) =>
+                              beginAction(user, action as UserAction, trigger ?? undefined)}
+                          />
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
 
-      <div class="pagination-footer">
-        <span class="result-summary mono">
-          {resultSummary(invitationPage, invitationPageIndex, invitationLimit)}
-        </span>
-        <div class="pagination-actions">
-          <PageNavigation
-            pageIndex={invitationPageIndex}
-            pageCount={invitationPageCount}
-            disabled={loadingInvitations}
-            onSelect={selectInvitationPage}
+        <PaginationBar
+          label="Users"
+          pageIndex={userPageIndex}
+          pageCount={userPageCount}
+          pageSize={userLimit}
+          itemCount={users.length}
+          total={userPage?.total ?? 0}
+          disabled={loadingUsers}
+          onPageSelect={selectUserPage}
+          onPageSizeSelect={(value) => (userLimit = value)}
+        />
+      </div>
+    {:else}
+      <div id="invitations-list-panel" role="tabpanel" aria-labelledby="invitations-list-tab">
+        <div class="management-toolbar" aria-label="Invitation list controls">
+          <SearchField
+            label="Search invitations"
+            placeholder="Search invitations"
+            value={invitationSearch}
+            onInput={(value) => (invitationSearch = value)}
           />
-          <PageSizeSelect
-            value={invitationLimit}
-            label="Invitations per page below results"
-            onSelect={(value) => (invitationLimit = value)}
+          <FilterMenu
+            label="Invitation filters"
+            summary={filterSummary(invitationRoles.length + invitationStatuses.length)}
+            hint="Filter by role or invitation status"
+            sections={[...INVITATION_ROLE_FILTERS, ...INVITATION_STATUS_FILTERS]}
+            selected={[...invitationRoles, ...invitationStatuses]}
+            multiple
+            align="end"
+            wide
+            showIcon
+            onChange={selectInvitationFilters}
           />
         </div>
+
+        <div
+          class:loading={loadingInvitations}
+          class="invitation-results"
+          aria-busy={loadingInvitations}
+        >
+          {#if loadingInvitations && invitationPage === null}
+            <div class="table-skeleton" aria-hidden="true">
+              {#each [0, 1, 2, 3, 4, 5] as index (index)}
+                <span></span>
+              {/each}
+            </div>
+            <p class="visually-hidden" role="status">Loading invitations</p>
+          {:else if invitations.length === 0}
+            {@const hasInvitationFilters =
+              invitationQuery !== '' || invitationRoles.length > 0 || invitationStatuses.length > 0}
+            <div class="result-state dim">
+              <strong>
+                {hasInvitationFilters ? 'No invitations match' : 'No invitations in this scope'}
+              </strong>
+              <span>
+                {hasInvitationFilters
+                  ? 'Try another search or clear the current filters'
+                  : 'New invitations will appear here'}
+              </span>
+              {#if hasInvitationFilters}
+                <button class="btn" type="button" onclick={clearInvitationFilters}
+                  >Clear filters</button
+                >
+              {/if}
+            </div>
+          {:else}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <div class="user-table-wrap" role="region" aria-label="Panel invitations" tabindex="0">
+              <table class="user-table invitation-table">
+                <caption class="visually-hidden">
+                  Panel invitations. Select a sortable column header to change the sort order.
+                </caption>
+                <thead>
+                  <tr>
+                    <th aria-sort={invitationSortDirection('name')}>
+                      {@render sortButton('User', invitationSortDirection('name'), () =>
+                        selectInvitationSort('name'),
+                      )}
+                    </th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th aria-sort={invitationSortDirection('expires')}>
+                      {@render sortButton('Expires', invitationSortDirection('expires'), () =>
+                        selectInvitationSort('expires'),
+                      )}
+                    </th>
+                    <th><span class="visually-hidden">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each invitations as invitation (invitation.id)}
+                    <tr>
+                      <th scope="row">
+                        <span class="user-identity">
+                          <Avatar account={invitation.account} size={32} />
+                          <span>
+                            <strong>{invitation.account.display_name}</strong>
+                            <span class="user-login mono">@{invitation.account.login}</span>
+                          </span>
+                        </span>
+                      </th>
+                      <td data-label="Role">{@render roleBadge(invitation.role)}</td>
+                      <td data-label="Status"
+                        ><Chip tone={invitationTone(invitation.status)} dot
+                          >{invitationStatusLabel(invitation.status)}</Chip
+                        ></td
+                      >
+                      <td class="last-login" data-label="Expires">
+                        <time
+                          datetime={invitation.expires_at}
+                          title={formatTimestamp(invitation.expires_at)}
+                        >
+                          {formatDateTime(invitation.expires_at)}
+                        </time>
+                      </td>
+                      <td class="row-actions" data-label="Actions">
+                        {#if invitationActionItems(invitation).length > 0}
+                          <ActionMenu
+                            label={`Actions for @${invitation.account.login} invitation`}
+                            items={invitationActionItems(invitation)}
+                            onSelect={(action, trigger) =>
+                              chooseInvitationAction(invitation, action, trigger)}
+                          />
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
+
+        <PaginationBar
+          label="Invitations"
+          pageIndex={invitationPageIndex}
+          pageCount={invitationPageCount}
+          pageSize={invitationLimit}
+          itemCount={invitations.length}
+          total={invitationPage?.total ?? 0}
+          disabled={loadingInvitations}
+          onPageSelect={selectInvitationPage}
+          onPageSizeSelect={(value) => (invitationLimit = value)}
+        />
       </div>
-    </div>
-  {/if}
-</Plate>
+    {/if}
+  </div>
+</section>
 
 {#if historyUser !== null}
   <DecisionHistory
@@ -1282,23 +1344,20 @@
   open={addModalOpen}
   title="Add user"
   description="Grant access now or send a secure invitation"
-  returnFocus={addButton}
+  returnFocus={addReturnFocus}
   onClose={closeAddModal}
 >
   <form id="add-user-form" class="add-user-form" onsubmit={submitAdd}>
     {#if generatedLink === ''}
-      <div class="form-field">
-        <span>Scope</span>
-        <ScopePicker
-          global={addScopeTargetId === null}
-          targetId={addScopeTargetId ?? targetId}
-          {targets}
-          canSelectGlobal={canManageGlobal}
-          variant="field"
-          label="Access scope"
-          onSelect={selectAddScope}
-        />
-        <small>Choose global access or one installation</small>
+      <div class="add-scope-summary">
+        <span class="add-scope-icon" aria-hidden="true">
+          <Icon name={addScopeTargetId === null ? 'globe' : 'organization'} size={18} />
+        </span>
+        <span>
+          <small>Access scope</small>
+          <strong>{addScopeTargetId === null ? 'Global' : targetName}</strong>
+        </span>
+        <small>Scope follows the Users page</small>
       </div>
 
       <fieldset class="method-picker">
@@ -1312,7 +1371,9 @@
                 value={method.value}
                 bind:group={accessMethod}
               />
-              <span class="method-icon method-{method.value}" aria-hidden="true"></span>
+              <span class="method-icon" aria-hidden="true">
+                <Icon name={method.value === 'add' ? 'user-plus' : 'pending'} size={18} />
+              </span>
               <span class="method-copy">
                 <strong>{method.label}</strong>
                 <small>{method.description}</small>
@@ -1335,14 +1396,16 @@
             data-modal-focus
           />
         </label>
-        <label class="form-field">
+        <div class="form-field">
           <span>Role</span>
-          <select class="select-input" bind:value={addRole} aria-label="Role">
-            {#each addRoles() as role (role)}
-              <option value={role}>{roleLabel(role)}</option>
-            {/each}
-          </select>
-        </label>
+          <RolePicker
+            label="Role"
+            value={addRole}
+            options={addRoleOptions}
+            variant="field"
+            onSelect={(value) => (addRole = value as PanelRole)}
+          />
+        </div>
         {#if accessMethod === 'invite'}
           <label class="form-field">
             <span>Expires after</span>
@@ -1452,6 +1515,7 @@
   open={pendingInvitation !== null}
   title={`Revoke invitation for @${pendingInvitation?.account.login ?? ''}`}
   description="The current link will stop working immediately and the audit record will remain"
+  returnFocus={invitationActionTrigger}
   onClose={() => (pendingInvitation = null)}
 >
   <div class="confirmation-note">
@@ -1475,187 +1539,169 @@
 </Modal>
 
 <style>
-  .header-actions,
-  .management-toolbar,
-  .pagination-footer,
-  .pagination-actions {
+  .management-toolbar {
     align-items: center;
     display: flex;
   }
 
-  .header-actions {
-    gap: 0.5rem;
-    margin-left: auto;
+  .user-management {
+    --local-control-height: var(--control-height-compact);
+
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    margin-bottom: 0;
+    overflow: visible;
   }
 
-  .scope-control {
+  .user-management-body {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .scope-mode {
     align-items: center;
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
-  .scope-label {
-    color: var(--dim);
-    font: 600 0.5625rem/1 var(--mono);
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
+  .scope-mode > span {
+    color: var(--text-muted);
+    font: 600 var(--font-size-compact) / 1 var(--sans);
   }
 
-  .list-tabs {
-    align-items: stretch;
-    border-bottom: 1px solid var(--rule);
+  .scope-context {
+    align-items: center;
+    background: var(--surface-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-control);
+    color: var(--text-secondary);
+    display: inline-flex;
+    font: 600 var(--font-size-compact) / 1 var(--sans);
+    gap: var(--space-2);
+    height: var(--control-height-compact);
+    padding: 0 var(--space-3);
+  }
+
+  .management-navigation {
+    align-items: center;
     display: flex;
-    margin: -1.125rem -1.125rem 0;
-    padding: 0 1.125rem;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    min-height: var(--control-height);
   }
 
-  .tab-options {
+  .section-tabs {
+    align-items: center;
+    background: var(--surface-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-control);
     display: flex;
-    gap: 0.25rem;
+    gap: var(--control-inset);
+    padding: var(--control-inset);
   }
 
-  .tab-add {
-    height: 1.875rem;
-    margin: auto 0 auto auto;
-  }
-
-  .list-tab {
+  .section-tab {
     align-items: center;
     background: transparent;
     border: 0;
-    border-bottom: 2px solid transparent;
-    color: var(--dim);
+    border-radius: calc(var(--radius-control) - var(--control-inset));
+    color: var(--text-muted);
     display: inline-flex;
-    font-size: 0.75rem;
-    font-weight: 650;
-    gap: 0.5rem;
-    min-height: 2.75rem;
-    padding: 0 0.625rem;
+    font: 650 var(--font-size-body) / 1 var(--sans);
+    gap: var(--space-2);
+    height: var(--control-height-compact);
+    min-width: 0;
+    padding: 0 var(--space-3);
     transition:
-      background-color 120ms ease-out,
-      border-color 120ms ease-out,
-      color 120ms ease-out;
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
   }
 
-  .list-tab:hover {
-    background: var(--well);
-    color: var(--text);
+  .section-tab:hover {
+    background: var(--interactive-hover);
+    color: var(--text-primary);
   }
 
-  .list-tab.selected {
-    border-bottom-color: var(--accent);
-    color: var(--text);
+  .section-tab.selected {
+    background: var(--surface-base);
+    box-shadow: 0 1px 2px var(--shadow-color);
+    color: var(--text-primary);
   }
 
-  .tab-count {
+  .section-tab:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--focus);
+    outline: 0;
+  }
+
+  .section-count {
+    color: var(--text-muted);
+    font: 600 var(--font-size-compact) / 1 var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .section-tab.selected .section-count {
+    color: var(--brand-action-text);
+  }
+
+  .tab-add {
+    height: var(--control-height-compact);
+    margin-left: 0;
+  }
+
+  .button-label {
     align-items: center;
-    background: var(--well);
-    border: 1px solid var(--rule);
-    border-radius: 999px;
-    color: var(--dim);
     display: inline-flex;
-    box-sizing: border-box;
-    font-size: 0.5625rem;
-    font-weight: 650;
-    height: 1.25rem;
-    justify-content: center;
+    height: 100%;
     line-height: 1;
-    min-width: 1.5rem;
-    padding: 0 0.375rem;
-  }
-
-  .list-tab.selected .tab-count {
-    background: var(--accent-tint);
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-    color: var(--accent);
-  }
-
-  .add-icon {
-    height: 0.75rem;
-    position: relative;
-    width: 0.75rem;
-  }
-
-  .add-icon::before,
-  .add-icon::after {
-    background: currentColor;
-    content: '';
-    left: 50%;
-    position: absolute;
-    top: 50%;
-    transform: translate(-50%, -50%);
-  }
-
-  .add-icon::before {
-    height: 1px;
-    width: 0.75rem;
-  }
-
-  .add-icon::after {
-    height: 0.75rem;
-    width: 1px;
   }
 
   .management-toolbar {
-    --page-size-control-height: 1.875rem;
-    --repository-control-height: 1.875rem;
+    background: transparent;
+    border: 0;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
+    padding: 0 0 var(--space-3);
   }
 
-  .search-field {
+  .management-toolbar :global(.search-field) {
     flex: 1 1 15rem;
-    position: relative;
-  }
-
-  .search-field .text-input {
-    font-size: 0.75rem;
-    height: var(--repository-control-height);
-    padding-left: 2rem;
-    width: 100%;
-  }
-
-  .search-icon {
-    border: 1.5px solid var(--dim);
-    border-radius: 50%;
-    height: 0.55rem;
-    left: 0.7rem;
-    position: absolute;
-    top: 0.62rem;
-    width: 0.55rem;
-  }
-
-  .search-icon::after {
-    background: var(--dim);
-    content: '';
-    height: 1px;
-    left: 0.42rem;
-    position: absolute;
-    top: 0.48rem;
-    transform: rotate(45deg);
-    width: 0.35rem;
-  }
-
-  .result-summary {
-    color: var(--dim);
-    font-size: 0.625rem;
-    margin-left: auto;
-    white-space: nowrap;
   }
 
   .stable-feedback {
     color: var(--clear);
-    font-size: 0.75rem;
-    min-height: 1.125rem;
+    font-size: var(--font-size-meta);
+    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .form-error {
-    font-size: 0.75rem;
-    margin: 0 0 0.75rem;
+    font-size: var(--font-size-meta);
+    margin: 0;
+    padding: 0 0 var(--space-3);
   }
 
-  .user-results {
-    margin-top: 1.125rem;
+  .user-results,
+  .invitation-results {
+    background: var(--surface-base);
+    border: 1px solid var(--border-subtle);
+    border-bottom: 0;
+    border-radius: var(--radius-surface) var(--radius-surface) 0 0;
+    margin-top: 0;
+    overflow: hidden;
+  }
+
+  .user-management :global(.pagination-bar) {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
   }
 
   .user-results.loading,
@@ -1664,22 +1710,68 @@
   }
 
   .result-state {
+    align-items: center;
     border: 1px dashed var(--rule);
     border-radius: var(--r-well);
+    display: flex;
+    flex-direction: column;
     font-size: 0.8125rem;
-    margin: 0;
+    gap: var(--space-2);
+    justify-content: center;
+    margin: var(--space-4);
     padding: 1.5rem;
     text-align: center;
   }
 
+  .result-state strong {
+    color: var(--text);
+  }
+
+  .table-skeleton {
+    display: grid;
+  }
+
+  .table-skeleton span {
+    animation: user-skeleton-pulse 1.35s ease-in-out infinite alternate;
+    border-bottom: 1px solid var(--rule);
+    display: block;
+    height: 3.625rem;
+    position: relative;
+  }
+
+  .table-skeleton span::before,
+  .table-skeleton span::after {
+    background: var(--surface-inset);
+    border-radius: var(--radius-control);
+    content: '';
+    height: 0.75rem;
+    left: var(--space-4);
+    position: absolute;
+    top: 1.15rem;
+    width: min(13rem, 28%);
+  }
+
+  .table-skeleton span::after {
+    left: 46%;
+    width: min(8rem, 18%);
+  }
+
+  @keyframes user-skeleton-pulse {
+    from {
+      opacity: 0.48;
+    }
+
+    to {
+      opacity: 0.88;
+    }
+  }
+
   .user-table-wrap {
-    border: 1px solid var(--rule);
-    border-radius: var(--r-well);
     overflow-x: auto;
   }
 
   .user-table-wrap:focus-visible {
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
 
@@ -1692,16 +1784,16 @@
   .user-table th,
   .user-table td {
     border-bottom: 1px solid var(--rule);
-    padding: 0.7rem 0.75rem;
+    padding: var(--space-3);
     text-align: left;
     vertical-align: middle;
   }
 
   .user-table thead th {
+    background: var(--table-header-bg);
     color: var(--dim);
-    font: 600 0.6875rem/1 var(--mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 650 var(--font-size-compact) / 1.2 var(--sans);
+    letter-spacing: 0.02em;
   }
 
   .user-table thead th:has(.sort-button) {
@@ -1718,7 +1810,7 @@
     gap: 0.45rem;
     justify-content: flex-start;
     letter-spacing: inherit;
-    padding: 0.7rem 0.75rem;
+    padding: var(--space-3);
     text-align: left;
     text-transform: inherit;
     transition:
@@ -1729,14 +1821,23 @@
 
   .sort-button:hover,
   .sort-button:focus-visible {
-    background: var(--well);
+    background: var(--interactive-hover);
     color: var(--text);
   }
 
   .sort-indicator {
-    color: var(--signal);
-    font-size: 0.55rem;
-    letter-spacing: 0;
+    color: var(--text-muted);
+    display: grid;
+    place-items: center;
+  }
+
+  .sort-indicator.ascending,
+  .sort-indicator.descending {
+    color: var(--brand-action-text);
+  }
+
+  .sort-indicator.descending {
+    transform: rotate(180deg);
   }
 
   .user-table tbody tr:last-child th,
@@ -1745,7 +1846,7 @@
   }
 
   .user-table tbody tr:hover {
-    background: var(--well);
+    background: var(--table-row-hover);
   }
 
   .user-table tbody tr.history-row {
@@ -1757,7 +1858,7 @@
   }
 
   .user-table tbody tr.history-row:focus-visible {
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
     outline-offset: -2px;
   }
 
@@ -1776,15 +1877,15 @@
   }
 
   .user-identity strong {
-    font-size: 0.875rem;
-    font-weight: 700;
+    font-size: var(--font-size-body);
+    font-weight: 600;
     line-height: 1.2;
   }
 
   .user-login {
     color: var(--dim);
-    font-size: 0.6875rem;
-    font-weight: 500;
+    font-size: var(--font-size-compact);
+    font-weight: 400;
     line-height: 1.2;
   }
 
@@ -1793,64 +1894,34 @@
     font-size: 0.75rem;
   }
 
-  .role-select {
-    font: 600 0.625rem/1 var(--sans);
-    height: 1.625rem;
-    min-width: 7.5rem;
-    padding-left: 0.55rem;
-    padding-right: 1.65rem;
+  .last-login > time,
+  .last-login > span {
+    align-items: center;
+    display: inline-flex;
+    height: var(--control-height-compact);
+    line-height: 1;
+    transform: translateY(-1px);
+    vertical-align: middle;
   }
 
   .role-badge {
     align-items: center;
-    background: var(--well);
+    background: var(--surface-inset);
     border: 1px solid var(--rule);
     border-radius: var(--r-ctl);
     color: var(--text);
     display: inline-flex;
-    font: 650 0.625rem/1 var(--mono);
+    font: 600 var(--font-size-compact) / 1 var(--sans);
     gap: 0.45rem;
-    min-height: 1.625rem;
+    min-height: 1.875rem;
     padding: 0 0.55rem;
-    text-transform: uppercase;
     white-space: nowrap;
   }
 
   .role-owner {
-    background: var(--accent-tint);
-    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-    color: var(--accent);
-  }
-
-  .role-level {
-    align-items: end;
-    display: inline-grid;
-    flex: none;
-    gap: 1px;
-    grid-template-columns: repeat(4, 2px);
-    height: 0.625rem;
-  }
-
-  .role-level > span {
-    background: var(--rule);
-    border-radius: 1px;
-    height: 0.25rem;
-  }
-
-  .role-level > span:nth-child(2) {
-    height: 0.375rem;
-  }
-
-  .role-level > span:nth-child(3) {
-    height: 0.5rem;
-  }
-
-  .role-level > span:nth-child(4) {
-    height: 0.625rem;
-  }
-
-  .role-level > span.filled {
-    background: currentColor;
+    background: var(--surface-inset);
+    border-color: var(--rule);
+    color: var(--text);
   }
 
   .row-actions {
@@ -1862,25 +1933,6 @@
     display: inline-block;
   }
 
-  .pagination-footer {
-    gap: 1rem;
-    justify-content: space-between;
-    min-height: 2.75rem;
-    padding-top: 0.75rem;
-  }
-
-  .pagination-footer .result-summary {
-    margin-left: 0;
-  }
-
-  .pagination-actions {
-    gap: 0.625rem;
-  }
-
-  .invitation-results {
-    margin-top: 1.125rem;
-  }
-
   .invitation-table {
     min-width: 44rem;
   }
@@ -1888,6 +1940,42 @@
   .add-user-form {
     display: grid;
     gap: 0.875rem;
+  }
+
+  .add-scope-summary {
+    align-items: center;
+    background: var(--surface-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-surface);
+    display: grid;
+    gap: var(--space-3);
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: var(--space-3);
+  }
+
+  .add-scope-icon {
+    align-items: center;
+    background: var(--brand-action-tint);
+    border-radius: 50%;
+    color: var(--brand-action-text);
+    display: inline-flex;
+    height: 2rem;
+    justify-content: center;
+    width: 2rem;
+  }
+
+  .add-scope-summary > span:nth-child(2) {
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  .add-scope-summary small {
+    color: var(--text-muted);
+    font-size: var(--font-size-compact);
+  }
+
+  .add-scope-summary strong {
+    font-size: var(--font-size-body);
   }
 
   .method-picker {
@@ -1937,13 +2025,14 @@
   }
 
   .method-option.selected {
-    background: var(--signal-tint);
-    border-color: color-mix(in srgb, var(--signal) 60%, transparent);
+    background: var(--brand-action-tint);
+    border-color: color-mix(in srgb, var(--brand-action) 60%, transparent);
   }
 
   .method-option:has(input:focus-visible) {
-    outline: 2px solid var(--brand);
-    outline-offset: 2px;
+    border-color: var(--focus);
+    box-shadow: inset 0 0 0 1px var(--focus);
+    outline: 0;
   }
 
   .method-option input {
@@ -1959,23 +2048,14 @@
     border-radius: 50%;
     color: var(--dim);
     display: inline-flex;
-    font: 700 0.875rem/1 var(--mono);
     height: 1.75rem;
     justify-content: center;
     width: 1.75rem;
   }
 
-  .method-icon::before {
-    content: '+';
-  }
-
-  .method-invite::before {
-    content: '↗';
-  }
-
   .method-option.selected .method-icon {
-    background: color-mix(in srgb, var(--signal) 18%, transparent);
-    color: var(--signal);
+    background: color-mix(in srgb, var(--brand-action) 18%, transparent);
+    color: var(--brand-action-text);
   }
 
   .method-copy {
@@ -2004,11 +2084,11 @@
   }
 
   .method-option.selected .method-check {
-    border-color: var(--signal);
+    border-color: var(--brand-action);
   }
 
   .method-option.selected .method-check::after {
-    background: var(--signal);
+    background: var(--brand-action);
     border-radius: 50%;
     content: '';
     inset: 2px;
@@ -2063,7 +2143,7 @@
   }
 
   .reason-textarea {
-    background: var(--control-surface);
+    background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--r-ctl);
     color: var(--text);
@@ -2126,59 +2206,138 @@
   }
 
   @media (max-width: 48rem) {
-    .header-actions {
+    .scope-mode {
       width: 100%;
     }
 
-    .header-actions :global(.scope-picker) {
+    .scope-mode :global(fieldset) {
       flex: 1;
-    }
-
-    .header-actions :global(.scope-picker summary) {
-      max-width: none;
     }
 
     .identity-grid.with-expiry {
       grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(6.5rem, 0.75fr));
     }
+
+    .user-table-wrap {
+      overflow: visible;
+      padding: var(--space-3);
+    }
+
+    .user-table {
+      display: block;
+      min-width: 0;
+    }
+
+    .user-table thead {
+      display: block;
+    }
+
+    .user-table thead tr {
+      align-items: center;
+      border: 0;
+      display: flex;
+      gap: var(--space-2);
+      padding: 0 0 var(--space-3);
+    }
+
+    .user-table thead th {
+      display: block;
+      padding: 0;
+    }
+
+    .user-table thead th:not(:has(.sort-button)) {
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    .user-table thead .sort-button {
+      background: var(--control-bg);
+      border: 1px solid var(--control-border);
+      border-radius: var(--radius-control);
+      color: var(--dim);
+      height: var(--control-height-compact);
+      padding: 0 var(--space-3);
+    }
+
+    .user-table thead .sort-button:hover,
+    .user-table thead .sort-button:focus-visible {
+      background: var(--control-bg-hover);
+      color: var(--text);
+    }
+
+    .user-table tbody {
+      display: grid;
+      gap: var(--space-2);
+    }
+
+    .user-table tbody tr {
+      background: var(--surface-raised);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-control);
+      display: grid;
+      gap: var(--space-3);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      padding: var(--space-3);
+      position: relative;
+    }
+
+    .user-table th,
+    .user-table td {
+      border: 0;
+      display: grid;
+      gap: var(--space-1);
+      padding: 0;
+    }
+
+    .user-table tbody th {
+      grid-column: 1 / -1;
+    }
+
+    .user-table td:not(.row-actions)::before {
+      color: var(--text-muted);
+      content: attr(data-label);
+      font: 650 var(--font-size-compact) / 1 var(--sans);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .user-table .row-actions {
+      position: absolute;
+      right: var(--space-3);
+      top: var(--space-3);
+    }
+
+    .user-table .user-identity {
+      min-width: 0;
+      padding-right: 2.5rem;
+    }
   }
 
   @media (max-width: 36rem) {
-    .header-actions {
-      align-items: stretch;
+    .management-navigation {
+      gap: var(--space-1);
     }
 
-    .scope-control {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      width: 100%;
-    }
-
-    .scope-control :global(.scope-picker) {
-      min-width: 0;
-      width: 100%;
-    }
-
-    .list-tabs {
-      padding-right: 0.75rem;
-    }
-
-    .list-tab {
-      padding-inline: 0.45rem;
+    .section-tab {
+      padding-inline: var(--space-2);
     }
 
     .tab-add {
+      font-size: 0;
+      gap: 0;
       padding-inline: 0.625rem;
     }
 
-    .pagination-footer {
-      align-items: flex-start;
-      flex-direction: column;
+    .add-scope-summary {
+      grid-template-columns: auto minmax(0, 1fr);
     }
 
-    .pagination-actions {
-      justify-content: space-between;
-      width: 100%;
+    .add-scope-summary > small:last-child {
+      grid-column: 2;
     }
 
     .form-grid,
@@ -2188,6 +2347,12 @@
     }
 
     .method-options {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 22rem) {
+    .user-table tbody tr {
       grid-template-columns: minmax(0, 1fr);
     }
   }

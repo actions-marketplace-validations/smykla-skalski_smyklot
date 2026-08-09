@@ -29,12 +29,16 @@
   import FileStatusIndicator from './FileStatusIndicator.svelte';
   import FilterMenu from './FilterMenu.svelte';
   import HelpTip from './HelpTip.svelte';
-  import PageNavigation from './PageNavigation.svelte';
-  import PageSizeSelect from './PageSizeSelect.svelte';
+  import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
+  import PaginationBar from './PaginationBar.svelte';
+  import PanelHeader from './PanelHeader.svelte';
+  import SearchField from './SearchField.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
   type RepositoryEnablement = 'inherit' | 'enabled' | 'disabled';
   type RepositoryFailure = { message: string; source: RepositoryFailureSource };
+  type RepositoryDetailSection = 'file' | 'behavior' | 'commands';
 
   const REPOSITORY_ENABLEMENT_OPTIONS = [
     { value: 'inherit', label: 'Default' },
@@ -108,17 +112,6 @@
       ],
     },
   ] as const satisfies readonly FilterSection[];
-  const SORT_SECTIONS = [
-    {
-      options: [
-        { value: 'name_asc', label: 'Name A–Z' },
-        { value: 'name_desc', label: 'Name Z–A' },
-        { value: 'newest', label: 'Recently updated' },
-        { value: 'oldest', label: 'Least recently updated' },
-      ],
-    },
-  ] as const satisfies readonly FilterSection[];
-
   const {
     targetId,
     refreshVersion,
@@ -151,7 +144,10 @@
   let details = $state<Record<string, RepositoryDetail>>({});
   let failures = $state<Record<string, RepositoryFailure>>({});
   let pendingEnablement = $state<Record<string, RepositoryEnablement>>({});
-  const opened = new SvelteSet<string>();
+  let detailSections = $state<Record<string, RepositoryDetailSection>>({});
+  let activeRepository = $state<RepositorySummary | null>(null);
+  let repositoryReturnFocus = $state<HTMLElement | null>(null);
+  const visibleDetails = new SvelteSet<string>();
   const working = new SvelteSet<string>();
   const pendingRefreshes = new SvelteSet<string>();
   let now = $state(Date.now());
@@ -163,8 +159,6 @@
   const repositories = $derived(page?.items ?? []);
   const total = $derived(page?.total ?? 0);
   const itemCount = $derived(repositories.length);
-  const rangeStart = $derived(total === 0 ? 0 : pageIndex * limit + 1);
-  const rangeEnd = $derived(total === 0 ? 0 : rangeStart + itemCount - 1);
   const pageCount = $derived(Math.max(1, Math.ceil(total / limit)));
   const settingSelection = $derived(
     settingFilter.mode === 'keys' ? settingFilter.keys : [settingFilter.mode],
@@ -184,7 +178,6 @@
         : `${settingFilter.keys.length} overrides`
       : optionLabel(SETTING_FILTER_SECTIONS, settingFilter.mode),
   );
-  const sortSummary = $derived(optionLabel(SORT_SECTIONS, sort));
   const hasFilters = $derived(
     appliedQuery !== '' ||
       stateFilter !== 'all' ||
@@ -233,7 +226,7 @@
     observedRefreshVersion = version;
     untrack(() => {
       void loadPage(pageIndex, filterKey);
-      refreshExpandedRepositories(version);
+      refreshVisibleRepository(version);
     });
   });
 
@@ -299,17 +292,109 @@
     void loadPage(pageIndex, filterKey);
   }
 
-  function refreshExpandedRepositories(version: number): void {
+  function clearFilters(): void {
+    search = '';
+    appliedQuery = '';
+    stateFilter = 'all';
+    fileFilters = [];
+    settingFilter = { mode: 'all' };
+  }
+
+  function refreshVisibleRepository(version: number): void {
     if (!Number.isSafeInteger(version)) return;
     untrack(() => {
-      for (const repositoryId of opened) requestRefresh(repositoryId);
+      for (const repositoryId of visibleDetails) requestRefresh(repositoryId);
     });
   }
 
-  async function toggle(repositoryId: string): Promise<void> {
-    if (opened.delete(repositoryId)) return;
-    opened.add(repositoryId);
-    if (details[repositoryId] === undefined) await refresh(repositoryId);
+  async function openRepository(
+    repository: RepositorySummary,
+    trigger: HTMLElement,
+  ): Promise<void> {
+    activeRepository = repository;
+    repositoryReturnFocus = trigger;
+    visibleDetails.clear();
+    visibleDetails.add(repository.id);
+    if (details[repository.id] === undefined) {
+      await refresh(repository.id);
+      if (activeRepository?.id !== repository.id) return;
+      await tick();
+      const section = detailSection(repository);
+      document
+        .querySelector<HTMLButtonElement>(`#repository-${repository.id}-${section}-tab`)
+        ?.focus();
+    }
+  }
+
+  function closeRepository(): void {
+    if (activeRepository !== null) visibleDetails.delete(activeRepository.id);
+    activeRepository = null;
+  }
+
+  function detailSection(repository: RepositorySummary): RepositoryDetailSection {
+    return (
+      detailSections[repository.id] ??
+      (repository.config_file_status === 'invalid' ? 'file' : 'behavior')
+    );
+  }
+
+  function selectDetailSection(repositoryId: string, section: RepositoryDetailSection): void {
+    detailSections = { ...detailSections, [repositoryId]: section };
+  }
+
+  function moveDetailSection(
+    event: KeyboardEvent,
+    repositoryId: string,
+    section: RepositoryDetailSection,
+  ): void {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const sections: readonly RepositoryDetailSection[] = ['file', 'behavior', 'commands'];
+    const current = sections.indexOf(section);
+    let next = current;
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = sections.length - 1;
+    if (event.key === 'ArrowRight') {
+      next = (current + 1) % sections.length;
+    }
+    if (event.key === 'ArrowLeft') {
+      next = (current - 1 + sections.length) % sections.length;
+    }
+    const selected = sections[next];
+    if (selected === undefined) return;
+    selectDetailSection(repositoryId, selected);
+    queueMicrotask(() =>
+      document
+        .querySelector<HTMLButtonElement>(`#repository-${repositoryId}-${selected}-tab`)
+        ?.focus(),
+    );
+  }
+
+  function configSectionCount(detail: RepositoryDetail, section: 'behavior' | 'commands'): number {
+    const keys: readonly ConfigKey[] =
+      section === 'behavior'
+        ? BOOLEAN_FIELDS.map((field) => field.key)
+        : ['command_prefix', 'allowed_commands', 'command_aliases'];
+    return keys.filter((key) => Object.hasOwn(detail.config_patch, key)).length;
+  }
+
+  function toggleNameSort(): void {
+    sort = sort === 'name_asc' ? 'name_desc' : 'name_asc';
+  }
+
+  function toggleUpdatedSort(): void {
+    sort = sort === 'newest' ? 'oldest' : 'newest';
+  }
+
+  function sortDirection(column: 'name' | 'updated'): 'ascending' | 'descending' | 'none' {
+    if (column === 'name') {
+      if (sort === 'name_asc') return 'ascending';
+      if (sort === 'name_desc') return 'descending';
+      return 'none';
+    }
+    if (sort === 'oldest') return 'ascending';
+    if (sort === 'newest') return 'descending';
+    return 'none';
   }
 
   async function refresh(
@@ -460,10 +545,6 @@
     return repository.enabled_override ? 'enabled' : 'disabled';
   }
 
-  function overrideLabel(count: number): string {
-    return `${count} ${count === 1 ? 'override' : 'overrides'}`;
-  }
-
   function optionLabel(sections: readonly FilterSection[], value: string): string {
     return (
       sections.flatMap((section) => section.options).find((option) => option.value === value)
@@ -493,13 +574,6 @@
     settingFilter = keys.length === 0 ? { mode: 'all' } : { mode: 'keys', keys };
   }
 
-  function selectSort(values: string[]): void {
-    const value = values[0];
-    if (value === 'name_asc' || value === 'name_desc' || value === 'newest' || value === 'oldest') {
-      sort = value;
-    }
-  }
-
   function isRepositoryFileStatus(value: string): value is RepositoryFileStatus {
     return FILE_STATUSES.some((status) => status === value);
   }
@@ -509,30 +583,29 @@
   }
 </script>
 
+{#snippet headerActions()}
+  <HelpTip
+    id="repository-controls-help"
+    label="About repository controls"
+    text="On and Off filter the effective state. Default follows Enable repositories by default in Settings. Open a repository to configure repository-specific settings"
+  />
+{/snippet}
+
 <section class="plate repository-panel" aria-labelledby="repositories-heading">
-  <header class="repository-header">
-    <div class="repository-heading">
-      <h2 id="repositories-heading">Installed repositories</h2>
-      <p>Choose which repositories Smyklot handles and where settings differ</p>
-    </div>
-    <HelpTip
-      id="repository-controls-help"
-      label="About repository controls"
-      text="On and Off filter the effective state. Default follows Enable repositories by default in Settings. Expand a repository to configure repository-specific settings"
-    />
-  </header>
+  <PanelHeader
+    id="repositories-heading"
+    title="Repositories"
+    description="Choose which repositories Smyklot handles and where settings differ"
+    actions={headerActions}
+  />
 
   <div class="repository-tools" bind:this={repositoryTools}>
-    <label class="search-field">
-      <span class="visually-hidden">Search repositories</span>
-      <span class="search-icon" aria-hidden="true"></span>
-      <input
-        class="text-input"
-        type="search"
-        placeholder="Search repositories"
-        bind:value={search}
-      />
-    </label>
+    <SearchField
+      label="Search repositories"
+      placeholder="Search repositories"
+      value={search}
+      onInput={(value) => (search = value)}
+    />
 
     <FilterMenu
       label="Repository state"
@@ -565,27 +638,9 @@
       wide
       onChange={selectSettingFilter}
     />
-
-    <FilterMenu
-      label="Sort repositories"
-      summary={sortSummary}
-      hint="Choose the order of the results"
-      sections={SORT_SECTIONS}
-      selected={[sort]}
-      align="end"
-      onChange={selectSort}
-    />
-
-    <div class="toolbar-rows">
-      <PageSizeSelect
-        value={limit}
-        label="Repositories per page above results"
-        onSelect={selectPageSize}
-      />
-    </div>
   </div>
 
-  <div class:loading class="repository-results" aria-busy={loading}>
+  <div class={['repository-results', loading && 'loading']} aria-busy={loading}>
     {#if problem !== null}
       <div class="result-state" role="alert">
         <strong>Repositories could not be loaded</strong>
@@ -593,234 +648,340 @@
         <button class="btn" onclick={retry}>Try again</button>
       </div>
     {:else if loading && page === null}
-      <div class="result-state dim">Reading repositories…</div>
+      <div class="table-skeleton" aria-hidden="true">
+        {#each [0, 1, 2, 3, 4, 5] as index (index)}
+          <span></span>
+        {/each}
+      </div>
+      <p class="visually-hidden" role="status">Loading repositories</p>
     {:else if repositories.length === 0}
       <div class="result-state dim">
-        {hasFilters ? 'No repositories match these filters' : 'No repositories are installed'}
+        <strong>{hasFilters ? 'No repositories match' : 'No repositories installed'}</strong>
+        <span>
+          {hasFilters
+            ? 'Try another search or clear the current filters'
+            : 'Repositories will appear after the installation catalog is refreshed'}
+        </span>
+        {#if hasFilters}
+          <button class="btn" type="button" onclick={clearFilters}>Clear filters</button>
+        {/if}
       </div>
     {:else}
-      <ul class="repositories">
-        {#each repositories as repository (repository.id)}
-          {@const isOpen = opened.has(repository.id)}
-          {@const detail = details[repository.id]}
-          {@const repositoryFailure = failures[repository.id]}
-          <li class="repository">
-            <div class="repository-head">
-              <button
-                class="btn btn-quiet expand"
-                aria-expanded={isOpen}
-                aria-controls="repository-{repository.id}"
-                onclick={() => toggle(repository.id)}
-              >
-                <span class="caret" class:caret-open={isOpen} aria-hidden="true"></span>
-                <span class="repo-copy">
-                  <strong>{repository.name}</strong>
-                  <span class="repo-meta mono" title={formatTimestamp(repository.updated_at)}>
-                    {overrideLabel(repository.config_override_count)}{repository.private
-                      ? ' · private'
-                      : ''} · updated {formatRelative(repository.updated_at, now)}
-                  </span>
-                </span>
-              </button>
-
-              <div class="repository-actions">
-                {#if !repository.available}
-                  <Chip small>Unavailable</Chip>
-                {/if}
-                <FileStatusIndicator
-                  id="file-status-{repository.id}"
-                  status={repository.config_file_status}
-                />
-
-                <SegmentedControl
-                  name="repository-enablement-{repository.id}"
-                  label="Enablement for {repository.full_name}"
-                  options={REPOSITORY_ENABLEMENT_OPTIONS}
-                  value={pendingEnablement[repository.id] ?? enabledValue(repository)}
-                  disabled={readOnly || working.has(repository.id) || !repository.available}
-                  align="end"
-                  onSelect={(value) => void setEnabled(repository, value)}
-                />
-              </div>
-            </div>
-
-            {#if repositoryFailure !== undefined}
-              <p class="form-error" role="alert">{repositoryFailure.message}</p>
-            {/if}
-
-            {#if isOpen}
-              <div class="repository-detail" id="repository-{repository.id}">
-                {#if detail === undefined}
-                  <p class="dim">Reading repository settings…</p>
-                {:else}
-                  <div
-                    class="file-status"
-                    class:file-problem={detail.config_file_error !== undefined}
+      <div class="repository-table-scroll">
+        <table class="repositories">
+          <thead>
+            <tr>
+              <th class="sortable-heading" aria-sort={sortDirection('name')}>
+                <button class="sort-heading" onclick={toggleNameSort}>
+                  Repository
+                  <span class="sort-indicator" aria-hidden="true"
+                    ><Icon name="sort" size={14} /></span
                   >
-                    <div class="file-copy">
-                      <strong>Repository file</strong>
-                      <code>.github/smyklot.yaml</code>
-                      {#if detail.config_file_error !== undefined}
-                        <p>{detail.config_file_error}</p>
-                      {/if}
-                    </div>
-                    <label class="switch switch-labelled">
-                      <strong>Bypass file</strong>
-                      <input
-                        type="checkbox"
-                        checked={detail.ignore_repository_file}
-                        disabled={readOnly || working.has(repository.id)}
-                        onchange={(event) => setBypass(repository.id, event.currentTarget.checked)}
-                      />
-                      <span aria-hidden="true"></span>
-                    </label>
-                  </div>
-                  {#if detail.ignore_repository_file}
-                    <p class="warning" role="status">
-                      Repository-file settings are being ignored; this exception is recorded in the
-                      audit log
-                    </p>
-                  {/if}
-                  <div class="override-heading">
-                    <strong>Repository overrides</strong>
-                    <HelpTip
-                      id="repository-overrides-{repository.id}"
-                      label="About repository overrides"
-                      text="Only settings changed here override configuration defaults from Settings and repository-file settings"
-                    />
-                  </div>
-                  <ConfigEditor
-                    patch={detail.config_patch}
-                    inherited={detail.inherited_config}
-                    scope="repository"
-                    idPrefix={repository.id}
-                    disabled={readOnly || working.has(repository.id)}
-                    onSave={(patch) => setConfig(repository.id, patch)}
+                </button>
+              </th>
+              <th>Visibility</th>
+              <th>Default branch</th>
+              <th>File state</th>
+              <th class="numeric-heading">Overrides</th>
+              <th class="sortable-heading" aria-sort={sortDirection('updated')}>
+                <button class="sort-heading" onclick={toggleUpdatedSort}>
+                  Updated
+                  <span class="sort-indicator" aria-hidden="true"
+                    ><Icon name="sort" size={14} /></span
+                  >
+                </button>
+              </th>
+              <th>Enablement</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each repositories as repository (repository.id)}
+              {@const repositoryFailure = failures[repository.id]}
+              <tr class="repository-row">
+                <td>
+                  <button
+                    class="expand"
+                    aria-haspopup="dialog"
+                    aria-label={`Configure ${repository.full_name}`}
+                    onclick={(event) => void openRepository(repository, event.currentTarget)}
+                  >
+                    <span class="caret-control" aria-hidden="true">
+                      <Icon name="settings" size={15} />
+                    </span>
+                    <span class="repo-copy">
+                      <strong>{repository.name}</strong>
+                    </span>
+                  </button>
+                </td>
+                <td data-label="Visibility">
+                  <span class={['visibility', repository.private ? 'private' : 'public']}>
+                    <Icon name={repository.private ? 'lock' : 'globe'} size={15} />
+                    {repository.private ? 'Private' : 'Public'}
+                  </span>
+                </td>
+                <td data-label="Default branch"
+                  ><code class="branch">{repository.default_branch || 'Not reported'}</code></td
+                >
+                <td data-label="File state">
+                  <FileStatusIndicator
+                    id="file-status-{repository.id}"
+                    status={repository.config_file_status}
+                    showLabel
                   />
-                {/if}
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+                </td>
+                <td class="numeric-cell mono" data-label="Overrides">
+                  <span class="numeric-value">{repository.config_override_count}</span>
+                </td>
+                <td data-label="Updated">
+                  <time
+                    class="updated"
+                    datetime={repository.updated_at}
+                    title={formatTimestamp(repository.updated_at)}
+                  >
+                    {formatRelative(repository.updated_at, now)}
+                  </time>
+                </td>
+                <td data-label="Enablement">
+                  {#if !repository.available}
+                    <Chip small>Unavailable</Chip>
+                  {:else}
+                    <SegmentedControl
+                      name="repository-enablement-{repository.id}"
+                      label="Enablement for {repository.full_name}"
+                      options={REPOSITORY_ENABLEMENT_OPTIONS}
+                      value={pendingEnablement[repository.id] ?? enabledValue(repository)}
+                      disabled={readOnly || working.has(repository.id)}
+                      align="end"
+                      compact
+                      onSelect={(value) => void setEnabled(repository, value)}
+                    />
+                  {/if}
+                </td>
+              </tr>
+
+              {#if repositoryFailure !== undefined && activeRepository?.id !== repository.id}
+                <tr class="repository-message-row">
+                  <td colspan="7"
+                    ><p class="form-error" role="alert">{repositoryFailure.message}</p></td
+                  >
+                </tr>
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </div>
 
   {#if problem === null && page !== null}
-    <footer class="pagination" aria-label="Repository pagination">
-      <p class="range mono" aria-live="polite">
-        <strong>{rangeStart}–{rangeEnd}</strong>
-        of {total}
-      </p>
-
-      <div class="page-actions">
-        <PageNavigation
-          {pageIndex}
-          {pageCount}
-          disabled={loading}
-          onSelect={(nextIndex) => void selectPage(nextIndex)}
-        />
-      </div>
-
-      <div class="footer-rows">
-        <PageSizeSelect
-          value={limit}
-          label="Repositories per page below results"
-          onSelect={selectPageSize}
-        />
-      </div>
-    </footer>
+    <PaginationBar
+      label="Repositories"
+      {pageIndex}
+      {pageCount}
+      pageSize={limit}
+      {itemCount}
+      {total}
+      disabled={loading}
+      onPageSelect={(nextIndex) => void selectPage(nextIndex)}
+      onPageSizeSelect={selectPageSize}
+    />
   {/if}
 </section>
 
+{#if activeRepository !== null}
+  {@const repository = activeRepository}
+  {@const detail = details[repository.id]}
+  {@const repositoryFailure = failures[repository.id]}
+  {@const activeSection = detailSection(repository)}
+  <Modal
+    id="repository-settings"
+    open
+    title={repository.name}
+    description="Repository settings override installation defaults and repository-file values"
+    variant="wide"
+    returnFocus={repositoryReturnFocus}
+    onClose={closeRepository}
+  >
+    {#if repositoryFailure !== undefined}
+      <p class="form-error repository-modal-error" role="alert">{repositoryFailure.message}</p>
+    {/if}
+
+    <div class="repository-detail">
+      {#if detail === undefined}
+        <p class="detail-loading dim">Reading repository settings…</p>
+      {:else}
+        {@const behaviorCount = configSectionCount(detail, 'behavior')}
+        {@const commandCount = configSectionCount(detail, 'commands')}
+        <div
+          class="repository-detail-navigation"
+          aria-label="Settings for {repository.name}"
+          role="tablist"
+          aria-orientation="horizontal"
+        >
+          <button
+            id="repository-{repository.id}-file-tab"
+            class:active={activeSection === 'file'}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'file'}
+            aria-controls="repository-{repository.id}-detail-panel"
+            tabindex={activeSection === 'file' ? 0 : -1}
+            data-modal-focus
+            onclick={() => selectDetailSection(repository.id, 'file')}
+            onkeydown={(event) => moveDetailSection(event, repository.id, 'file')}
+          >
+            <span>Repository file</span>
+            {#if detail.config_file_error !== undefined}
+              <span class="detail-count problem-count" aria-label="1 file error">1</span>
+            {/if}
+          </button>
+          <button
+            id="repository-{repository.id}-behavior-tab"
+            class:active={activeSection === 'behavior'}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'behavior'}
+            aria-controls="repository-{repository.id}-detail-panel"
+            tabindex={activeSection === 'behavior' ? 0 : -1}
+            onclick={() => selectDetailSection(repository.id, 'behavior')}
+            onkeydown={(event) => moveDetailSection(event, repository.id, 'behavior')}
+          >
+            <span>Behavior</span>
+            <span class={['detail-count', behaviorCount === 0 && 'zero-count']}
+              >{behaviorCount}</span
+            >
+          </button>
+          <button
+            id="repository-{repository.id}-commands-tab"
+            class:active={activeSection === 'commands'}
+            type="button"
+            role="tab"
+            aria-selected={activeSection === 'commands'}
+            aria-controls="repository-{repository.id}-detail-panel"
+            tabindex={activeSection === 'commands' ? 0 : -1}
+            onclick={() => selectDetailSection(repository.id, 'commands')}
+            onkeydown={(event) => moveDetailSection(event, repository.id, 'commands')}
+          >
+            <span>Commands</span>
+            <span class={['detail-count', commandCount === 0 && 'zero-count']}>{commandCount}</span>
+          </button>
+        </div>
+
+        <div
+          class="repository-detail-content"
+          id="repository-{repository.id}-detail-panel"
+          role="tabpanel"
+          aria-labelledby="repository-{repository.id}-{activeSection}-tab"
+          tabindex="0"
+        >
+          {#if activeSection === 'file'}
+            <section class="file-pane" aria-labelledby="repository-{repository.id}-file-heading">
+              <header class="detail-pane-heading">
+                <div>
+                  <h3 id="repository-{repository.id}-file-heading">Repository file</h3>
+                  <p>Observe or bypass the configuration stored in the repository</p>
+                </div>
+                <FileStatusIndicator
+                  id="file-status-detail-{repository.id}"
+                  status={detail.repository.config_file_status}
+                  showLabel
+                />
+              </header>
+              <div
+                class={['file-status', detail.config_file_error !== undefined && 'file-problem']}
+              >
+                <div class="file-copy">
+                  <strong>Configuration path</strong>
+                  <code>.github/smyklot.yaml</code>
+                  {#if detail.config_file_error !== undefined}
+                    <p>{detail.config_file_error}</p>
+                  {/if}
+                </div>
+                <label class="switch switch-labelled">
+                  <strong>Bypass file</strong>
+                  <input
+                    type="checkbox"
+                    checked={detail.ignore_repository_file}
+                    disabled={readOnly || working.has(repository.id)}
+                    onchange={(event) => setBypass(repository.id, event.currentTarget.checked)}
+                  />
+                  <span aria-hidden="true"></span>
+                </label>
+              </div>
+              {#if detail.ignore_repository_file}
+                <p class="warning" role="status">
+                  Repository-file settings are ignored and the exception is recorded in Audit
+                </p>
+              {/if}
+            </section>
+          {:else}
+            <div class="override-heading">
+              <div>
+                <strong
+                  >{activeSection === 'behavior'
+                    ? 'Behavior overrides'
+                    : 'Command overrides'}</strong
+                >
+                <p>Only values changed here override inherited configuration</p>
+              </div>
+              <HelpTip
+                id="repository-overrides-{repository.id}-{activeSection}"
+                label="About repository overrides"
+                text="Only settings changed here override configuration defaults from Settings and repository-file settings"
+              />
+            </div>
+            <ConfigEditor
+              patch={detail.config_patch}
+              inherited={detail.inherited_config}
+              scope="repository"
+              idPrefix={repository.id}
+              section={activeSection}
+              disabled={readOnly || working.has(repository.id)}
+              onSave={(patch) => setConfig(repository.id, patch)}
+            />
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    {#snippet footer()}
+      <button class="btn" type="button" onclick={closeRepository}>Close</button>
+    {/snippet}
+  </Modal>
+{/if}
+
 <style>
   .repository-panel {
-    --repository-control-height: 30px;
-
-    overflow: hidden;
-  }
-
-  .repository-header {
-    align-items: center;
-    border-bottom: 1px solid var(--rule);
-    display: flex;
-    gap: 1rem;
-    justify-content: space-between;
-    min-height: 4rem;
-    padding: 0.625rem 1.125rem;
-  }
-
-  .repository-heading {
-    min-width: 0;
-  }
-
-  .repository-heading h2 {
-    font-size: 0.9375rem;
-    line-height: 1.2;
-    margin: 0;
-  }
-
-  .repository-heading p {
-    color: var(--dim);
-    font-size: 0.75rem;
-    line-height: 1.35;
-    margin: 0.15rem 0 0;
+    --local-control-height: var(--control-height-compact);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    margin-bottom: 0;
+    overflow: visible;
   }
 
   .repository-tools {
     align-items: center;
-    background: var(--well);
-    border-bottom: 1px solid var(--rule);
+    background: transparent;
     display: grid;
-    gap: 0.5rem;
-    grid-template-columns: minmax(12rem, 1fr) 7rem 7.5rem 11.5rem 10.5rem auto;
-    padding: 0.625rem;
-  }
-
-  .search-field {
-    min-width: 0;
-  }
-
-  .search-field {
-    align-items: center;
-    display: flex;
-    position: relative;
-  }
-
-  .search-field input {
-    font-size: 0.6875rem;
-    height: var(--repository-control-height);
-    width: 100%;
-  }
-
-  .search-field input {
-    padding-left: 2rem;
-  }
-
-  .search-icon {
-    border: 1.5px solid var(--dim);
-    border-radius: 50%;
-    height: 0.65rem;
-    left: 0.75rem;
-    opacity: 0.8;
-    pointer-events: none;
-    position: absolute;
-    width: 0.65rem;
-  }
-
-  .search-icon::after {
-    background: var(--dim);
-    content: '';
-    height: 1.5px;
-    position: absolute;
-    right: -0.3rem;
-    top: 0.5rem;
-    transform: rotate(45deg);
-    width: 0.35rem;
+    gap: var(--space-2);
+    grid-template-columns: minmax(16rem, 1fr) 7rem 7.5rem 10.5rem;
+    padding: 0 0 var(--space-3);
   }
 
   .repository-results {
+    background: var(--surface-base);
+    border: 1px solid var(--border-subtle);
+    border-bottom: 0;
+    border-radius: var(--radius-surface) var(--radius-surface) 0 0;
+    overflow: hidden;
     transition: opacity 120ms ease-out;
+  }
+
+  .repository-panel :global(.pagination-bar) {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
   }
 
   .repository-results.loading {
@@ -840,138 +1001,368 @@
 
   .result-state span {
     color: var(--dim);
-    font-size: 0.75rem;
+    font-size: var(--font-size-meta);
+  }
+
+  .table-skeleton {
+    display: grid;
+  }
+
+  .table-skeleton span {
+    animation: repository-skeleton-pulse 1.35s ease-in-out infinite alternate;
+    border-bottom: 1px solid var(--rule);
+    display: block;
+    height: 3.375rem;
+    position: relative;
+  }
+
+  .table-skeleton span::before,
+  .table-skeleton span::after {
+    background: var(--surface-inset);
+    border-radius: var(--radius-control);
+    content: '';
+    height: 0.75rem;
+    left: var(--space-4);
+    position: absolute;
+    top: 1rem;
+    width: min(14rem, 32%);
+  }
+
+  .table-skeleton span::after {
+    left: 48%;
+    width: min(8rem, 18%);
+  }
+
+  @keyframes repository-skeleton-pulse {
+    from {
+      opacity: 0.48;
+    }
+
+    to {
+      opacity: 0.88;
+    }
+  }
+
+  .repository-table-scroll {
+    overflow-x: auto;
   }
 
   .repositories {
-    list-style: none;
-    margin: 0;
+    border-collapse: collapse;
+    min-width: 58rem;
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  th,
+  td {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: var(--space-3);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  th {
+    background: var(--table-header-bg);
+    color: var(--text-muted);
+    font-size: var(--font-size-compact);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+
+  th:first-child {
+    width: 25%;
+  }
+
+  th:nth-child(2) {
+    width: 10%;
+  }
+
+  th:nth-child(3) {
+    width: 12%;
+  }
+
+  th:nth-child(4) {
+    width: 12%;
+  }
+
+  th:nth-child(5) {
+    width: 9%;
+  }
+
+  th:nth-child(6) {
+    width: 14%;
+  }
+
+  th:nth-child(7) {
+    width: 18%;
+  }
+
+  th:first-child,
+  td:first-child {
+    padding-left: var(--space-4);
+  }
+
+  th:last-child,
+  td:last-child {
+    padding-right: var(--space-4);
+    text-align: right;
+  }
+
+  .numeric-heading,
+  .numeric-cell {
+    text-align: center;
+  }
+
+  .sortable-heading {
     padding: 0;
   }
 
-  .repository {
-    padding: 0.75rem;
+  .sortable-heading:first-child {
+    padding-left: 0;
   }
 
-  .repository + .repository {
-    border-top: 1px solid var(--rule);
-  }
-
-  .repository-head {
+  .sort-heading {
     align-items: center;
-    border-radius: var(--r-ctl);
-    display: grid;
-    gap: 0.5rem;
-    grid-template-columns: minmax(0, 1fr) auto;
-    margin: -5px;
-    padding: 5px 5px 5px 0;
-    transition: background-color 120ms ease-out;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    display: flex;
+    font: inherit;
+    gap: var(--space-2);
+    height: 2.75rem;
+    letter-spacing: inherit;
+    margin: 0;
+    padding: 0 var(--space-3);
+    text-transform: inherit;
+    width: 100%;
   }
 
-  .repository-head:hover,
-  .repository-head:focus-within {
-    background: var(--strip-lift);
+  .sortable-heading:first-child .sort-heading {
+    padding-left: var(--space-4);
+  }
+
+  .sort-heading:hover,
+  .sort-heading:focus-visible {
+    background: var(--interactive-hover);
+    color: var(--text-primary);
+  }
+
+  .sort-indicator {
+    color: var(--text-muted);
+    display: grid;
+    place-items: center;
+  }
+
+  th[aria-sort='ascending'] .sort-indicator {
+    color: var(--brand-action-text);
+  }
+
+  th[aria-sort='descending'] .sort-indicator {
+    color: var(--brand-action-text);
+    transform: rotate(180deg);
+  }
+
+  .repository-row {
+    transition: background-color var(--duration-fast) var(--ease-standard);
+  }
+
+  .repository-row:hover {
+    background: var(--table-row-hover);
   }
 
   .expand {
+    align-items: center;
     background: transparent;
+    border: 0;
+    border-radius: var(--radius-control);
+    color: var(--text-primary);
     display: grid;
-    gap: 0;
-    grid-template-columns: 1.5rem minmax(0, 1fr);
+    gap: var(--space-1);
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    margin: calc(var(--space-1) * -1) 0;
     min-width: 0;
-    padding: 0;
+    padding: var(--space-1) 0;
     text-align: left;
+    width: 100%;
   }
 
-  .expand:hover:not(:disabled) {
+  .expand:hover {
+    background: var(--interactive-hover);
+  }
+
+  .expand:focus-visible {
     background: transparent;
+    outline: 0;
   }
 
-  .caret {
-    border-bottom: 3.5px solid transparent;
-    border-left: 4px solid currentcolor;
-    border-top: 3.5px solid transparent;
-    height: 0;
-    justify-self: center;
-    transition: transform 120ms ease-out;
-    width: 0;
+  .expand:focus-visible .caret-control {
+    background: var(--brand-action-tint);
+    box-shadow: inset 0 0 0 2px var(--focus);
   }
 
-  .caret-open {
-    transform: rotate(90deg);
+  .caret-control {
+    align-items: center;
+    border-radius: var(--radius-control);
+    display: inline-flex;
+    height: var(--control-height-compact);
+    justify-content: center;
+    width: 1.75rem;
   }
 
   .repo-copy {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    height: var(--control-height-compact);
+    justify-content: center;
     min-width: 0;
   }
 
-  .repo-copy strong,
-  .repo-copy span {
+  .repo-copy strong {
+    display: block;
+    line-height: 1.25;
     overflow: hidden;
     text-overflow: ellipsis;
+    transform: translateY(-2px);
     white-space: nowrap;
   }
 
-  .repo-meta {
-    color: var(--dim);
-    font-size: 0.6875rem;
-    opacity: 0.72;
-  }
-
-  .pagination {
+  .visibility {
     align-items: center;
-    background: var(--well);
-    border-top: 1px solid var(--rule);
-    display: grid;
-    gap: 0.5rem;
-    grid-template-columns: 1fr auto 1fr;
-    min-height: 3.75rem;
-    padding: 0.625rem;
+    color: var(--info);
+    display: flex;
+    font-size: var(--font-size-meta);
+    font-weight: 550;
+    gap: var(--space-1);
+    height: var(--control-height-compact);
+    line-height: 1;
+    width: max-content;
   }
 
-  .range {
-    color: var(--dim);
-    font-size: 0.625rem;
+  .visibility.public {
+    color: var(--text-muted);
+  }
+
+  .branch {
+    background: var(--surface-inset);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: var(--font-size-compact);
+    transform: translateY(-1px);
+  }
+
+  .numeric-value {
+    align-items: center;
+    display: inline-flex;
+    height: var(--control-height-compact);
+    line-height: 1;
+  }
+
+  .updated {
+    align-items: center;
+    color: var(--text-muted);
+    display: flex;
+    font-size: var(--font-size-meta);
+    height: var(--control-height-compact);
+    line-height: 1;
+    transform: translateY(-1px);
+    white-space: nowrap;
+  }
+
+  td:last-child :global(fieldset) {
+    margin-left: 0;
+  }
+
+  .repository-message-row td {
+    padding-block: var(--space-2);
+  }
+
+  .repository-message-row .form-error {
     margin: 0;
-    white-space: nowrap;
-  }
-
-  .range strong {
-    color: var(--text);
-    font-weight: 600;
-  }
-
-  .page-actions {
-    min-width: 0;
-  }
-
-  .toolbar-rows,
-  .footer-rows {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .toolbar-rows,
-  .footer-rows {
-    --page-size-control-height: var(--repository-control-height);
-  }
-
-  .repository-actions {
-    align-items: center;
-    display: flex;
-    gap: 0.25rem;
-    justify-content: flex-end;
   }
 
   .repository-detail {
-    background: var(--well);
-    border: 1px solid var(--rule);
-    border-radius: var(--r-well);
-    margin-top: 0.75rem;
-    padding: 1rem;
+    background: var(--surface-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-surface);
+    display: flex;
+    flex-direction: column;
+    min-height: min(32rem, 62vh);
+    overflow: hidden;
+  }
+
+  .repository-modal-error {
+    margin: 0 0 var(--space-3);
+  }
+
+  .detail-loading {
+    margin: 0;
+    padding: var(--space-4);
+  }
+
+  .repository-detail-navigation {
+    background: var(--surface-inset);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-1);
+    overflow-x: auto;
+    padding: 0 var(--space-3);
+  }
+
+  .repository-detail-navigation button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--text-muted);
+    display: flex;
+    font-size: var(--font-size-meta);
+    font-weight: 550;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+    height: 2.75rem;
+    justify-content: center;
+    padding: 0 var(--space-3);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .repository-detail-navigation button:hover,
+  .repository-detail-navigation button:focus-visible {
+    background: var(--interactive-hover);
+    color: var(--text-primary);
+  }
+
+  .repository-detail-navigation button.active {
+    background: transparent;
+    border-bottom-color: var(--brand-action);
+    color: var(--brand-action-text);
+    font-weight: 650;
+  }
+
+  .detail-count {
+    color: var(--brand-action-text);
+    display: inline-grid;
+    font: 650 var(--font-size-micro) / 1 var(--mono);
+    font-variant-numeric: tabular-nums;
+    min-width: 1ch;
+    place-items: center;
+  }
+
+  .zero-count {
+    color: var(--text-muted);
+  }
+
+  .problem-count {
+    color: var(--danger);
+  }
+
+  .repository-detail-content {
+    min-width: 0;
+    outline: 0;
+    padding: var(--space-4) var(--space-6);
   }
 
   .file-status {
@@ -979,7 +1370,11 @@
     display: flex;
     gap: 1rem;
     justify-content: space-between;
-    margin-bottom: 0.75rem;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-surface);
+    margin-top: var(--space-4);
+    padding: var(--space-4);
   }
 
   .file-copy {
@@ -1000,15 +1395,21 @@
 
   .override-heading {
     align-items: center;
-    border-top: 1px solid var(--rule);
     display: flex;
     justify-content: space-between;
-    margin-top: 0.875rem;
-    padding-top: 0.5rem;
+    margin-bottom: var(--space-3);
   }
 
-  .override-heading > strong {
-    font-size: 0.8125rem;
+  .override-heading strong,
+  .detail-pane-heading h3 {
+    font-size: var(--font-size-title);
+  }
+
+  .override-heading p,
+  .detail-pane-heading p {
+    color: var(--text-muted);
+    font-size: var(--font-size-meta);
+    margin: var(--space-1) 0 0;
   }
 
   .file-problem strong,
@@ -1016,12 +1417,28 @@
     color: var(--stop);
   }
 
+  .detail-pane-heading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .detail-pane-heading h3 {
+    margin: 0;
+  }
+
   .warning {
     background: var(--warning-tint);
+    border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
     border-radius: var(--r-well);
     color: var(--warning);
     font-size: 0.8125rem;
     padding: 0.75rem;
+  }
+
+  .repository-panel :global(.pagination-bar) {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
   }
 
   .switch-labelled {
@@ -1031,65 +1448,77 @@
     gap: 0.5rem;
   }
 
-  @media (max-width: 54rem) {
+  @media (max-width: 74rem) {
     .repository-tools {
       grid-template-columns: 1fr 1fr;
     }
 
-    .search-field {
+    .repository-tools :global(.search-field) {
       grid-column: 1 / -1;
     }
 
-    .toolbar-rows {
-      grid-column: 2;
+    .repository-detail-content {
+      padding-inline: var(--space-4);
     }
   }
 
-  @media (max-width: 36rem) {
-    .pagination {
-      grid-template-columns: 1fr auto;
-    }
-
-    .page-actions {
-      grid-column: 1 / -1;
-      grid-row: 1;
-      justify-content: space-between;
-    }
-
-    .range {
-      grid-column: 1;
-      grid-row: 2;
-    }
-
-    .footer-rows {
-      grid-column: 2;
-      grid-row: 2;
-    }
-  }
-
-  @media (max-width: 30rem) {
-    .repository-head {
-      gap: 0.25rem;
-    }
-
+  @media (max-width: 48rem) {
     .repository-tools {
       grid-template-columns: 1fr;
     }
 
-    .search-field {
+    .repository-tools :global(.search-field) {
       grid-column: 1;
     }
 
-    .toolbar-rows {
-      grid-column: 1;
+    .repositories {
+      min-width: 0;
     }
 
-    .repository-header {
-      align-items: flex-start;
+    .repositories thead {
+      display: none;
     }
-  }
 
-  @media (max-width: 38rem) {
+    .repositories,
+    .repositories tbody,
+    .repository-row,
+    .repository-row td,
+    .repository-message-row,
+    .repository-message-row td {
+      display: block;
+      width: 100%;
+    }
+
+    .repository-row {
+      border-bottom: 1px solid var(--border-subtle);
+      padding: var(--space-3);
+    }
+
+    .repository-row td {
+      align-items: center;
+      border: 0;
+      display: flex;
+      justify-content: space-between;
+      padding: var(--space-2) 0;
+    }
+
+    .repository-row td:first-child {
+      padding-top: 0;
+    }
+
+    .repository-row td[data-label]::before {
+      color: var(--text-muted);
+      content: attr(data-label);
+      font-size: var(--font-size-compact);
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .numeric-cell {
+      text-align: right;
+    }
+
     .file-status {
       align-items: flex-start;
       flex-direction: column;
