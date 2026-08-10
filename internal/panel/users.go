@@ -17,31 +17,23 @@ const (
 )
 
 type addUserRequest struct {
-	Login    string             `json:"login"`
-	Role     *storage.PanelRole `json:"role"`
-	TargetID string             `json:"target_id"`
+	Login string                    `json:"login"`
+	Role  *storage.InstallationRole `json:"role"`
 }
 
-type updateUserRequest struct {
-	GlobalRole       *storage.PanelRole       `json:"global_role"`
-	Status           *storage.PanelUserStatus `json:"status"`
-	BanReason        *string                  `json:"ban_reason"`
-	ExpectedRevision *int64                   `json:"expected_revision"`
-}
-
-type nullablePanelRole struct {
-	Value   *storage.PanelRole
+type nullableInstallationRole struct {
+	Value   *storage.InstallationRole
 	Present bool
 }
 
-func (value *nullablePanelRole) UnmarshalJSON(data []byte) error {
+func (value *nullableInstallationRole) UnmarshalJSON(data []byte) error {
 	value.Present = true
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		value.Value = nil
 
 		return nil
 	}
-	var role storage.PanelRole
+	var role storage.InstallationRole
 	if err := json.Unmarshal(data, &role); err != nil {
 		return err
 	}
@@ -51,119 +43,20 @@ func (value *nullablePanelRole) UnmarshalJSON(data []byte) error {
 }
 
 type updateTargetUserRequest struct {
-	Role             nullablePanelRole `json:"role"`
-	Suspended        *bool             `json:"suspended"`
-	SuspensionReason *string           `json:"suspension_reason"`
-	ExpectedRevision *int64            `json:"expected_revision"`
+	Role             nullableInstallationRole `json:"role"`
+	Suspended        *bool                    `json:"suspended"`
+	SuspensionReason *string                  `json:"suspension_reason"`
+	ExpectedRevision *int64                   `json:"expected_revision"`
 }
 
-func (s *Server) getUsers(w http.ResponseWriter, r *http.Request) {
-	actor, actorUser, ok := s.requireGlobalUserManager(w, r)
-	if !ok {
-		return
-	}
-	page, err := parsePanelUserPage(r.URL.Query())
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	users, err := s.store.ListPanelUserPage(r.Context(), page)
-	if err != nil {
-		s.writeInternal(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, panelUserPageDTO(users, func(user storage.PanelUser) bool {
-		return canManageGlobalUser(actor, actorUser, user, user.GlobalRole)
-	}))
-}
-
-func (s *Server) postUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireSameOrigin(w, r) {
-		return
-	}
-	actor, actorUser, ok := s.requireGlobalUserManager(w, r)
-	if !ok {
-		return
-	}
-	var input addUserRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if input.Role == nil || !validGlobalPanelRole(*input.Role) ||
-		strings.TrimSpace(input.Login) == "" || strings.TrimSpace(input.TargetID) == "" {
-		s.writeError(w, http.StatusBadRequest, "invalid_request", "login, role, and installation are required")
-		return
-	}
-	if *input.Role == storage.PanelRoleOwner && !actorUser.Root {
-		s.writeError(w, http.StatusForbidden, "forbidden", "only the root owner can appoint owners")
-		return
-	}
-	account, err := s.resolvePanelUser(r, input.TargetID, input.Login)
-	if err != nil {
-		s.writeError(w, http.StatusBadGateway, "github_user_unavailable", "GitHub user could not be resolved")
-		return
-	}
-	if account.ID == actor.ID {
-		s.writeError(w, http.StatusForbidden, "forbidden", "you cannot change your own access")
-		return
-	}
-	created, err := s.store.CreatePanelUser(r.Context(), storage.PanelUserCreate{
-		AccountID: account.ID, GlobalRole: *input.Role, ActorAccountID: actor.ID,
-		ChangedAt: s.now().UTC(),
-	})
-	if err != nil {
-		s.writeStorageError(w, err)
-		return
-	}
-	s.events.announce(panelEvent{Type: panelEventResync})
-	writeJSON(w, http.StatusCreated, panelUserDTO(created, true))
-}
-
-func (s *Server) putUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireSameOrigin(w, r) {
-		return
-	}
-	actor, actorUser, ok := s.requireGlobalUserManager(w, r)
-	if !ok {
-		return
-	}
-	var input updateUserRequest
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if input.GlobalRole == nil || input.Status == nil || input.ExpectedRevision == nil ||
-		!validGlobalPanelRole(*input.GlobalRole) || !validPanelUserStatus(*input.Status) {
-		s.writeError(w, http.StatusBadRequest, "invalid_request", "user policy is incomplete")
-		return
-	}
-	reason, ok := validAccessReason(w, input.BanReason)
-	if !ok {
-		return
-	}
-	subject, err := s.store.GetPanelUser(r.Context(), r.PathValue("account"))
-	if err != nil {
-		s.writeStorageError(w, err)
-		return
-	}
-	if !canManageGlobalUser(actor, actorUser, subject, *input.GlobalRole) {
-		s.writeError(w, http.StatusForbidden, "forbidden", "you cannot change this user's access")
-		return
-	}
-	updated, err := s.store.UpdatePanelUser(r.Context(), storage.PanelUserChange{
-		AccountID: subject.Account.ID, ActorAccountID: actor.ID,
-		GlobalRole: *input.GlobalRole, Status: *input.Status, BanReason: reason,
-		ExpectedRevision: *input.ExpectedRevision, ChangedAt: s.now().UTC(),
-	})
-	if err != nil {
-		s.writeStorageError(w, err)
-		return
-	}
-	if updated.Status == storage.PanelUserBanned || updated.Status == storage.PanelUserRemoved {
-		s.revokePanelUser(r, updated)
-	} else {
-		s.events.announce(panelEvent{Type: panelEventResync})
-	}
-	writeJSON(w, http.StatusOK, panelUserDTO(updated, true))
+type installationUserManager struct {
+	Actor            storage.Account
+	ActorUser        storage.PanelUser
+	Access           storage.TargetAccess
+	TargetID         string
+	ElevationID      *string
+	SessionTokenHash string
+	RootWrite        bool
 }
 
 func (s *Server) getTargetUsers(w http.ResponseWriter, r *http.Request) {
@@ -171,35 +64,47 @@ func (s *Server) getTargetUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.listInstallationUsers(w, r, installationUserManager{
+		Actor: actor, ActorUser: actorUser, Access: actorAccess, TargetID: r.PathValue("target"),
+	})
+}
+
+func (s *Server) listInstallationUsers(
+	w http.ResponseWriter,
+	r *http.Request,
+	manager installationUserManager,
+) {
 	page, err := parsePanelUserPage(r.URL.Query())
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	users, err := s.store.ListTargetPanelUserPage(r.Context(), r.PathValue("target"), page)
+	users, err := s.store.ListTargetPanelUserPage(
+		r.Context(), manager.TargetID, s.now().UTC(), page,
+	)
 	if err != nil {
-		s.writeStorageError(w, err)
+		s.writeInstallationMutationError(w, manager, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, targetPanelUserPageDTO(users, func(user storage.TargetPanelUser) bool {
 		return canManageTargetUser(
-			actor, actorUser, actorAccess, user.User, user.Access, user.Access.Role,
+			manager.Actor, manager.ActorUser, manager.Access, user.User, user.Access, user.Access.Role,
 		)
 	}))
-}
-
-func (s *Server) getUserDecisions(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireGlobalUserManager(w, r); !ok {
-		return
-	}
-	s.listUserDecisions(w, r, nil)
 }
 
 func (s *Server) getTargetUserDecisions(w http.ResponseWriter, r *http.Request) {
 	if _, _, _, ok := s.requireTargetUserManager(w, r); !ok {
 		return
 	}
-	targetID := r.PathValue("target")
+	s.listInstallationUserDecisions(w, r, r.PathValue("target"))
+}
+
+func (s *Server) listInstallationUserDecisions(
+	w http.ResponseWriter,
+	r *http.Request,
+	targetID string,
+) {
 	s.listUserDecisions(w, r, &targetID)
 }
 
@@ -226,6 +131,16 @@ func (s *Server) postTargetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.addInstallationUser(w, r, installationUserManager{
+		Actor: actor, ActorUser: actorUser, Access: actorAccess, TargetID: r.PathValue("target"),
+	})
+}
+
+func (s *Server) addInstallationUser(
+	w http.ResponseWriter,
+	r *http.Request,
+	manager installationUserManager,
+) {
 	var input addUserRequest
 	if !decodeJSON(w, r, &input) {
 		return
@@ -234,39 +149,46 @@ func (s *Server) postTargetUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "login and target role are required")
 		return
 	}
-	targetID := r.PathValue("target")
+	targetID := manager.TargetID
 	account, err := s.resolvePanelUser(r, targetID, input.Login)
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "github_user_unavailable", "GitHub user could not be resolved")
 		return
 	}
-	if account.ID == actor.ID {
+	if account.ID == manager.Actor.ID {
 		s.writeError(w, http.StatusForbidden, "forbidden", "you cannot change your own access")
 		return
 	}
-	subject, err := s.ensurePanelUser(r, account, actor.ID)
+	subject, err := s.ensurePanelUser(r, account, manager.Actor.ID)
+	if err != nil {
+		s.writeInstallationMutationError(w, manager, err)
+		return
+	}
+	current, err := s.store.ResolveTargetAccess(
+		r.Context(), subject.Account.ID, targetID, s.now().UTC(),
+	)
 	if err != nil {
 		s.writeStorageError(w, err)
 		return
 	}
-	current, err := s.store.ResolveTargetAccess(r.Context(), subject.Account.ID, targetID)
-	if err != nil {
-		s.writeStorageError(w, err)
-		return
-	}
-	if !canManageTargetUser(actor, actorUser, actorAccess, subject, current, *input.Role) {
+	if !canManageTargetUser(
+		manager.Actor, manager.ActorUser, manager.Access, subject, current, *input.Role,
+	) {
 		s.writeError(w, http.StatusForbidden, "forbidden", "you cannot grant this installation role")
 		return
 	}
 	override, err := s.store.SetTargetAccess(r.Context(), storage.TargetAccessChange{
-		TargetID: targetID, SubjectAccountID: subject.Account.ID, ActorAccountID: actor.ID,
+		TargetID: targetID, SubjectAccountID: subject.Account.ID, ActorAccountID: manager.Actor.ID,
+		ElevationID: manager.ElevationID, SessionTokenHash: manager.SessionTokenHash,
 		Role: input.Role, ExpectedRevision: 0, ChangedAt: s.now().UTC(),
 	})
 	if err != nil {
-		s.writeStorageError(w, err)
+		s.writeInstallationMutationError(w, manager, err)
 		return
 	}
-	access, err := s.store.ResolveTargetAccess(r.Context(), subject.Account.ID, targetID)
+	access, err := s.store.ResolveTargetAccess(
+		r.Context(), subject.Account.ID, targetID, s.now().UTC(),
+	)
 	if err != nil {
 		s.writeInternal(w, err)
 		return
@@ -277,6 +199,18 @@ func (s *Server) postTargetUser(w http.ResponseWriter, r *http.Request) {
 	}, true))
 }
 
+func (s *Server) writeInstallationMutationError(
+	w http.ResponseWriter,
+	manager installationUserManager,
+	err error,
+) {
+	if manager.RootWrite {
+		s.writeRootWriteError(w, err)
+		return
+	}
+	s.writeStorageError(w, err)
+}
+
 func (s *Server) putTargetUser(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSameOrigin(w, r) {
 		return
@@ -285,12 +219,22 @@ func (s *Server) putTargetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.updateInstallationUser(w, r, installationUserManager{
+		Actor: actor, ActorUser: actorUser, Access: actorAccess, TargetID: r.PathValue("target"),
+	})
+}
+
+func (s *Server) updateInstallationUser(
+	w http.ResponseWriter,
+	r *http.Request,
+	manager installationUserManager,
+) {
 	var input updateTargetUserRequest
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	if !input.Role.Present || input.Suspended == nil || input.ExpectedRevision == nil ||
-		(input.Role.Value != nil && !validTargetPanelRole(*input.Role.Value)) {
+		(input.Role.Value != nil && !validTargetInstallationRole(*input.Role.Value)) {
 		s.writeError(w, http.StatusBadRequest, "invalid_request", "installation user policy is incomplete")
 		return
 	}
@@ -298,38 +242,45 @@ func (s *Server) putTargetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	targetID := r.PathValue("target")
+	targetID := manager.TargetID
 	subject, err := s.store.GetPanelUser(r.Context(), r.PathValue("account"))
 	if err != nil {
 		s.writeStorageError(w, err)
 		return
 	}
-	current, err := s.store.ResolveTargetAccess(r.Context(), subject.Account.ID, targetID)
+	current, err := s.store.ResolveTargetAccess(
+		r.Context(), subject.Account.ID, targetID, s.now().UTC(),
+	)
 	if err != nil {
 		s.writeStorageError(w, err)
 		return
 	}
-	desired := subject.GlobalRole
+	desired := storage.InstallationRoleNone
 	if input.Role.Value != nil {
 		desired = *input.Role.Value
 	}
 	if *input.Suspended {
-		desired = storage.PanelRoleNone
+		desired = storage.InstallationRoleNone
 	}
-	if !canManageTargetUser(actor, actorUser, actorAccess, subject, current, desired) {
+	if !canManageTargetUser(
+		manager.Actor, manager.ActorUser, manager.Access, subject, current, desired,
+	) {
 		s.writeError(w, http.StatusForbidden, "forbidden", "you cannot change this user's installation access")
 		return
 	}
 	override, err := s.store.SetTargetAccess(r.Context(), storage.TargetAccessChange{
-		TargetID: targetID, SubjectAccountID: subject.Account.ID, ActorAccountID: actor.ID,
+		TargetID: targetID, SubjectAccountID: subject.Account.ID, ActorAccountID: manager.Actor.ID,
+		ElevationID: manager.ElevationID, SessionTokenHash: manager.SessionTokenHash,
 		Role: input.Role.Value, Suspended: *input.Suspended, SuspensionReason: reason,
 		ExpectedRevision: *input.ExpectedRevision, ChangedAt: s.now().UTC(),
 	})
 	if err != nil {
-		s.writeStorageError(w, err)
+		s.writeInstallationMutationError(w, manager, err)
 		return
 	}
-	access, err := s.store.ResolveTargetAccess(r.Context(), subject.Account.ID, targetID)
+	access, err := s.store.ResolveTargetAccess(
+		r.Context(), subject.Account.ID, targetID, s.now().UTC(),
+	)
 	if err != nil {
 		s.writeInternal(w, err)
 		return
@@ -338,27 +289,6 @@ func (s *Server) putTargetUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, targetPanelUserDTO(storage.TargetPanelUser{
 		User: subject, Override: &override, Access: access,
 	}, true))
-}
-
-func (s *Server) requireGlobalUserManager(
-	w http.ResponseWriter,
-	r *http.Request,
-) (storage.Account, storage.PanelUser, bool) {
-	account, ok := s.requireViewer(w, r)
-	if !ok {
-		return storage.Account{}, storage.PanelUser{}, false
-	}
-	user, err := s.store.GetPanelUser(r.Context(), account.ID)
-	if err != nil {
-		s.writeInternal(w, err)
-		return storage.Account{}, storage.PanelUser{}, false
-	}
-	if !storage.EffectiveCapabilities(user.GlobalRole, user.Root).ManageGlobalUsers {
-		s.writeError(w, http.StatusForbidden, "forbidden", "global user management requires Owner access")
-		return storage.Account{}, storage.PanelUser{}, false
-	}
-
-	return account, user, true
 }
 
 func (s *Server) requireTargetUserManager(
@@ -415,38 +345,8 @@ func (s *Server) ensurePanelUser(
 	}
 
 	return s.store.CreatePanelUser(r.Context(), storage.PanelUserCreate{
-		AccountID: account.ID, GlobalRole: storage.PanelRoleNone,
-		ActorAccountID: actorID, ChangedAt: s.now().UTC(),
+		AccountID: account.ID, ActorAccountID: actorID, ChangedAt: s.now().UTC(),
 	})
-}
-
-func (s *Server) revokePanelUser(r *http.Request, user storage.PanelUser) {
-	reason := "Your panel access was revoked"
-	if user.Status == storage.PanelUserBanned {
-		reason = "Your panel access was suspended"
-		if user.BanReason != nil {
-			reason = *user.BanReason
-		}
-	}
-	_, _ = s.store.RevokeAccountSessions(
-		r.Context(), user.Account.ID, string(user.Status), reason, s.now().UTC(),
-	)
-	s.events.revokeAccount(user.Account.ID, string(user.Status), reason)
-	s.events.announce(panelEvent{Type: panelEventResync})
-}
-
-func canManageGlobalUser(
-	actor storage.Account,
-	actorUser, subject storage.PanelUser,
-	desiredRole storage.PanelRole,
-) bool {
-	if actor.ID == subject.Account.ID || subject.Root {
-		return false
-	}
-	if actorUser.Root {
-		return true
-	}
-	return subject.GlobalRole != storage.PanelRoleOwner && desiredRole != storage.PanelRoleOwner
 }
 
 func canManageTargetUser(
@@ -455,22 +355,20 @@ func canManageTargetUser(
 	actorAccess storage.TargetAccess,
 	subject storage.PanelUser,
 	subjectAccess storage.TargetAccess,
-	desiredRole storage.PanelRole,
+	desiredRole storage.InstallationRole,
 ) bool {
-	if actor.ID == subject.Account.ID || subject.Status != storage.PanelUserActive || subject.Root ||
-		subject.GlobalRole == storage.PanelRoleOwner {
+	if actor.ID == subject.Account.ID || subject.Status != storage.PanelUserActive ||
+		subject.SystemRole.IsRoot() {
 		return false
 	}
-	if actorAccess.Role == storage.PanelRoleOwner || actorUser.Root {
-		return desiredRole != storage.PanelRoleOwner
+	if actorAccess.Role == storage.InstallationRoleOwner || actorUser.SystemRole.IsRoot() {
+		return desiredRole != storage.InstallationRoleOwner
 	}
-	if actorAccess.Role != storage.PanelRoleAdmin ||
-		subject.GlobalRole == storage.PanelRoleAdmin ||
-		subjectAccess.Role == storage.PanelRoleAdmin {
+	if actorAccess.Role != storage.InstallationRoleAdmin || subjectAccess.Role == storage.InstallationRoleAdmin {
 		return false
 	}
-	return desiredRole == storage.PanelRoleNone || desiredRole == storage.PanelRoleViewer ||
-		desiredRole == storage.PanelRoleEditor
+	return desiredRole == storage.InstallationRoleNone || desiredRole == storage.InstallationRoleViewer ||
+		desiredRole == storage.InstallationRoleEditor
 }
 
 func validAccessReason(w http.ResponseWriter, raw *string) (*string, bool) {
@@ -489,21 +387,16 @@ func validAccessReason(w http.ResponseWriter, raw *string) (*string, bool) {
 	return &value, true
 }
 
-func validGlobalPanelRole(role storage.PanelRole) bool {
-	return validTargetPanelRole(role) || role == storage.PanelRoleOwner
+func validTargetInstallationRole(role storage.InstallationRole) bool {
+	return role == storage.InstallationRoleNone || role == storage.InstallationRoleViewer ||
+		role == storage.InstallationRoleEditor || role == storage.InstallationRoleAdmin
 }
 
-func validTargetPanelRole(role storage.PanelRole) bool {
-	return role == storage.PanelRoleNone || role == storage.PanelRoleViewer ||
-		role == storage.PanelRoleEditor || role == storage.PanelRoleAdmin
+func validTargetUserFilterRole(role storage.InstallationRole) bool {
+	return validTargetInstallationRole(role) || role == storage.InstallationRoleOwner
 }
 
-func validGrantedTargetRole(role storage.PanelRole) bool {
-	return role == storage.PanelRoleViewer || role == storage.PanelRoleEditor ||
-		role == storage.PanelRoleAdmin
-}
-
-func validPanelUserStatus(status storage.PanelUserStatus) bool {
-	return status == storage.PanelUserActive || status == storage.PanelUserBanned ||
-		status == storage.PanelUserRemoved
+func validGrantedTargetRole(role storage.InstallationRole) bool {
+	return role == storage.InstallationRoleViewer || role == storage.InstallationRoleEditor ||
+		role == storage.InstallationRoleAdmin
 }

@@ -11,9 +11,16 @@ import (
 )
 
 const (
-	basePathSentinel = "/__smyklot_panel_base__"
-	versionSentinel  = "__smyklot_panel_version__"
-	serviceSentinel  = "__smyklot_panel_service__"
+	basePathSentinel           = "/__smyklot_panel_base__"
+	versionSentinel            = "__smyklot_panel_version__"
+	serviceSentinel            = "__smyklot_panel_service__"
+	panelHistoryPath           = "history"
+	panelHistoryAuditPath      = "audit"
+	panelHistoryFailuresPath   = "failures"
+	panelInvitationsPath       = "invitations"
+	panelInstallationsResource = "installations"
+	panelRepositoriesPath      = "repositories"
+	panelSettingsPath          = "settings"
 )
 
 type assetBundle struct {
@@ -69,10 +76,9 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 
 func isPanelNavigationPath(relative string) bool {
 	trimmed := strings.Trim(relative, "/")
-	if trimmed == "help" || trimmed == panelUsersResource {
+	if isRootNavigationPath(strings.Split(trimmed, "/")) {
 		return true
 	}
-
 	parts := strings.Split(trimmed, "/")
 	if len(parts) == 2 && parts[0] == "invite" && validInvitationToken(parts[1]) {
 		return true
@@ -82,7 +88,33 @@ func isPanelNavigationPath(relative string) bool {
 	}
 
 	switch parts[2] {
-	case "settings", "repositories", panelUsersResource, "history":
+	case panelSettingsPath, panelRepositoriesPath, panelUsersResource, panelInvitationsPath, panelHistoryPath:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRootNavigationPath(parts []string) bool {
+	if len(parts) == 1 {
+		return parts[0] == "root"
+	}
+	if parts[0] != "root" {
+		return false
+	}
+	if len(parts) == 2 {
+		return parts[1] == panelInstallationsResource || parts[1] == panelSettingsPath
+	}
+	if len(parts) == 3 {
+		return parts[1] == "access" && (parts[2] == panelUsersResource || parts[2] == panelInvitationsPath) ||
+			parts[1] == panelHistoryPath &&
+				(parts[2] == panelHistoryAuditPath || parts[2] == panelHistoryFailuresPath)
+	}
+	if len(parts) != 4 || parts[1] != panelInstallationsResource || parts[2] == "" {
+		return false
+	}
+	switch parts[3] {
+	case panelSettingsPath, panelRepositoriesPath, panelUsersResource, panelInvitationsPath, panelHistoryPath:
 		return true
 	default:
 		return false

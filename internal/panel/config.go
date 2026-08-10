@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -27,20 +28,28 @@ var errInvalidConfig = errors.New("invalid panel configuration")
 
 // Config contains validated runtime settings for the panel HTTP surface.
 type Config struct {
-	BasePath      string
-	PublicOrigin  string
-	OwnerLogin    string
-	ClientID      string
-	ClientSecret  string
-	AuthorizeURL  string
-	TokenURL      string
-	APIURL        string
-	Version       string
-	ServiceHost   string
-	SessionTTL    time.Duration
-	StateTTL      time.Duration
-	ProcessConfig *config.Config
-	Assets        fs.FS
+	BasePath                 string
+	PublicOrigin             string
+	SuperRootID              int64
+	ClientID                 string
+	ClientSecret             string
+	AuthorizeURL             string
+	TokenURL                 string
+	APIURL                   string
+	Version                  string
+	ServiceHost              string
+	ListenAddress            string
+	AdminAddress             string
+	WebhookPath              string
+	LogLevel                 slog.Level
+	PollInterval             time.Duration
+	SessionTTL               time.Duration
+	StateTTL                 time.Duration
+	ProcessConfig            *config.Config
+	WebhookCredentialPresent bool
+	AppCredentialPresent     bool
+	OAuthCredentialPresent   bool
+	Assets                   fs.FS
 }
 
 func (c Config) validated() (Config, error) {
@@ -56,13 +65,15 @@ func (c Config) validated() (Config, error) {
 	}
 
 	for label, value := range map[string]string{
-		"owner login":   c.OwnerLogin,
 		"client id":     c.ClientID,
 		"client secret": c.ClientSecret,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return Config{}, fmt.Errorf("%w: %s must not be blank", errInvalidConfig, label)
 		}
+	}
+	if c.SuperRootID <= 0 {
+		return Config{}, fmt.Errorf("%w: Super Root ID must be positive", errInvalidConfig)
 	}
 
 	if c.SessionTTL == 0 {
@@ -73,6 +84,9 @@ func (c Config) validated() (Config, error) {
 	}
 	if c.SessionTTL < time.Minute || c.StateTTL < time.Minute {
 		return Config{}, fmt.Errorf("%w: authentication TTLs must be at least one minute", errInvalidConfig)
+	}
+	if c.PollInterval < 0 {
+		return Config{}, fmt.Errorf("%w: reaction sweep interval cannot be negative", errInvalidConfig)
 	}
 	if c.ProcessConfig == nil {
 		c.ProcessConfig = config.Default()

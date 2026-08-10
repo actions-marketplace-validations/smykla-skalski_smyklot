@@ -48,8 +48,8 @@ func parsePanelUserPage(values url.Values) (storage.PanelUserPageRequest, error)
 		return storage.PanelUserPageRequest{}, fmt.Errorf("invalid user sort order")
 	}
 	for _, raw := range values["role"] {
-		role := storage.PanelRole(raw)
-		if !validGlobalPanelRole(role) || slices.Contains(page.Roles, role) {
+		role := storage.InstallationRole(raw)
+		if !validTargetUserFilterRole(role) || slices.Contains(page.Roles, role) {
 			if slices.Contains(page.Roles, role) {
 				continue
 			}
@@ -99,8 +99,8 @@ func parseInvitationPage(values url.Values) (storage.InvitationPageRequest, erro
 		return storage.InvitationPageRequest{}, fmt.Errorf("invalid invitation sort order")
 	}
 	for _, raw := range values["role"] {
-		role := storage.PanelRole(raw)
-		if !validGlobalPanelRole(role) || role == storage.PanelRoleNone {
+		role := storage.InstallationRole(raw)
+		if !validGrantedTargetRole(role) {
 			return storage.InvitationPageRequest{}, fmt.Errorf("invalid invitation role")
 		}
 		if !slices.Contains(page.Roles, role) {
@@ -146,20 +146,6 @@ func parseAccessPageBase(
 	}
 
 	return nil
-}
-
-func panelUserPageDTO(
-	page storage.PanelUserPage,
-	manageable func(storage.PanelUser) bool,
-) pageResponse[panelUserResponse] {
-	items := make([]panelUserResponse, 0, len(page.Items))
-	for _, user := range page.Items {
-		items = append(items, panelUserDTO(user, manageable(user)))
-	}
-
-	return pageResponse[panelUserResponse]{
-		Items: items, NextCursor: offsetCursor(page.NextOffset), Total: page.Total,
-	}
 }
 
 func targetPanelUserPageDTO(

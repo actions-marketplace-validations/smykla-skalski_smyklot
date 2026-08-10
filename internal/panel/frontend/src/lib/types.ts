@@ -41,43 +41,39 @@ export interface PanelAccount {
   avatar_url: string | null;
 }
 
-export type PanelRole = 'none' | 'viewer' | 'editor' | 'admin' | 'owner';
+export type InstallationRole = 'none' | 'viewer' | 'editor' | 'admin' | 'owner';
+export type SystemRole = 'none' | 'root' | 'super_root';
 export type PanelUserStatus = 'active' | 'banned' | 'removed';
-export type AccessSource = 'root' | 'global' | 'target' | 'suspended' | 'denied';
+export type AccessSource = 'owner' | 'target' | 'suspended' | 'root' | 'elevation' | 'denied';
 
 export interface PanelCapabilities {
   read: boolean;
   write: boolean;
   manage_target_users: boolean;
-  manage_global_users: boolean;
-  manage_owners: boolean;
 }
 
 export interface PanelViewer {
   account: PanelAccount;
-  root: boolean;
+  system_role: SystemRole;
   status: PanelUserStatus;
-  global_role: PanelRole;
-  capabilities: PanelCapabilities;
   target_count: number;
 }
 
 export interface TargetUserAccess {
-  role: Exclude<PanelRole, 'owner'> | null;
+  role: Exclude<InstallationRole, 'owner'> | null;
   suspended: boolean;
   suspension_reason?: string;
   revision: number;
   updated_at?: string;
-  effective_role: PanelRole;
+  effective_role: InstallationRole;
   source: AccessSource;
   capabilities: PanelCapabilities;
 }
 
 export interface PanelUser {
   account: PanelAccount;
-  root: boolean;
+  system_role: SystemRole;
   status: PanelUserStatus;
-  global_role: PanelRole;
   ban_reason?: string;
   banned_at?: string;
   last_login_at?: string;
@@ -104,30 +100,55 @@ export interface PanelUserPageRequest {
   query: string;
   sort: PanelUserSort;
   limit: number;
-  roles: PanelRole[];
+  roles: InstallationRole[];
   statuses: PanelUserListStatus[];
 }
 
-export interface AddGlobalUserInput {
-  login: string;
-  role: PanelRole;
-  target_id: string;
-}
-
-export interface UpdateGlobalUserInput {
-  global_role: PanelRole;
+export interface RootPanelUser {
+  account: PanelAccount;
+  system_role: SystemRole;
   status: PanelUserStatus;
   ban_reason?: string;
-  expected_revision: number;
+  banned_at?: string;
+  removed_at?: string;
+  last_login_at?: string;
+  revision: number;
+  owned_installations: number;
+  assigned_installations: number;
+  manageable: boolean;
+  can_manage_system_role: boolean;
 }
+
+export type RootPanelUserSort =
+  'name_asc' | 'name_desc' | 'role_asc' | 'role_desc' | 'login_newest' | 'login_oldest';
+
+export interface RootPanelUserPageRequest {
+  cursor?: string;
+  query: string;
+  sort: RootPanelUserSort;
+  limit: number;
+  systemRoles: SystemRole[];
+  statuses: PanelUserStatus[];
+}
+
+export type UpdateRootUserInput =
+  | {
+      system_role: Exclude<SystemRole, 'super_root'>;
+      expected_revision: number;
+    }
+  | {
+      status: PanelUserStatus;
+      reason?: string;
+      expected_revision: number;
+    };
 
 export interface AddTargetUserInput {
   login: string;
-  role: Exclude<PanelRole, 'none' | 'owner'>;
+  role: Exclude<InstallationRole, 'none' | 'owner'>;
 }
 
 export interface UpdateTargetUserInput {
-  role: Exclude<PanelRole, 'owner'> | null;
+  role: Exclude<InstallationRole, 'owner'> | null;
   suspended: boolean;
   suspension_reason?: string;
   expected_revision: number;
@@ -141,13 +162,19 @@ export interface PanelInvitation {
   account: PanelAccount;
   target_id?: string;
   target_name?: string;
-  role: Exclude<PanelRole, 'none'>;
+  role?: Exclude<InstallationRole, 'none'>;
+  system_role?: Exclude<SystemRole, 'none' | 'super_root'>;
   status: InvitationStatus;
   expires_at: string;
   created_by: PanelAccount;
   created_at: string;
   responded_at?: string;
   invite_url?: string;
+}
+
+export interface AddRootInvitationInput {
+  login: string;
+  expires_in_days: InvitationDays;
 }
 
 export type InvitationSort =
@@ -165,7 +192,7 @@ export interface InvitationPageRequest {
   query: string;
   sort: InvitationSort;
   limit: number;
-  roles: Exclude<PanelRole, 'none'>[];
+  roles: Exclude<InstallationRole, 'none'>[];
   statuses: InvitationStatus[];
 }
 
@@ -177,16 +204,9 @@ export interface AccessDecision {
   created_at: string;
 }
 
-export interface AddGlobalInvitationInput {
-  login: string;
-  role: Exclude<PanelRole, 'none'>;
-  target_id: string;
-  expires_in_days: InvitationDays;
-}
-
 export interface AddTargetInvitationInput {
   login: string;
-  role: Exclude<PanelRole, 'none' | 'owner'>;
+  role: Exclude<InstallationRole, 'none' | 'owner'>;
   expires_in_days: InvitationDays;
 }
 
@@ -213,10 +233,147 @@ export interface PanelTarget {
   config_sources: ConfigSources;
   revision: number;
   repository_counts: RepositoryCounts;
-  effective_role: PanelRole;
+  effective_role: InstallationRole;
   access_source: AccessSource;
   capabilities: PanelCapabilities;
   suspension_reason?: string;
+}
+
+export type OwnershipSource = 'personal' | 'organization_admin';
+export type OwnershipStatus = 'fresh' | 'permission_pending' | 'error';
+
+export interface OwnershipState {
+  source: OwnershipSource;
+  status: OwnershipStatus;
+  detail?: string;
+  synced_at: string;
+  owner_count: number;
+  stale: boolean;
+}
+
+export interface RootInstallation {
+  id: string;
+  installation_id: string;
+  type: 'Organization' | 'User';
+  account: PanelAccount;
+  available: boolean;
+  owned_by_viewer: boolean;
+  repository_counts: RepositoryCounts;
+  delivery_health: {
+    failed: number;
+    last_failure_at?: string;
+  };
+  ownership: OwnershipState;
+}
+
+export interface RootOverviewFailure {
+  installation: PanelAccount;
+  failure: DeliveryFailure;
+}
+
+export interface RootOverview {
+  service: {
+    status: 'healthy';
+    version: string;
+    service_host: string;
+    uptime_seconds: number;
+    storage: 'healthy';
+  };
+  catalog: {
+    installations: number;
+    repositories: number;
+    enabled_repositories: number;
+  };
+  ownership: {
+    fresh: number;
+    stale: number;
+    permission_pending: number;
+    error: number;
+  };
+  active_elevations: number;
+  unread_security_events: number;
+  recent_failures: RootOverviewFailure[];
+}
+
+export interface RootElevation {
+  id: string;
+  target_id: string;
+  reason?: string;
+  started_at: string;
+  expires_at: string;
+  ended_at?: string;
+}
+
+export interface RootElevationInput {
+  acknowledged: true;
+  reason?: string;
+}
+
+export interface RootRuntimeSettings {
+  behavior_defaults: {
+    deployment: ConfigValues;
+    override: ConfigValues | null;
+    effective: ConfigValues;
+  };
+  log_level: {
+    deployment: string;
+    override: string | null;
+    effective: string;
+  };
+  reaction_poll_interval: {
+    deployment_seconds: number;
+    override_seconds: number | null;
+    effective_seconds: number;
+  };
+  session_lifetime: {
+    deployment_seconds: number;
+    override_seconds: number | null;
+    effective_seconds: number;
+  };
+  revision: number;
+  updated_at?: string;
+  updated_by?: PanelAccount;
+  service: {
+    version: string;
+    uptime_seconds: number;
+    storage: string;
+    listeners: { public: string; admin: string };
+    public_paths: { panel: string; webhook: string };
+    provider_endpoints: { api: string; authorize: string; token: string };
+    credential_presence: { webhook: boolean; app: boolean; oauth: boolean };
+  };
+}
+
+export interface RootRuntimeSettingsInput {
+  bot_config: ConfigValues | null;
+  log_level: string | null;
+  reaction_poll_interval_seconds: number | null;
+  session_ttl_seconds: number | null;
+  expected_revision: number;
+}
+
+export interface SecurityNotification {
+  id: string;
+  installation: PanelAccount;
+  actor: PanelAccount;
+  elevation_id: string;
+  audit_event_id: string;
+  action: string;
+  reason?: string;
+  created_at: string;
+  read_at?: string;
+}
+
+export interface NotificationPage {
+  items: SecurityNotification[];
+  next_cursor: string | null;
+  total: number;
+  unread: number;
+}
+
+export interface NotificationPageRequest {
+  cursor?: string;
+  limit: number;
 }
 
 export type RepositoryFileStatus = 'missing' | 'valid' | 'invalid' | 'bypassed';
@@ -287,15 +444,23 @@ export interface RepositorySettingsInput {
 
 export interface AuditEntry {
   id: string;
+  category?: AuditCategory;
+  installation?: PanelAccount;
   actor: PanelAccount;
+  subject?: PanelAccount;
+  elevation_id?: string;
   action: string;
   summary: string;
   repository_full_name?: string;
   created_at: string;
 }
 
+export type AuditCategory =
+  'configuration' | 'access' | 'ownership' | 'elevation' | 'notification' | 'runtime';
+
 export interface DeliveryFailure {
   id: string;
+  installation?: PanelAccount;
   delivery_id: string;
   repository_full_name: string;
   event: string;
@@ -330,8 +495,9 @@ export interface HistoryRequest {
 }
 
 export interface AuditHistoryRequest extends HistoryRequest {
-  scope: AuditScope;
-  change: AuditChange;
+  scope?: AuditScope;
+  change?: AuditChange;
+  categories?: AuditCategory[];
 }
 
 export interface FailureHistoryRequest extends HistoryRequest {

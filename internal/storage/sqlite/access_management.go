@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/storage"
 )
@@ -26,11 +27,12 @@ ORDER BY lower(a.login), a.id`)
 	return users, nil
 }
 
-// ListTargetPanelUsers returns users whose global or local policy is relevant
-// to one available installation.
+// ListTargetPanelUsers returns users whose policy is relevant to one available
+// installation.
 func (s *Store) ListTargetPanelUsers(
 	ctx context.Context,
 	targetID string,
+	now time.Time,
 ) ([]storage.TargetPanelUser, error) {
 	var available bool
 	err := s.db.QueryRowContext(ctx, "SELECT available FROM targets WHERE id = ?", targetID).
@@ -54,12 +56,11 @@ func (s *Store) ListTargetPanelUsers(
 		} else if !errors.Is(overrideErr, sql.ErrNoRows) {
 			return nil, fmt.Errorf("read target user override: %w", overrideErr)
 		}
-		access, accessErr := s.ResolveTargetAccess(ctx, user.Account.ID, targetID)
+		access, accessErr := s.ResolveTargetAccess(ctx, user.Account.ID, targetID, now)
 		if accessErr != nil {
 			return nil, accessErr
 		}
-		if user.GlobalRole == storage.PanelRoleNone && overridePointer == nil &&
-			access.Role == storage.PanelRoleNone {
+		if overridePointer == nil && access.Role == storage.InstallationRoleNone {
 			continue
 		}
 		result = append(result, storage.TargetPanelUser{
@@ -70,13 +71,13 @@ func (s *Store) ListTargetPanelUsers(
 	return result, nil
 }
 
-// UpdatePanelUser replaces a global role or lifecycle state with optimistic
+// UpdatePanelUser replaces an account lifecycle state with optimistic
 // concurrency and an audit entry in the same transaction.
 func (s *Store) UpdatePanelUser(
 	ctx context.Context,
 	change storage.PanelUserChange,
 ) (storage.PanelUser, error) {
-	if !validGlobalRole(change.GlobalRole) || !validPanelUserStatus(change.Status) {
+	if !validPanelUserStatus(change.Status) {
 		return storage.PanelUser{}, errors.New("unsupported panel user policy")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -92,8 +93,7 @@ func (s *Store) UpdatePanelUser(
 	if current.Revision != change.ExpectedRevision {
 		return storage.PanelUser{}, storage.ErrConflict
 	}
-	if current.Root && (change.Status != storage.PanelUserActive ||
-		change.GlobalRole != storage.PanelRoleOwner) {
+	if current.SystemRole.IsRoot() && change.Status != storage.PanelUserActive {
 		return storage.PanelUser{}, storage.ErrConflict
 	}
 	if current.Status == storage.PanelUserRemoved {
@@ -103,11 +103,10 @@ func (s *Store) UpdatePanelUser(
 	values := panelUserUpdateValues(current, change)
 	result, err := tx.ExecContext(ctx, `
 UPDATE panel_users
-SET status = ?, global_role = ?, ban_reason = ?, banned_at = ?, removed_at = ?,
+SET status = ?, ban_reason = ?, banned_at = ?, removed_at = ?,
     revision = revision + 1, updated_at = ?
 WHERE account_id = ? AND revision = ?`,
 		change.Status,
-		values.role,
 		values.banReason,
 		values.bannedAt,
 		values.removedAt,
@@ -162,7 +161,6 @@ WHERE account_id = ? AND status = 'pending'`,
 }
 
 type panelUserUpdate struct {
-	role      storage.PanelRole
 	banReason any
 	bannedAt  any
 	removedAt any
@@ -175,8 +173,7 @@ func panelUserUpdateValues(
 	change storage.PanelUserChange,
 ) panelUserUpdate {
 	values := panelUserUpdate{
-		role: change.GlobalRole, action: "user.role.updated",
-		summary: fmt.Sprintf("changed global role to %s", change.GlobalRole),
+		action: "user.restored", summary: "restored user",
 	}
 	switch change.Status {
 	case storage.PanelUserActive:
@@ -193,7 +190,6 @@ func panelUserUpdateValues(
 			values.summary += ": " + reason
 		}
 	case storage.PanelUserRemoved:
-		values.role = storage.PanelRoleNone
 		values.removedAt = formatTime(change.ChangedAt)
 		values.action = "user.removed"
 		values.summary = "removed user"

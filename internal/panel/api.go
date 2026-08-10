@@ -52,7 +52,7 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	targets, err := s.store.ListTargets(r.Context(), account.ID)
+	targets, err := s.store.ListTargets(r.Context(), account.ID, s.now().UTC())
 	if err != nil {
 		s.writeInternal(w, err)
 		return
@@ -70,21 +70,38 @@ func (s *Server) getTargets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	targets, err := s.store.ListTargets(r.Context(), account.ID)
+	targets, err := s.store.ListTargets(r.Context(), account.ID, s.now().UTC())
 	if err != nil {
 		s.writeInternal(w, err)
 		return
 	}
 	response := make([]targetResponse, 0, len(targets))
 	for _, target := range targets {
-		access, accessErr := s.store.ResolveTargetAccess(r.Context(), account.ID, target.ID)
+		access, accessErr := s.store.ResolveTargetAccess(
+			r.Context(), account.ID, target.ID, s.now().UTC(),
+		)
 		if accessErr != nil {
 			s.writeInternal(w, accessErr)
 			return
 		}
-		response = append(response, targetDTO(s.cfg.ProcessConfig, target, access))
+		response = append(response, targetDTO(s.processConfig(), target, access))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"targets": response})
+}
+
+func (s *Server) postRootInstallationSync(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSameOrigin(w, r) {
+		return
+	}
+	if _, _, ok := s.requireRoot(w, r); !ok {
+		return
+	}
+	targetIDs, err := s.catalog.SyncCatalog(r.Context())
+	if err != nil {
+		s.writeInternal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"target_ids": targetIDs})
 }
 
 func (s *Server) putTargetSettings(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +137,7 @@ func (s *Server) putTargetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Announce(updated.ID, "")
-	writeJSON(w, http.StatusOK, targetDTO(s.cfg.ProcessConfig, updated, access))
+	writeJSON(w, http.StatusOK, targetDTO(s.processConfig(), updated, access))
 }
 
 func (s *Server) getRepositories(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +168,7 @@ func (s *Server) getRepository(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.cfg.ProcessConfig, target, repository))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), target, repository))
 }
 
 func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +210,7 @@ func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Announce(target.ID, updated.ID)
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.cfg.ProcessConfig, target, updated))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), target, updated))
 }
 
 func (s *Server) repository(
@@ -223,6 +240,10 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.getInstallationAuditPage(w, r, target.ID)
+}
+
+func (s *Server) getInstallationAuditPage(w http.ResponseWriter, r *http.Request, targetID string) {
 	page, err := parseHistoryPage(r.URL.Query(), auditHistoryOrders...)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", err.Error())
@@ -246,7 +267,7 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid audit change")
 		return
 	}
-	result, err := s.store.ListAudit(r.Context(), target.ID, storage.AuditPageRequest{
+	result, err := s.store.ListAudit(r.Context(), targetID, storage.AuditPageRequest{
 		HistoryPageRequest: page,
 		Scope:              scope,
 		Change:             change,
@@ -263,6 +284,10 @@ func (s *Server) getFailures(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.getInstallationFailurePage(w, r, target.ID)
+}
+
+func (s *Server) getInstallationFailurePage(w http.ResponseWriter, r *http.Request, targetID string) {
 	page, err := parseHistoryPage(r.URL.Query(), failureHistoryOrders...)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", err.Error())
@@ -281,7 +306,7 @@ func (s *Server) getFailures(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid failure kind")
 		return
 	}
-	result, err := s.store.ListFailures(r.Context(), target.ID, storage.FailurePageRequest{
+	result, err := s.store.ListFailures(r.Context(), targetID, storage.FailurePageRequest{
 		HistoryPageRequest: page,
 		Retryable:          retryable,
 	})

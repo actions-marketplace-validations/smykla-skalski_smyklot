@@ -16,7 +16,26 @@ func (s *Store) ListInvitationPage(
 	now time.Time,
 	page storage.InvitationPageRequest,
 ) (storage.InvitationPage, error) {
-	clauses, arguments, err := invitationPageFilters(targetID, now, page)
+	return s.listInvitationPage(ctx, targetID, false, now, page)
+}
+
+// ListRootInvitationPage returns only system-role invitations.
+func (s *Store) ListRootInvitationPage(
+	ctx context.Context,
+	now time.Time,
+	page storage.InvitationPageRequest,
+) (storage.InvitationPage, error) {
+	return s.listInvitationPage(ctx, nil, true, now, page)
+}
+
+func (s *Store) listInvitationPage(
+	ctx context.Context,
+	targetID *string,
+	root bool,
+	now time.Time,
+	page storage.InvitationPageRequest,
+) (storage.InvitationPage, error) {
+	clauses, arguments, err := invitationPageFilters(targetID, root, now, page)
 	if err != nil {
 		return storage.InvitationPage{}, err
 	}
@@ -65,11 +84,17 @@ func (s *Store) ListInvitationPage(
 
 func invitationPageFilters(
 	targetID *string,
+	root bool,
 	now time.Time,
 	page storage.InvitationPageRequest,
 ) ([]string, []any, error) {
 	clauses := []string{"((ui.target_id IS NULL AND ? IS NULL) OR ui.target_id = ?)"}
 	arguments := []any{targetID, targetID}
+	if root {
+		clauses = append(clauses, "ui.system_role = 'root'")
+	} else {
+		clauses = append(clauses, "ui.system_role IS NULL")
+	}
 	if page.Query != "" {
 		clauses = append(clauses, `(instr(lower(invited.login), lower(?)) > 0
 OR instr(lower(invited.display_name), lower(?)) > 0
@@ -79,7 +104,7 @@ OR instr(lower(creator.login), lower(?)) > 0)`)
 	if len(page.Roles) > 0 {
 		parts := make([]string, 0, len(page.Roles))
 		for _, role := range page.Roles {
-			if !validInvitationRole(role, targetID) {
+			if targetID == nil || !validTargetRole(role) || role == storage.InstallationRoleNone {
 				return nil, nil, fmt.Errorf("unsupported invitation role %q", role)
 			}
 			parts = append(parts, "ui.role = ?")

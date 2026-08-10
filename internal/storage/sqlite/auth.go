@@ -30,64 +30,158 @@ func (s *Store) GetAccount(ctx context.Context, id string) (storage.Account, err
 	return account, nil
 }
 
-// ClaimOwner binds the panel to the first approved account. The binding is
-// immutable: later calls return whether the supplied account already owns it.
-func (s *Store) ClaimOwner(ctx context.Context, accountID string) (bool, error) {
+// ReconcileSuperRoot makes accountID the singleton Super Root. Reassigning the
+// configured identity demotes the former Super Root to Root atomically.
+func (s *Store) ReconcileSuperRoot(
+	ctx context.Context,
+	accountID string,
+	changedAt time.Time,
+) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin panel owner claim: %w", err)
+		return fmt.Errorf("begin Super Root reconciliation: %w", err)
 	}
 
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO panel_owner (singleton, account_id)
-VALUES (1, ?)
-ON CONFLICT(singleton) DO NOTHING`, accountID); err != nil {
-		return false, fmt.Errorf("claim panel owner: %w", err)
+	var previousID string
+	var previousStatus storage.PanelUserStatus
+	previousErr := tx.QueryRowContext(ctx, `
+SELECT account_id, status FROM panel_users WHERE system_role = 'super_root'`).
+		Scan(&previousID, &previousStatus)
+	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+		return fmt.Errorf("read current Super Root: %w", previousErr)
+	}
+	if previousID == accountID && previousStatus == storage.PanelUserActive {
+		return nil
 	}
 
-	var ownerID string
-	if err := tx.QueryRowContext(ctx, "SELECT account_id FROM panel_owner WHERE singleton = 1").
-		Scan(&ownerID); err != nil {
-		return false, fmt.Errorf("read panel owner claim: %w", err)
+	if previousErr == nil && previousID != accountID {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE panel_users
+SET system_role = 'root', revision = revision + 1, updated_at = ?
+WHERE account_id = ?`, formatTime(changedAt), previousID); err != nil {
+			return fmt.Errorf("demote former Super Root: %w", err)
+		}
+		if err := insertAccessAudit(
+			ctx, tx, nil, accountID, previousID, "system_role.changed",
+			"changed system role to root", changedAt,
+		); err != nil {
+			return err
+		}
 	}
-	if _, err := tx.ExecContext(ctx, `
+
+	result, err := tx.ExecContext(ctx, `
 INSERT INTO panel_users (
-    account_id, root, status, global_role, revision, created_at, updated_at
+    account_id, status, revision, created_at, updated_at, system_role
 )
-SELECT id, 1, 'active', 'owner', 1, updated_at, updated_at
+SELECT id, 'active', 1, ?, ?, 'super_root'
 FROM accounts WHERE id = ?
 ON CONFLICT(account_id) DO UPDATE SET
-    root = 1,
     status = 'active',
-    global_role = 'owner',
+    system_role = 'super_root',
     ban_reason = NULL,
     banned_at = NULL,
-    removed_at = NULL`, ownerID); err != nil {
-		return false, fmt.Errorf("activate panel root: %w", err)
+    removed_at = NULL,
+    revision = panel_users.revision + 1,
+    updated_at = excluded.updated_at`,
+		formatTime(changedAt),
+		formatTime(changedAt),
+		accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("promote configured Super Root: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read Super Root reconciliation result: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("promote configured Super Root: %w", storage.ErrNotFound)
+	}
+	if previousID != accountID {
+		if err := insertAccessAudit(
+			ctx, tx, nil, accountID, accountID, "system_role.changed",
+			"changed system role to super_root", changedAt,
+		); err != nil {
+			return err
+		}
+	} else if err := insertAccessAudit(
+		ctx, tx, nil, accountID, accountID, "system_role.restored",
+		"restored configured Super Root", changedAt,
+	); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit panel owner claim: %w", err)
+		return fmt.Errorf("commit Super Root reconciliation: %w", err)
 	}
 
-	return ownerID == accountID, nil
+	return nil
 }
 
-// IsOwner reports whether the immutable panel owner binding names accountID.
-func (s *Store) IsOwner(ctx context.Context, accountID string) (bool, error) {
-	var ownerID string
-	err := s.db.QueryRowContext(ctx, "SELECT account_id FROM panel_owner WHERE singleton = 1").
-		Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) {
+// ActivateDerivedOwner creates the regular panel identity for an account that
+// has a fresh GitHub-derived Owner record. An existing lifecycle decision is
+// never changed, so a ban or soft removal continues to override ownership.
+func (s *Store) ActivateDerivedOwner(
+	ctx context.Context,
+	accountID string,
+	changedAt time.Time,
+) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin derived Owner activation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status storage.PanelUserStatus
+	err = tx.QueryRowContext(
+		ctx, "SELECT status FROM panel_users WHERE account_id = ?", accountID,
+	).Scan(&status)
+	if err == nil {
+		return status == storage.PanelUserActive, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read derived Owner identity: %w", err)
+	}
+	var owned int
+	err = tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1
+    FROM target_owners owner
+    JOIN targets t ON t.id = owner.target_id AND t.available = 1
+    JOIN target_ownership ownership
+      ON ownership.target_id = t.id AND ownership.status = 'fresh'
+    WHERE owner.account_id = ?
+      AND julianday(ownership.synced_at) >= julianday(?)
+      AND EXISTS(SELECT 1 FROM target_owners any_owner WHERE any_owner.target_id = t.id)
+)`, accountID, formatTime(changedAt.Add(-storage.OwnershipFreshFor))).Scan(&owned)
+	if err != nil {
+		return false, fmt.Errorf("resolve derived Owner identity: %w", err)
+	}
+	if owned == 0 {
 		return false, nil
 	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO panel_users (
+    account_id, status, revision, created_at, updated_at, system_role
+) VALUES (?, 'active', 1, ?, ?, 'none')`,
+		accountID, formatTime(changedAt), formatTime(changedAt),
+	)
 	if err != nil {
-		return false, fmt.Errorf("read panel owner: %w", err)
+		return false, fmt.Errorf("activate derived Owner: %w", conflictConstraint(err))
+	}
+	if err := insertAccessAudit(
+		ctx, tx, nil, accountID, accountID, "owner.access.activated",
+		"activated GitHub-derived Owner access", changedAt,
+	); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit derived Owner activation: %w", err)
 	}
 
-	return ownerID == accountID, nil
+	return true, nil
 }
 
 // CreateSession adds a session and keeps only the newest maxActive sessions
@@ -153,7 +247,7 @@ func (s *Store) GetSession(
 	}
 
 	if !now.Before(session.ExpiresAt) {
-		if err := s.DeleteSession(ctx, tokenHash); err != nil {
+		if err := s.DeleteSession(ctx, tokenHash, storage.ElevationExpired, now); err != nil {
 			return storage.Session{}, err
 		}
 
@@ -169,10 +263,26 @@ func (s *Store) GetSession(
 	return session, nil
 }
 
-// DeleteSession revokes one session. It is idempotent.
-func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash = ?", tokenHash); err != nil {
+// DeleteSession removes one session and terminates its Root elevation atomically.
+func (s *Store) DeleteSession(
+	ctx context.Context,
+	tokenHash string,
+	reason storage.ElevationEndReason,
+	deletedAt time.Time,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin session delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := endSessionElevations(ctx, tx, tokenHash, reason, deletedAt); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash = ?", tokenHash); err != nil {
 		return fmt.Errorf("delete session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit session delete: %w", err)
 	}
 
 	return nil
@@ -206,6 +316,11 @@ ORDER BY token_hash`, accountID, formatTime(revokedAt))
 	if err != nil {
 		return nil, fmt.Errorf("read account sessions for revocation: %w", err)
 	}
+	for _, hash := range hashes {
+		if err := endSessionElevations(ctx, tx, hash, storage.ElevationRevoked, revokedAt); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE sessions
 SET revoked_at = ?, revoke_code = ?, revoke_reason = ?
@@ -225,10 +340,47 @@ WHERE account_id = ? AND revoked_at IS NULL AND expires_at > ?`,
 	return hashes, nil
 }
 
-// DeleteExpiredAuth removes expired sessions.
+// DeleteExpiredAuth records expired elevations and removes expired sessions.
 func (s *Store) DeleteExpiredAuth(ctx context.Context, now time.Time) error {
-	if _, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ?", formatTime(now)); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin expired auth delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	expiredElevations, err := listExpiredElevations(ctx, tx, now)
+	if err != nil {
+		return err
+	}
+	for index := range expiredElevations {
+		if err := endElevation(
+			ctx, tx, &expiredElevations[index], storage.ElevationExpired, now,
+		); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT token_hash FROM sessions WHERE expires_at <= ?", formatTime(now))
+	if err != nil {
+		return fmt.Errorf("list expired sessions: %w", err)
+	}
+	hashes, err := collectRows(rows, func(scanner rowScanner) (string, error) {
+		var hash string
+		scanErr := scanner.Scan(&hash)
+
+		return hash, scanErr
+	})
+	if err != nil {
+		return fmt.Errorf("read expired sessions: %w", err)
+	}
+	for _, hash := range hashes {
+		if err := endSessionElevations(ctx, tx, hash, storage.ElevationExpired, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ?", formatTime(now)); err != nil {
 		return fmt.Errorf("delete expired sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit expired auth delete: %w", err)
 	}
 
 	return nil

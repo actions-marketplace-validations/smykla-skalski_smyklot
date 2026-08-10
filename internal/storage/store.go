@@ -11,11 +11,11 @@ import (
 type AuthStore interface {
 	UpsertAccount(context.Context, Account) error
 	GetAccount(context.Context, string) (Account, error)
-	ClaimOwner(context.Context, string) (bool, error)
-	IsOwner(context.Context, string) (bool, error)
+	ReconcileSuperRoot(context.Context, string, time.Time) error
+	ActivateDerivedOwner(context.Context, string, time.Time) (bool, error)
 	CreateSession(context.Context, Session, int) error
 	GetSession(context.Context, string, time.Time) (Session, error)
-	DeleteSession(context.Context, string) error
+	DeleteSession(context.Context, string, ElevationEndReason, time.Time) error
 	RevokeAccountSessions(context.Context, string, string, string, time.Time) ([]string, error)
 	DeleteExpiredAuth(context.Context, time.Time) error
 }
@@ -24,22 +24,24 @@ type AuthStore interface {
 type AccessStore interface {
 	GetPanelUser(context.Context, string) (PanelUser, error)
 	ListPanelUsers(context.Context) ([]PanelUser, error)
-	ListPanelUserPage(context.Context, PanelUserPageRequest) (PanelUserPage, error)
-	ListTargetPanelUsers(context.Context, string) ([]TargetPanelUser, error)
-	ListTargetPanelUserPage(context.Context, string, PanelUserPageRequest) (TargetPanelUserPage, error)
+	ListRootPanelUserPage(context.Context, RootPanelUserPageRequest) (RootPanelUserPage, error)
+	UpdateSystemRole(context.Context, SystemRoleChange) (PanelUser, error)
+	ListTargetPanelUsers(context.Context, string, time.Time) ([]TargetPanelUser, error)
+	ListTargetPanelUserPage(context.Context, string, time.Time, PanelUserPageRequest) (TargetPanelUserPage, error)
 	ListAccessDecisions(context.Context, string, *string, int) ([]AccessDecision, error)
 	CreatePanelUser(context.Context, PanelUserCreate) (PanelUser, error)
 	UpdatePanelUser(context.Context, PanelUserChange) (PanelUser, error)
 	GetTargetAccessOverride(context.Context, string, string) (TargetAccessOverride, error)
 	SetTargetAccess(context.Context, TargetAccessChange) (TargetAccessOverride, error)
-	ResolveTargetAccess(context.Context, string, string) (TargetAccess, error)
-	ListTargets(context.Context, string) ([]Target, error)
+	ResolveTargetAccess(context.Context, string, string, time.Time) (TargetAccess, error)
+	ListTargets(context.Context, string, time.Time) ([]Target, error)
 }
 
 // InvitationStore owns identity-locked panel invitations and acceptance.
 type InvitationStore interface {
 	ListInvitations(context.Context, *string, time.Time) ([]Invitation, error)
 	ListInvitationPage(context.Context, *string, time.Time, InvitationPageRequest) (InvitationPage, error)
+	ListRootInvitationPage(context.Context, time.Time, InvitationPageRequest) (InvitationPage, error)
 	GetInvitation(context.Context, string, time.Time) (Invitation, error)
 	GetInvitationByToken(context.Context, string, time.Time) (Invitation, error)
 	CreateInvitation(context.Context, InvitationCreate) (Invitation, error)
@@ -53,6 +55,7 @@ type CatalogStore interface {
 	ReconcileCatalog(context.Context, []InstallationSnapshot) error
 	ReconcileInstallation(context.Context, InstallationSnapshot) error
 	GetTarget(context.Context, string) (Target, error)
+	ListRootTargets(context.Context) ([]Target, error)
 	ListRepositories(context.Context, string) ([]Repository, error)
 	ListRepositoryPage(context.Context, string, RepositoryPageRequest) (RepositoryPage, error)
 	GetRepository(context.Context, string, string) (Repository, error)
@@ -63,6 +66,8 @@ type ConfigStore interface {
 	UpdateTargetSettings(context.Context, TargetSettingsChange) (Target, error)
 	UpdateRepositorySettings(context.Context, RepositorySettingsChange) (Repository, error)
 	UpdateRepositoryFileState(context.Context, RepositoryFileState) (bool, error)
+	GetRuntimeSettings(context.Context) (RuntimeSettings, error)
+	UpdateRuntimeSettings(context.Context, RuntimeSettingsChange) (RuntimeSettings, error)
 }
 
 // DeliveryStore owns delivery claims, completion, failure, and retention.
@@ -73,12 +78,25 @@ type DeliveryStore interface {
 	FailDelivery(context.Context, DeliveryFailureChange) error
 	RecoverRunningDeliveries(context.Context, time.Time) error
 	ListFailures(context.Context, string, FailurePageRequest) (FailurePage, error)
+	ListRootFailures(context.Context, FailurePageRequest) (RootFailurePage, error)
 	PruneDeliveries(context.Context, time.Time) error
 }
 
 // AuditReader reads immutable mutation history.
 type AuditReader interface {
 	ListAudit(context.Context, string, AuditPageRequest) (AuditPage, error)
+	ListRootAudit(context.Context, RootAuditPageRequest) (RootAuditPage, error)
+}
+
+// SecurityStore owns Root elevation grants and Owner notifications.
+type SecurityStore interface {
+	GetRootOverview(context.Context, string, time.Time) (RootOverview, error)
+	BeginElevation(context.Context, ElevationGrant) (Elevation, error)
+	GetElevation(context.Context, string, string, time.Time) (Elevation, error)
+	EndElevation(context.Context, string, string, ElevationEndReason, time.Time) (Elevation, error)
+	EndSessionElevations(context.Context, string, ElevationEndReason, time.Time) error
+	ListSecurityNotifications(context.Context, string, NotificationPageRequest) (NotificationPage, error)
+	MarkSecurityNotificationRead(context.Context, string, int64, time.Time) (SecurityNotification, error)
 }
 
 // Store is the complete persistence capability needed by the service. It does
@@ -91,6 +109,7 @@ type Store interface {
 	ConfigStore
 	DeliveryStore
 	AuditReader
+	SecurityStore
 
 	Ping(context.Context) error
 	Close() error

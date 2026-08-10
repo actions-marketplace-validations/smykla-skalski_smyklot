@@ -4,6 +4,10 @@
   import PageFooter from './components/PageFooter.svelte';
   import Plate from './components/Plate.svelte';
   import RepositoryList from './components/RepositoryList.svelte';
+  import RootAccess from './components/RootAccess.svelte';
+  import RootInstallations from './components/RootInstallations.svelte';
+  import RootOverview from './components/RootOverview.svelte';
+  import RootSettings from './components/RootSettings.svelte';
   import SignedOut from './components/SignedOut.svelte';
   import TargetSettings from './components/TargetSettings.svelte';
   import UserManagement from './components/UserManagement.svelte';
@@ -21,9 +25,14 @@
   } from './lib/preferences';
   import {
     resolvePanelRoute,
+    rootSection,
+    rootSectionRoute,
     type PanelRoute,
     type PanelRouter,
     type PanelView,
+    type RootRoute,
+    type RootSection,
+    type ScopedPanelView,
   } from './lib/routes';
   import type {
     PanelTarget,
@@ -53,8 +62,12 @@
   let historyVersion = $state(0);
   let repositoryDetailsVersion = $state(0);
   let userVersion = $state(0);
+  let notificationVersion = $state(0);
+  let runtimeSettingsVersion = $state(0);
+  let rootDataVersion = $state(0);
   let view = $state<PanelView>('settings');
-  let globalUsers = $state(false);
+  let rootMode = $state(false);
+  let activeRootRoute = $state<RootRoute>({ rootView: 'overview' });
   let streamReady = $state(false);
   let revokedReason = $state<string | null>(null);
   let sidebarCollapsed = $state(readSidebarDisplay() === 'collapsed');
@@ -69,8 +82,13 @@
   const selectedTarget = $derived(
     selectedId === null ? null : (targets.find((target) => target.id === selectedId) ?? null),
   );
+  const rootValue = $derived(rootSection(activeRootRoute));
+  const returnTarget = $derived(selectedTarget ?? targets[0] ?? null);
   const tableScrollView = $derived(
-    selectedTarget !== null && ['repositories', 'users', 'invitations', 'history'].includes(view),
+    rootMode
+      ? rootValue === 'history' || rootValue === 'access'
+      : selectedTarget !== null &&
+          ['repositories', 'users', 'invitations', 'history'].includes(view),
   );
 
   function forwardTableWheel(event: WheelEvent): void {
@@ -150,15 +168,6 @@
   async function selectTarget(targetId: string): Promise<void> {
     const target = targets.find((entry) => entry.id === targetId);
     if (target === undefined || selectedId === targetId) return;
-    if (isAccessView(view) && globalUsers) {
-      selectedId = target.id;
-      writeLastInstallation(target.account.login);
-      failure = null;
-      repositoryDetailsVersion += 1;
-      historyVersion += 1;
-      userVersion += 1;
-      return;
-    }
     await activateRoute(routeFor(target, view), 'push');
   }
 
@@ -166,7 +175,6 @@
     const target = selectedTarget;
     if (target === null || view === nextView) return;
     view = nextView;
-    if (nextView === 'users') globalUsers = viewer?.capabilities.manage_global_users === true;
     router.push(routeFor(target, nextView));
   }
 
@@ -174,9 +182,21 @@
     requested: PanelRoute | null,
     navigation: 'none' | 'push' | 'replace',
   ): Promise<void> {
+    if (requested !== null && 'rootView' in requested && viewer?.system_role !== 'none') {
+      rootMode = true;
+      activeRootRoute = requested;
+      if (navigation === 'push') {
+        router.push(requested);
+      } else if (navigation === 'replace') {
+        router.replace(requested);
+      }
+      return;
+    }
+
+    const installationRoute = requested !== null && !('rootView' in requested) ? requested : null;
     const resolved = resolvePanelRoute(
       targets.map((target) => target.account.login),
-      requested,
+      installationRoute,
       readLastInstallation(),
     );
     if (resolved === null) {
@@ -188,19 +208,15 @@
     if (target === undefined) return;
 
     const targetChanged = selectedId !== target.id;
+    rootMode = false;
     selectedId = target.id;
     view = resolved.view;
-    globalUsers =
-      requested !== null &&
-      isAccessView(requested.view) &&
-      !('account' in requested) &&
-      viewer?.capabilities.manage_global_users === true;
     writeLastInstallation(target.account.login);
     const canonical = routeFor(target, resolved.view);
 
     if (navigation === 'push') {
       router.push(canonical);
-    } else if (navigation === 'replace' || !sameRoute(requested, canonical)) {
+    } else if (navigation === 'replace' || !sameRoute(installationRoute, canonical)) {
       router.replace(canonical);
     }
 
@@ -217,7 +233,6 @@
   }
 
   function routeFor(target: PanelTarget, nextView: PanelView): PanelRoute {
-    if (isAccessView(nextView) && globalUsers) return { view: nextView };
     return { account: target.account.login, view: nextView };
   }
 
@@ -230,12 +245,114 @@
     return target === null ? '#' : router.path(routeFor(target, nextView));
   }
 
+  function rootHrefFor(section: RootSection): string {
+    return router.path(rootSectionRoute(section));
+  }
+
+  function rootDashboardHref(): string {
+    return router.path({ rootView: 'overview' });
+  }
+
+  function rootInstallationsHref(): string {
+    return router.path({ rootView: 'installations' });
+  }
+
+  function rootFailuresHref(): string {
+    return router.path({ rootView: 'history-failures' });
+  }
+
+  function rootInstallationHref(account: string, nextView: ScopedPanelView): string {
+    return router.path({ rootView: 'installation', account, view: nextView });
+  }
+
+  function selectRootInstallation(account: string, nextView: ScopedPanelView): void {
+    const route: RootRoute = { rootView: 'installation', account, view: nextView };
+    activeRootRoute = route;
+    router.push(route);
+    resetPageScroll();
+  }
+
+  function selectRootInstallations(): void {
+    const route: RootRoute = { rootView: 'installations' };
+    activeRootRoute = route;
+    router.push(route);
+    resetPageScroll();
+  }
+
+  function resetPageScroll(): void {
+    queueMicrotask(() => window.scrollTo({ top: 0, left: 0 }));
+  }
+
+  function returnHref(): string {
+    return returnTarget === null ? '#' : router.path(routeFor(returnTarget, view));
+  }
+
   function sameRoute(left: PanelRoute | null, right: PanelRoute): boolean {
-    if (left === null || left.view !== right.view) return false;
-    if (!('account' in left) || !('account' in right)) {
-      return !('account' in left) && !('account' in right);
-    }
-    return left.account === right.account;
+    return left !== null && router.path(left) === router.path(right);
+  }
+
+  function selectRootSection(section: RootSection): void {
+    if (!rootMode || rootValue === section) return;
+    const route = rootSectionRoute(section);
+    activeRootRoute = route;
+    router.push(route);
+    resetPageScroll();
+  }
+
+  function selectRootHistorySection(section: 'audit' | 'failures'): void {
+    const route: RootRoute = {
+      rootView: section === 'audit' ? 'history-audit' : 'history-failures',
+    };
+    if (activeRootRoute.rootView === route.rootView) return;
+    activeRootRoute = route;
+    router.push(route);
+  }
+
+  function selectRootAccessSection(section: 'users' | 'invitations'): void {
+    const route: RootRoute = {
+      rootView: section === 'users' ? 'access-users' : 'access-invitations',
+    };
+    if (activeRootRoute.rootView === route.rootView) return;
+    activeRootRoute = route;
+    router.push(route);
+  }
+
+  function enterRoot(): void {
+    if (viewer?.system_role === 'none') return;
+    const route: RootRoute = { rootView: 'overview' };
+    rootMode = true;
+    activeRootRoute = route;
+    router.push(route);
+    resetPageScroll();
+  }
+
+  function returnToPanel(): void {
+    const target = returnTarget;
+    if (target === null) return;
+    void activateRoute(routeFor(target, view), 'push');
+  }
+
+  function rootPageTitle(route: RootRoute): string {
+    if (route.rootView === 'overview') return 'Overview';
+    if (route.rootView === 'installations' || route.rootView === 'installation')
+      return 'Installations';
+    if (route.rootView === 'access-users' || route.rootView === 'access-invitations')
+      return 'Access';
+    if (route.rootView === 'history-audit' || route.rootView === 'history-failures')
+      return 'History';
+    return 'Settings';
+  }
+
+  function rootPageDescription(route: RootRoute): string {
+    if (route.rootView === 'overview')
+      return 'Application health, ownership, and security activity';
+    if (route.rootView === 'installations' || route.rootView === 'installation')
+      return 'Every GitHub installation connected to Smyklot';
+    if (route.rootView === 'access-users' || route.rootView === 'access-invitations')
+      return 'Application accounts, invitations, and system roles';
+    if (route.rootView === 'history-audit' || route.rootView === 'history-failures')
+      return 'Application-wide audit events and failures';
+    return 'Runtime behavior and deployment-backed defaults';
   }
 
   async function updateTarget(input: TargetSettingsInput): Promise<void> {
@@ -292,7 +409,12 @@
         viewer = currentViewer;
       }
       if (!(await refreshTargets()) || !streamRefreshes.isCurrent(refresh)) return;
-      if (selectedId === null) {
+      if (rootMode && viewer?.system_role === 'none') {
+        rootMode = false;
+        await activateRoute(null, 'replace');
+      } else if (rootMode) {
+        router.replace(activeRootRoute);
+      } else if (selectedId === null) {
         await activateRoute(router.current(), 'replace');
       } else if (selectedTarget !== null) {
         writeLastInstallation(selectedTarget.account.login);
@@ -304,6 +426,9 @@
         userVersion += 1;
       }
       clearFailure('stream');
+      notificationVersion += 1;
+      runtimeSettingsVersion += 1;
+      rootDataVersion += 1;
     } catch (error) {
       if (streamRefreshes.isCurrent(refresh)) setFailure('stream', error);
     }
@@ -315,24 +440,6 @@
 
   function refreshAccessFromStream(): void {
     void refreshFromStream(true);
-  }
-
-  function selectUserScope(targetId: string | null): void {
-    if (!isAccessView(view)) return;
-    if (targetId === null) {
-      if (viewer?.capabilities.manage_global_users !== true || selectedTarget === null) return;
-      globalUsers = true;
-      router.push({ view });
-      userVersion += 1;
-      return;
-    }
-    const target = targets.find((entry) => entry.id === targetId);
-    if (target === undefined || !target.capabilities.manage_target_users) return;
-    globalUsers = false;
-    selectedId = target.id;
-    writeLastInstallation(target.account.login);
-    router.push({ account: target.account.login, view });
-    userVersion += 1;
   }
 
   function selectUserSection(section: 'users' | 'invitations'): void {
@@ -420,7 +527,7 @@
 
 <a class="skip-link" href="#panel-content">Skip to panel content</a>
 
-<main class="app-shell" class:sidebar-collapsed={sidebarCollapsed}>
+<main class="app-shell" class:sidebar-collapsed={sidebarCollapsed} class:root-mode={rootMode}>
   <IdentityBar
     {viewer}
     {iconUrl}
@@ -432,13 +539,23 @@
     {view}
     {viewHref}
     onSelectView={selectView}
-    showUsers={viewer?.capabilities.manage_global_users === true ||
-      selectedTarget?.capabilities.manage_target_users === true}
-    showNavigation={viewer !== null && selectedTarget !== null}
+    showUsers={selectedTarget?.capabilities.manage_target_users === true}
+    showNavigation={viewer !== null && (rootMode || selectedTarget !== null)}
     collapsed={sidebarCollapsed}
     onToggleCollapsed={toggleSidebar}
     {theme}
     onSelectTheme={selectTheme}
+    {rootMode}
+    {rootValue}
+    {rootHrefFor}
+    onSelectRoot={selectRootSection}
+    rootDashboardHref={rootDashboardHref()}
+    onEnterRoot={enterRoot}
+    returnHref={returnHref()}
+    onReturnToPanel={returnToPanel}
+    fetchNotifications={api.fetchNotifications}
+    markNotificationRead={api.markNotificationRead}
+    {notificationVersion}
   />
 
   <div class="workspace" class:table-scroll-view={tableScrollView} onwheel={forwardTableWheel}>
@@ -471,6 +588,74 @@
         {:else if failure === null}
           <SignedOut href={api.signInUrl()} />
         {/if}
+      {:else if rootMode}
+        <section
+          class="root-workspace"
+          class:root-table-view={rootValue === 'history' || rootValue === 'access'}
+          aria-labelledby="root-page-heading"
+        >
+          <header class="root-page-header">
+            <div>
+              <p class="root-eyebrow">
+                Root mode · {viewer.system_role === 'super_root' ? 'Super Root' : 'Root'}
+              </p>
+              <h2 id="root-page-heading">{rootPageTitle(activeRootRoute)}</h2>
+              <p>{rootPageDescription(activeRootRoute)}</p>
+            </div>
+            <span class="root-boundary">Application scope</span>
+          </header>
+
+          {#if rootValue === 'overview'}
+            <RootOverview
+              {api}
+              refreshVersion={rootDataVersion}
+              installationsHref={rootInstallationsHref()}
+              failuresHref={rootFailuresHref()}
+            />
+          {:else if rootValue === 'installations'}
+            <RootInstallations
+              route={activeRootRoute}
+              {api}
+              refreshVersion={rootDataVersion}
+              listHref={rootInstallationsHref()}
+              hrefFor={rootInstallationHref}
+              onList={selectRootInstallations}
+              onNavigate={selectRootInstallation}
+            />
+          {:else if rootValue === 'history'}
+            <HistoryPanel
+              context="root"
+              targetId="root"
+              section={activeRootRoute.rootView === 'history-failures' ? 'failures' : 'audit'}
+              onSection={selectRootHistorySection}
+              refreshVersion={rootDataVersion}
+              fetchAudit={api.fetchRootAudit}
+              fetchFailures={api.fetchRootFailures}
+            />
+          {:else if rootValue === 'access'}
+            <RootAccess
+              section={activeRootRoute.rootView === 'access-invitations' ? 'invitations' : 'users'}
+              refreshVersion={rootDataVersion}
+              onSection={selectRootAccessSection}
+              fetchUsers={api.fetchRootUsers}
+              updateUser={api.updateRootUser}
+              fetchInvitations={api.fetchRootInvitations}
+              createInvitation={api.createRootInvitation}
+              reissueInvitation={api.reissueRootInvitation}
+              revokeInvitation={api.revokeRootInvitation}
+              canManageInvitations={viewer.system_role === 'super_root'}
+              fetchInstallations={api.fetchRootInstallations}
+              addInstallationUser={api.addRootTargetUser}
+              onOpenInstallationAccess={(account) => selectRootInstallation(account, 'users')}
+            />
+          {:else}
+            <RootSettings
+              refreshVersion={runtimeSettingsVersion}
+              fetchSettings={api.fetchRootRuntimeSettings}
+              updateSettings={api.updateRootRuntimeSettings}
+            />
+          {/if}
+        </section>
       {:else}
         {#if selectedTarget !== null}
           {#if view === 'settings'}
@@ -502,27 +687,18 @@
               {#key selectedTarget.id}
                 <UserManagement
                   section={view}
-                  scope={globalUsers ? 'global' : 'target'}
                   targetId={selectedTarget.id}
                   targetName={selectedTarget.account.display_name}
                   actorTargetRole={selectedTarget.effective_role}
-                  canManageGlobal={viewer.capabilities.manage_global_users}
-                  canManageOwners={viewer.capabilities.manage_owners}
                   refreshVersion={userVersion}
-                  onScope={selectUserScope}
                   onSection={selectUserSection}
-                  fetchUsers={api.fetchUsers}
-                  addUser={api.addUser}
-                  updateUser={api.updateUser}
                   fetchTargetUsers={api.fetchTargetUsers}
                   addTargetUser={api.addTargetUser}
                   updateTargetUser={api.updateTargetUser}
-                  fetchInvitations={api.fetchInvitations}
-                  createInvitation={api.createInvitation}
                   fetchTargetInvitations={api.fetchTargetInvitations}
                   createTargetInvitation={api.createTargetInvitation}
-                  reissueInvitation={api.reissueInvitation}
-                  revokeInvitation={api.revokeInvitation}
+                  reissueInvitation={api.reissueTargetInvitation}
+                  revokeInvitation={api.revokeTargetInvitation}
                   fetchUserDecisions={api.fetchUserDecisions}
                 />
               {/key}
@@ -630,6 +806,63 @@
     width: 2.5rem;
   }
 
+  .root-workspace {
+    display: grid;
+    gap: var(--space-6);
+  }
+
+  .root-workspace.root-table-view {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .root-page-header {
+    align-items: end;
+    display: flex;
+    gap: var(--space-6);
+    justify-content: space-between;
+  }
+
+  .root-page-header h2 {
+    font-size: clamp(1.55rem, 2.4vw, 2rem);
+    letter-spacing: -0.035em;
+    line-height: 1.05;
+    margin: 0;
+  }
+
+  .root-page-header p:not(.root-eyebrow) {
+    color: var(--text-secondary);
+    margin: var(--space-2) 0 0;
+  }
+
+  .root-eyebrow,
+  .root-boundary {
+    color: #6d54bd;
+    font: 700 var(--font-size-compact) / 1 var(--sans);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .root-eyebrow {
+    margin: 0 0 var(--space-3);
+  }
+
+  .root-boundary {
+    background: color-mix(in srgb, #8b5cf6 10%, var(--surface-base));
+    border: 1px solid color-mix(in srgb, #8b5cf6 28%, var(--border-subtle));
+    border-radius: var(--radius-control);
+    color: color-mix(in srgb, #6d54bd 82%, var(--text-primary));
+    padding: var(--space-2) var(--space-3);
+    white-space: nowrap;
+  }
+
+  :global(:root[data-theme='dark']) .root-eyebrow,
+  :global(:root[data-theme='dark']) .root-boundary {
+    color: #c4b5fd;
+  }
+
   @keyframes skeleton-pulse {
     from {
       opacity: 0.52;
@@ -649,6 +882,12 @@
     .empty-panel-state .btn {
       grid-column: 1 / -1;
       justify-self: start;
+    }
+
+    .root-page-header {
+      align-items: start;
+      flex-direction: column;
+      gap: var(--space-3);
     }
   }
 </style>

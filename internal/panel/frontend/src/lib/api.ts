@@ -4,9 +4,8 @@ import { openPanelStream, panelStreamUrl } from './events';
 import type {
   AuditEntry,
   AuditHistoryRequest,
-  AddGlobalUserInput,
-  AddGlobalInvitationInput,
   AddTargetInvitationInput,
+  AddRootInvitationInput,
   AddTargetUserInput,
   AccessDecision,
   DeliveryFailure,
@@ -19,15 +18,26 @@ import type {
   PanelUser,
   PanelUserPageRequest,
   PanelViewer,
+  NotificationPage,
+  NotificationPageRequest,
   RepositoryDetail,
   RepositoryPageRequest,
   RepositorySettingsInput,
   RepositorySummary,
+  RootElevation,
+  RootElevationInput,
+  RootInstallation,
+  RootOverview,
+  RootPanelUser,
+  RootPanelUserPageRequest,
+  RootRuntimeSettings,
+  RootRuntimeSettingsInput,
+  SecurityNotification,
   TargetSettingsInput,
   InvitationDays,
   InvitationSignIn,
-  UpdateGlobalUserInput,
   UpdateTargetUserInput,
+  UpdateRootUserInput,
 } from './types';
 
 export class PanelApiError extends Error {
@@ -44,9 +54,66 @@ export class PanelApiError extends Error {
 export interface PanelApi {
   fetchViewer(): Promise<PanelViewer | null>;
   fetchTargets(): Promise<PanelTarget[]>;
-  fetchUsers(request: PanelUserPageRequest): Promise<Page<PanelUser>>;
-  addUser(input: AddGlobalUserInput): Promise<PanelUser>;
-  updateUser(accountId: string, input: UpdateGlobalUserInput): Promise<PanelUser>;
+  fetchRootInstallations(): Promise<RootInstallation[]>;
+  syncRootInstallations(): Promise<string[]>;
+  fetchRootOverview(): Promise<RootOverview>;
+  fetchRootUsers(request: RootPanelUserPageRequest): Promise<Page<RootPanelUser>>;
+  updateRootUser(accountId: string, input: UpdateRootUserInput): Promise<void>;
+  fetchRootInvitations(request: InvitationPageRequest): Promise<Page<PanelInvitation>>;
+  createRootInvitation(input: AddRootInvitationInput): Promise<PanelInvitation>;
+  reissueRootInvitation(
+    invitationId: string,
+    expiresInDays: InvitationDays,
+  ): Promise<PanelInvitation>;
+  revokeRootInvitation(invitationId: string): Promise<PanelInvitation>;
+  fetchRootRuntimeSettings(): Promise<RootRuntimeSettings>;
+  updateRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings>;
+  fetchRootAudit(request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
+  fetchRootFailures(request: FailureHistoryRequest): Promise<Page<DeliveryFailure>>;
+  fetchRootTargetSettings(targetId: string): Promise<PanelTarget>;
+  updateRootTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget>;
+  fetchRootRepositories(
+    targetId: string,
+    request: RepositoryPageRequest,
+  ): Promise<Page<RepositorySummary>>;
+  fetchRootRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
+  updateRootRepositorySettings(
+    targetId: string,
+    repositoryId: string,
+    input: RepositorySettingsInput,
+  ): Promise<RepositoryDetail>;
+  fetchRootElevation(targetId: string): Promise<RootElevation>;
+  beginRootElevation(targetId: string, input: RootElevationInput): Promise<RootElevation>;
+  endRootElevation(elevationId: string): Promise<RootElevation>;
+  fetchRootTargetUsers(targetId: string, request: PanelUserPageRequest): Promise<Page<PanelUser>>;
+  addRootTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser>;
+  updateRootTargetUser(
+    targetId: string,
+    accountId: string,
+    input: UpdateTargetUserInput,
+  ): Promise<PanelUser>;
+  fetchRootTargetInvitations(
+    targetId: string,
+    request: InvitationPageRequest,
+  ): Promise<Page<PanelInvitation>>;
+  createRootTargetInvitation(
+    targetId: string,
+    input: AddTargetInvitationInput,
+  ): Promise<PanelInvitation>;
+  reissueRootTargetInvitation(
+    targetId: string,
+    invitationId: string,
+    expiresInDays: InvitationDays,
+  ): Promise<PanelInvitation>;
+  revokeRootTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
+  fetchRootTargetUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
+  fetchRootTargetAudit(targetId: string, request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
+  fetchRootTargetFailures(
+    targetId: string,
+    request: FailureHistoryRequest,
+  ): Promise<Page<DeliveryFailure>>;
+  fetchNotifications(request: NotificationPageRequest): Promise<NotificationPage>;
+  markNotificationRead(notificationId: string): Promise<SecurityNotification>;
   fetchTargetUsers(targetId: string, request: PanelUserPageRequest): Promise<Page<PanelUser>>;
   addTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser>;
   updateTargetUser(
@@ -54,8 +121,6 @@ export interface PanelApi {
     accountId: string,
     input: UpdateTargetUserInput,
   ): Promise<PanelUser>;
-  fetchInvitations(request: InvitationPageRequest): Promise<Page<PanelInvitation>>;
-  createInvitation(input: AddGlobalInvitationInput): Promise<PanelInvitation>;
   fetchTargetInvitations(
     targetId: string,
     request: InvitationPageRequest,
@@ -65,9 +130,13 @@ export interface PanelApi {
     input: AddTargetInvitationInput,
   ): Promise<PanelInvitation>;
   fetchInvitation(token: string): Promise<PanelInvitation>;
-  reissueInvitation(invitationId: string, expiresInDays: InvitationDays): Promise<PanelInvitation>;
-  revokeInvitation(invitationId: string): Promise<PanelInvitation>;
-  fetchUserDecisions(accountId: string, targetId?: string): Promise<AccessDecision[]>;
+  reissueTargetInvitation(
+    targetId: string,
+    invitationId: string,
+    expiresInDays: InvitationDays,
+  ): Promise<PanelInvitation>;
+  revokeTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
+  fetchUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
   updateTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget>;
   fetchRepositories(
     targetId: string,
@@ -150,16 +219,245 @@ export function createPanelApi(
       return body.targets;
     },
 
-    fetchUsers(userPage: PanelUserPageRequest): Promise<Page<PanelUser>> {
-      return jsonRequest(withAccessPageQuery('/api/v1/users', userPage));
+    async fetchRootInstallations(): Promise<RootInstallation[]> {
+      const body = await jsonRequest<{ installations: RootInstallation[] }>(
+        '/api/v1/root/installations',
+      );
+      return body.installations;
     },
 
-    addUser(input: AddGlobalUserInput): Promise<PanelUser> {
-      return postJson('/api/v1/users', input);
+    async syncRootInstallations(): Promise<string[]> {
+      const body = await postJson<{ target_ids: string[] }>(
+        '/api/v1/root/installations/sync',
+        undefined,
+      );
+      return body.target_ids;
     },
 
-    updateUser(accountId: string, input: UpdateGlobalUserInput): Promise<PanelUser> {
-      return putJson(`/api/v1/users/${pathSegment(accountId)}`, input);
+    fetchRootOverview(): Promise<RootOverview> {
+      return jsonRequest('/api/v1/root/overview');
+    },
+
+    fetchRootUsers(userPage: RootPanelUserPageRequest): Promise<Page<RootPanelUser>> {
+      return jsonRequest(withRootUserPageQuery('/api/v1/root/access/users', userPage));
+    },
+
+    async updateRootUser(accountId: string, input: UpdateRootUserInput): Promise<void> {
+      await request(`/api/v1/root/access/users/${pathSegment(accountId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+    },
+
+    fetchRootInvitations(invitationPage: InvitationPageRequest): Promise<Page<PanelInvitation>> {
+      return jsonRequest(withAccessPageQuery('/api/v1/root/access/invitations', invitationPage));
+    },
+
+    createRootInvitation(input: AddRootInvitationInput): Promise<PanelInvitation> {
+      return postJson('/api/v1/root/access/invitations', input);
+    },
+
+    reissueRootInvitation(
+      invitationId: string,
+      expiresInDays: InvitationDays,
+    ): Promise<PanelInvitation> {
+      return postJson(`/api/v1/root/access/invitations/${pathSegment(invitationId)}/reissue`, {
+        expires_in_days: expiresInDays,
+      });
+    },
+
+    revokeRootInvitation(invitationId: string): Promise<PanelInvitation> {
+      return jsonRequest(`/api/v1/root/access/invitations/${pathSegment(invitationId)}`, {
+        method: 'DELETE',
+      });
+    },
+
+    fetchRootRuntimeSettings(): Promise<RootRuntimeSettings> {
+      return jsonRequest('/api/v1/root/settings');
+    },
+
+    updateRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings> {
+      return putJson('/api/v1/root/settings', input);
+    },
+
+    fetchRootAudit(history: AuditHistoryRequest): Promise<Page<AuditEntry>> {
+      return jsonRequest(
+        withHistoryQuery('/api/v1/root/history/audit', history, {
+          category: history.categories ?? [],
+        }),
+      );
+    },
+
+    async fetchRootFailures(history: FailureHistoryRequest): Promise<Page<DeliveryFailure>> {
+      const page = await jsonRequest<
+        Page<{ installation: DeliveryFailure['installation']; failure: DeliveryFailure }>
+      >(
+        withHistoryQuery('/api/v1/root/history/failures', history, {
+          kind: history.kind,
+        }),
+      );
+      return {
+        ...page,
+        items: page.items.map(({ installation, failure }) => ({ ...failure, installation })),
+      };
+    },
+
+    fetchRootTargetSettings(targetId: string): Promise<PanelTarget> {
+      return jsonRequest(`/api/v1/root/installations/${pathSegment(targetId)}/settings`);
+    },
+
+    updateRootTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget> {
+      return putJson(`/api/v1/root/installations/${pathSegment(targetId)}/settings`, input);
+    },
+
+    fetchRootRepositories(
+      targetId: string,
+      repositoryPage: RepositoryPageRequest,
+    ): Promise<Page<RepositorySummary>> {
+      return jsonRequest(
+        withRepositoryQuery(
+          `/api/v1/root/installations/${pathSegment(targetId)}/repositories`,
+          repositoryPage,
+        ),
+      );
+    },
+
+    fetchRootRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
+      return jsonRequest(
+        `/api/v1/root/installations/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}`,
+      );
+    },
+
+    updateRootRepositorySettings(
+      targetId: string,
+      repositoryId: string,
+      input: RepositorySettingsInput,
+    ): Promise<RepositoryDetail> {
+      return putJson(
+        `/api/v1/root/installations/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}/settings`,
+        input,
+      );
+    },
+
+    fetchRootElevation(targetId: string): Promise<RootElevation> {
+      return jsonRequest(`/api/v1/root/installations/${pathSegment(targetId)}/elevation`);
+    },
+
+    beginRootElevation(targetId: string, input: RootElevationInput): Promise<RootElevation> {
+      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/elevation`, input);
+    },
+
+    endRootElevation(elevationId: string): Promise<RootElevation> {
+      return jsonRequest(`/api/v1/root/elevations/${pathSegment(elevationId)}`, {
+        method: 'DELETE',
+      });
+    },
+
+    fetchRootTargetUsers(
+      targetId: string,
+      userPage: PanelUserPageRequest,
+    ): Promise<Page<PanelUser>> {
+      return jsonRequest(
+        withAccessPageQuery(`/api/v1/root/installations/${pathSegment(targetId)}/users`, userPage),
+      );
+    },
+
+    addRootTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser> {
+      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/users`, input);
+    },
+
+    updateRootTargetUser(
+      targetId: string,
+      accountId: string,
+      input: UpdateTargetUserInput,
+    ): Promise<PanelUser> {
+      return putJson(
+        `/api/v1/root/installations/${pathSegment(targetId)}/users/${pathSegment(accountId)}`,
+        input,
+      );
+    },
+
+    fetchRootTargetInvitations(
+      targetId: string,
+      invitationPage: InvitationPageRequest,
+    ): Promise<Page<PanelInvitation>> {
+      return jsonRequest(
+        withAccessPageQuery(
+          `/api/v1/root/installations/${pathSegment(targetId)}/invitations`,
+          invitationPage,
+        ),
+      );
+    },
+
+    createRootTargetInvitation(
+      targetId: string,
+      input: AddTargetInvitationInput,
+    ): Promise<PanelInvitation> {
+      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/invitations`, input);
+    },
+
+    reissueRootTargetInvitation(
+      targetId: string,
+      invitationId: string,
+      expiresInDays: InvitationDays,
+    ): Promise<PanelInvitation> {
+      return postJson(
+        `/api/v1/root/installations/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}/reissue`,
+        { expires_in_days: expiresInDays },
+      );
+    },
+
+    revokeRootTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation> {
+      return jsonRequest(
+        `/api/v1/root/installations/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}`,
+        { method: 'DELETE' },
+      );
+    },
+
+    async fetchRootTargetUserDecisions(
+      accountId: string,
+      targetId: string,
+    ): Promise<AccessDecision[]> {
+      const body = await jsonRequest<{ decisions: AccessDecision[] }>(
+        `/api/v1/root/installations/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`,
+      );
+      return body.decisions;
+    },
+
+    fetchRootTargetAudit(
+      targetId: string,
+      history: AuditHistoryRequest,
+    ): Promise<Page<AuditEntry>> {
+      return jsonRequest(
+        withHistoryQuery(`/api/v1/root/installations/${pathSegment(targetId)}/audit`, history, {
+          scope: history.scope ?? 'all',
+          change: history.change ?? 'all',
+        }),
+      );
+    },
+
+    fetchRootTargetFailures(
+      targetId: string,
+      history: FailureHistoryRequest,
+    ): Promise<Page<DeliveryFailure>> {
+      return jsonRequest(
+        withHistoryQuery(`/api/v1/root/installations/${pathSegment(targetId)}/failures`, history, {
+          kind: history.kind,
+        }),
+      );
+    },
+
+    fetchNotifications(notificationPage: NotificationPageRequest): Promise<NotificationPage> {
+      const parameters = new URLSearchParams({ limit: String(notificationPage.limit) });
+      if (notificationPage.cursor !== undefined) {
+        parameters.set('cursor', notificationPage.cursor);
+      }
+      return jsonRequest(`/api/v1/notifications?${parameters.toString()}`);
+    },
+
+    markNotificationRead(notificationId: string): Promise<SecurityNotification> {
+      return putJson(`/api/v1/notifications/${pathSegment(notificationId)}/read`, {});
     },
 
     fetchTargetUsers(targetId: string, userPage: PanelUserPageRequest): Promise<Page<PanelUser>> {
@@ -183,14 +481,6 @@ export function createPanelApi(
       );
     },
 
-    fetchInvitations(invitationPage: InvitationPageRequest): Promise<Page<PanelInvitation>> {
-      return jsonRequest(withAccessPageQuery('/api/v1/invitations', invitationPage));
-    },
-
-    createInvitation(input: AddGlobalInvitationInput): Promise<PanelInvitation> {
-      return postJson('/api/v1/invitations', input);
-    },
-
     fetchTargetInvitations(
       targetId: string,
       invitationPage: InvitationPageRequest,
@@ -211,26 +501,26 @@ export function createPanelApi(
       return jsonRequest(`/api/v1/invites/${pathSegment(token)}`);
     },
 
-    reissueInvitation(
+    reissueTargetInvitation(
+      targetId: string,
       invitationId: string,
       expiresInDays: InvitationDays,
     ): Promise<PanelInvitation> {
-      return postJson(`/api/v1/invitations/${pathSegment(invitationId)}/reissue`, {
-        expires_in_days: expiresInDays,
-      });
+      return postJson(
+        `/api/v1/targets/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}/reissue`,
+        { expires_in_days: expiresInDays },
+      );
     },
 
-    revokeInvitation(invitationId: string): Promise<PanelInvitation> {
-      return jsonRequest(`/api/v1/invitations/${pathSegment(invitationId)}`, {
-        method: 'DELETE',
-      });
+    revokeTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation> {
+      return jsonRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}`,
+        { method: 'DELETE' },
+      );
     },
 
-    async fetchUserDecisions(accountId: string, targetId?: string): Promise<AccessDecision[]> {
-      const path =
-        targetId === undefined
-          ? `/api/v1/users/${pathSegment(accountId)}/decisions`
-          : `/api/v1/targets/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`;
+    async fetchUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]> {
+      const path = `/api/v1/targets/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`;
       const body = await jsonRequest<{ decisions: AccessDecision[] }>(path);
       return body.decisions;
     },
@@ -271,8 +561,8 @@ export function createPanelApi(
     fetchAudit(targetId: string, history: AuditHistoryRequest): Promise<Page<AuditEntry>> {
       return jsonRequest(
         withHistoryQuery(`/api/v1/targets/${pathSegment(targetId)}/audit`, history, {
-          scope: history.scope,
-          change: history.change,
+          scope: history.scope ?? 'all',
+          change: history.change ?? 'all',
         }),
       );
     },
@@ -311,14 +601,20 @@ export function createPanelApi(
 function withHistoryQuery(
   path: string,
   history: { cursor?: string; query: string; sort: string; limit: number },
-  filter: Record<string, string>,
+  filter: Record<string, string | readonly string[]>,
 ): string {
   const parameters = new URLSearchParams();
   if (history.cursor !== undefined) parameters.set('cursor', history.cursor);
   if (history.query !== '') parameters.set('q', history.query);
   parameters.set('sort', history.sort);
   parameters.set('limit', String(history.limit));
-  for (const [name, value] of Object.entries(filter)) parameters.set(name, value);
+  for (const [name, value] of Object.entries(filter)) {
+    if (typeof value !== 'string') {
+      for (const item of value) parameters.append(name, item);
+    } else {
+      parameters.set(name, value);
+    }
+  }
 
   return `${path}?${parameters.toString()}`;
 }
@@ -357,6 +653,18 @@ function withAccessPageQuery(
   parameters.set('sort', page.sort);
   parameters.set('limit', String(page.limit));
   for (const role of page.roles) parameters.append('role', role);
+  for (const status of page.statuses) parameters.append('status', status);
+
+  return `${path}?${parameters.toString()}`;
+}
+
+function withRootUserPageQuery(path: string, page: RootPanelUserPageRequest): string {
+  const parameters = new URLSearchParams();
+  if (page.cursor !== undefined) parameters.set('cursor', page.cursor);
+  if (page.query !== '') parameters.set('q', page.query);
+  parameters.set('sort', page.sort);
+  parameters.set('limit', String(page.limit));
+  for (const role of page.systemRoles) parameters.append('system_role', role);
   for (const status of page.statuses) parameters.append('status', status);
 
   return `${path}?${parameters.toString()}`;

@@ -17,15 +17,30 @@ type Account struct {
 	UpdatedAt   time.Time
 }
 
-// PanelRole is a user's default or installation-specific authorization level.
-type PanelRole string
+// SystemRole is an account-wide Smyklot administration role, modeled
+// separately from installation access.
+type SystemRole string
 
 const (
-	PanelRoleNone   PanelRole = "none"
-	PanelRoleViewer PanelRole = "viewer"
-	PanelRoleEditor PanelRole = "editor"
-	PanelRoleAdmin  PanelRole = "admin"
-	PanelRoleOwner  PanelRole = "owner"
+	SystemRoleNone      SystemRole = "none"
+	SystemRoleRoot      SystemRole = "root"
+	SystemRoleSuperRoot SystemRole = "super_root"
+)
+
+// IsRoot reports whether the role can enter Root administration.
+func (role SystemRole) IsRoot() bool {
+	return role == SystemRoleRoot || role == SystemRoleSuperRoot
+}
+
+// InstallationRole is a user's authorization level within one installation.
+type InstallationRole string
+
+const (
+	InstallationRoleNone   InstallationRole = "none"
+	InstallationRoleViewer InstallationRole = "viewer"
+	InstallationRoleEditor InstallationRole = "editor"
+	InstallationRoleAdmin  InstallationRole = "admin"
+	InstallationRoleOwner  InstallationRole = "owner"
 )
 
 // PanelUserStatus is the account-wide lifecycle of a panel user.
@@ -67,15 +82,8 @@ type PanelUserPageRequest struct {
 	Limit  int
 	Order  PanelUserOrder
 	Query  string
-	Roles  []PanelRole
+	Roles  []InstallationRole
 	States []PanelUserListState
-}
-
-// PanelUserPage is one account-wide user page.
-type PanelUserPage struct {
-	Items      []PanelUser
-	NextOffset int
-	Total      int
 }
 
 // TargetPanelUserPage is one installation-scoped user page.
@@ -85,12 +93,11 @@ type TargetPanelUserPage struct {
 	Total      int
 }
 
-// PanelUser is one persisted panel identity and its global access policy.
+// PanelUser is one persisted panel identity and its account-wide lifecycle.
 type PanelUser struct {
 	Account     Account
-	Root        bool
+	SystemRole  SystemRole
 	Status      PanelUserStatus
-	GlobalRole  PanelRole
 	BanReason   *string
 	BannedAt    *time.Time
 	RemovedAt   *time.Time
@@ -103,16 +110,14 @@ type PanelUser struct {
 // PanelUserCreate activates a known provider identity and records its actor.
 type PanelUserCreate struct {
 	AccountID      string
-	GlobalRole     PanelRole
 	ActorAccountID string
 	ChangedAt      time.Time
 }
 
-// PanelUserChange atomically replaces one user's global role and lifecycle.
+// PanelUserChange atomically replaces one user's account-wide lifecycle.
 type PanelUserChange struct {
 	AccountID        string
 	ActorAccountID   string
-	GlobalRole       PanelRole
 	Status           PanelUserStatus
 	BanReason        *string
 	ExpectedRevision int64
@@ -150,7 +155,7 @@ type InvitationPageRequest struct {
 	Limit    int
 	Order    InvitationOrder
 	Query    string
-	Roles    []PanelRole
+	Roles    []InstallationRole
 	Statuses []InvitationStatus
 }
 
@@ -161,8 +166,7 @@ type InvitationPage struct {
 	Total      int
 }
 
-// AccessDecision is one immutable role, lifecycle, or invitation decision for
-// a panel identity in exactly one global or installation scope.
+// AccessDecision is one immutable role, lifecycle, or invitation decision.
 type AccessDecision struct {
 	ID        int64
 	TargetID  *string
@@ -172,13 +176,14 @@ type AccessDecision struct {
 	CreatedAt time.Time
 }
 
-// Invitation is an identity-locked offer of global or installation access.
+// Invitation is an identity-locked offer of a system or installation role.
 type Invitation struct {
 	ID          string
 	Account     Account
 	TargetID    *string
 	TargetName  *string
-	Role        PanelRole
+	Role        *InstallationRole
+	SystemRole  *SystemRole
 	Status      InvitationStatus
 	ExpiresAt   time.Time
 	CreatedBy   Account
@@ -193,7 +198,10 @@ type InvitationCreate struct {
 	TokenHash        string
 	AccountID        string
 	TargetID         *string
-	Role             PanelRole
+	Role             *InstallationRole
+	SystemRole       *SystemRole
+	ElevationID      *string
+	SessionTokenHash string
 	ExpiresAt        time.Time
 	CreatedByAccount string
 	CreatedAt        time.Time
@@ -203,6 +211,8 @@ type InvitationCreate struct {
 type InvitationReissue struct {
 	ID               string
 	TokenHash        string
+	ElevationID      *string
+	SessionTokenHash string
 	ExpiresAt        time.Time
 	CreatedByAccount string
 	CreatedAt        time.Time
@@ -210,9 +220,11 @@ type InvitationReissue struct {
 
 // InvitationRevoke invalidates an invitation without deleting its audit trail.
 type InvitationRevoke struct {
-	ID             string
-	ActorAccountID string
-	RevokedAt      time.Time
+	ID               string
+	ActorAccountID   string
+	ElevationID      *string
+	SessionTokenHash string
+	RevokedAt        time.Time
 }
 
 // InvitationResponse accepts or declines an invitation as its named identity.
@@ -223,7 +235,7 @@ type InvitationResponse struct {
 	At        time.Time
 }
 
-// TargetPanelUser combines global identity with one installation policy.
+// TargetPanelUser combines an account identity with one installation policy.
 type TargetPanelUser struct {
 	User     PanelUser
 	Override *TargetAccessOverride
@@ -234,10 +246,11 @@ type TargetPanelUser struct {
 type AccessSource string
 
 const (
-	AccessSourceRoot      AccessSource = "root"
-	AccessSourceGlobal    AccessSource = "global"
+	AccessSourceOwner     AccessSource = "owner"
 	AccessSourceTarget    AccessSource = "target"
 	AccessSourceSuspended AccessSource = "suspended"
+	AccessSourceRoot      AccessSource = "root"
+	AccessSourceElevation AccessSource = "elevation"
 	AccessSourceDenied    AccessSource = "denied"
 )
 
@@ -246,27 +259,24 @@ type AccessCapabilities struct {
 	Read              bool
 	Write             bool
 	ManageTargetUsers bool
-	ManageGlobalUsers bool
-	ManageOwners      bool
 }
 
 // EffectiveCapabilities returns the fixed capability set for a resolved role.
-func EffectiveCapabilities(role PanelRole, root bool) AccessCapabilities {
-	capabilities := AccessCapabilities{ManageOwners: root}
+func EffectiveCapabilities(role InstallationRole) AccessCapabilities {
+	capabilities := AccessCapabilities{}
 	switch role {
-	case PanelRoleOwner:
+	case InstallationRoleOwner:
 		capabilities.Read = true
 		capabilities.Write = true
 		capabilities.ManageTargetUsers = true
-		capabilities.ManageGlobalUsers = true
-	case PanelRoleAdmin:
+	case InstallationRoleAdmin:
 		capabilities.Read = true
 		capabilities.Write = true
 		capabilities.ManageTargetUsers = true
-	case PanelRoleEditor:
+	case InstallationRoleEditor:
 		capabilities.Read = true
 		capabilities.Write = true
-	case PanelRoleViewer:
+	case InstallationRoleViewer:
 		capabilities.Read = true
 	}
 
@@ -275,20 +285,20 @@ func EffectiveCapabilities(role PanelRole, root bool) AccessCapabilities {
 
 // TargetAccess is the effective authorization for one user and installation.
 type TargetAccess struct {
-	Role             PanelRole
+	Role             InstallationRole
 	Source           AccessSource
 	Root             bool
 	SuspensionReason *string
 	Capabilities     AccessCapabilities
 }
 
-// TargetAccessOverride is a persisted replacement for a user's global role.
-// A nil Role means inherit the global role. Suspension remains an independent
-// overlay so unbanning restores the previous role.
+// TargetAccessOverride is one persisted installation role and suspension.
+// A nil Role means no explicit access. Suspension remains an independent
+// overlay so restoring access retains the previous role.
 type TargetAccessOverride struct {
 	TargetID         string
 	AccountID        string
-	Role             *PanelRole
+	Role             *InstallationRole
 	Suspended        bool
 	SuspensionReason *string
 	Revision         int64
@@ -300,7 +310,9 @@ type TargetAccessChange struct {
 	TargetID         string
 	SubjectAccountID string
 	ActorAccountID   string
-	Role             *PanelRole
+	ElevationID      *string
+	SessionTokenHash string
+	Role             *InstallationRole
 	Suspended        bool
 	SuspensionReason *string
 	ExpectedRevision int64
@@ -350,6 +362,12 @@ type RepositoryCounts struct {
 	Disabled int
 }
 
+// DeliveryHealth summarizes retained webhook failures for one installation.
+type DeliveryHealth struct {
+	Failed        int
+	LastFailureAt *time.Time
+}
+
 // Target is one GitHub App installation and its panel-owned settings.
 type Target struct {
 	ID                       string
@@ -362,6 +380,8 @@ type Target struct {
 	Revision                 int64
 	UpdatedAt                time.Time
 	RepositoryCounts         RepositoryCounts
+	DeliveryHealth           DeliveryHealth
+	Ownership                TargetOwnership
 }
 
 // RepositoryFileStatus is the most recently observed state of the repository
@@ -412,6 +432,7 @@ type InstallationSnapshot struct {
 	Kind           TargetKind
 	Account        Account
 	Repositories   []RepositorySnapshot
+	Ownership      OwnershipSnapshot
 	SyncedAt       time.Time
 }
 
@@ -419,6 +440,8 @@ type InstallationSnapshot struct {
 type TargetSettingsChange struct {
 	TargetID                 string
 	ActorAccountID           string
+	ElevationID              *string
+	SessionTokenHash         string
 	RepositoryDefaultEnabled bool
 	ConfigPatch              config.Patch
 	ExpectedRevision         int64
@@ -431,6 +454,8 @@ type RepositorySettingsChange struct {
 	TargetID             string
 	RepositoryID         string
 	ActorAccountID       string
+	ElevationID          *string
+	SessionTokenHash     string
 	EnabledOverride      *bool
 	ConfigPatch          config.Patch
 	IgnoreRepositoryFile bool

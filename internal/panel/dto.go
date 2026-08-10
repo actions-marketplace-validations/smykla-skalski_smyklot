@@ -25,27 +25,22 @@ type accountResponse struct {
 }
 
 type viewerResponse struct {
-	Account      accountResponse         `json:"account"`
-	Root         bool                    `json:"root"`
-	Status       storage.PanelUserStatus `json:"status"`
-	GlobalRole   storage.PanelRole       `json:"global_role"`
-	Capabilities capabilityResponse      `json:"capabilities"`
-	TargetCount  int                     `json:"target_count"`
+	Account     accountResponse         `json:"account"`
+	SystemRole  storage.SystemRole      `json:"system_role"`
+	Status      storage.PanelUserStatus `json:"status"`
+	TargetCount int                     `json:"target_count"`
 }
 
 type capabilityResponse struct {
 	Read              bool `json:"read"`
 	Write             bool `json:"write"`
 	ManageTargetUsers bool `json:"manage_target_users"`
-	ManageGlobalUsers bool `json:"manage_global_users"`
-	ManageOwners      bool `json:"manage_owners"`
 }
 
 type panelUserResponse struct {
 	Account      accountResponse         `json:"account"`
-	Root         bool                    `json:"root"`
+	SystemRole   storage.SystemRole      `json:"system_role"`
 	Status       storage.PanelUserStatus `json:"status"`
-	GlobalRole   storage.PanelRole       `json:"global_role"`
 	BanReason    *string                 `json:"ban_reason,omitempty"`
 	BannedAt     *time.Time              `json:"banned_at,omitempty"`
 	LastLoginAt  *time.Time              `json:"last_login_at,omitempty"`
@@ -57,14 +52,14 @@ type panelUserResponse struct {
 }
 
 type targetUserAccess struct {
-	Role             *storage.PanelRole   `json:"role"`
-	Suspended        bool                 `json:"suspended"`
-	SuspensionReason *string              `json:"suspension_reason,omitempty"`
-	Revision         int64                `json:"revision"`
-	UpdatedAt        *time.Time           `json:"updated_at,omitempty"`
-	EffectiveRole    storage.PanelRole    `json:"effective_role"`
-	Source           storage.AccessSource `json:"source"`
-	Capabilities     capabilityResponse   `json:"capabilities"`
+	Role             *storage.InstallationRole `json:"role"`
+	Suspended        bool                      `json:"suspended"`
+	SuspensionReason *string                   `json:"suspension_reason,omitempty"`
+	Revision         int64                     `json:"revision"`
+	UpdatedAt        *time.Time                `json:"updated_at,omitempty"`
+	EffectiveRole    storage.InstallationRole  `json:"effective_role"`
+	Source           storage.AccessSource      `json:"source"`
+	Capabilities     capabilityResponse        `json:"capabilities"`
 }
 
 type targetResponse struct {
@@ -79,7 +74,7 @@ type targetResponse struct {
 	ConfigSources            map[string]config.Source `json:"config_sources"`
 	Revision                 int64                    `json:"revision"`
 	RepositoryCounts         storage.RepositoryCounts `json:"repository_counts"`
-	EffectiveRole            storage.PanelRole        `json:"effective_role"`
+	EffectiveRole            storage.InstallationRole `json:"effective_role"`
 	AccessSource             storage.AccessSource     `json:"access_source"`
 	Capabilities             capabilityResponse       `json:"capabilities"`
 	SuspensionReason         *string                  `json:"suspension_reason,omitempty"`
@@ -151,20 +146,18 @@ func accountDTO(account storage.Account) accountResponse {
 
 func viewerDTO(user storage.PanelUser, targetCount int) viewerResponse {
 	return viewerResponse{
-		Account:      accountDTO(user.Account),
-		Root:         user.Root,
-		Status:       user.Status,
-		GlobalRole:   user.GlobalRole,
-		Capabilities: capabilitiesDTO(storage.EffectiveCapabilities(user.GlobalRole, user.Root)),
-		TargetCount:  targetCount,
+		Account:     accountDTO(user.Account),
+		SystemRole:  user.SystemRole,
+		Status:      user.Status,
+		TargetCount: targetCount,
 	}
 }
 
 func panelUserDTO(user storage.PanelUser, manageable bool) panelUserResponse {
 	return panelUserResponse{
-		Account: accountDTO(user.Account), Root: user.Root, Status: user.Status,
-		GlobalRole: user.GlobalRole, BanReason: user.BanReason, BannedAt: user.BannedAt,
-		LastLoginAt: user.LastLoginAt, Revision: user.Revision, CreatedAt: user.CreatedAt,
+		Account: accountDTO(user.Account), SystemRole: user.SystemRole, Status: user.Status,
+		BanReason: user.BanReason, BannedAt: user.BannedAt, LastLoginAt: user.LastLoginAt,
+		Revision: user.Revision, CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt, Manageable: manageable,
 	}
 }
@@ -193,8 +186,6 @@ func capabilitiesDTO(capabilities storage.AccessCapabilities) capabilityResponse
 		Read:              capabilities.Read,
 		Write:             capabilities.Write,
 		ManageTargetUsers: capabilities.ManageTargetUsers,
-		ManageGlobalUsers: capabilities.ManageGlobalUsers,
-		ManageOwners:      capabilities.ManageOwners,
 	}
 }
 
@@ -322,20 +313,20 @@ func auditPageDTO(page storage.AuditPage) pageResponse[auditResponse] {
 func failurePageDTO(page storage.FailurePage) pageResponse[failureResponse] {
 	items := make([]failureResponse, 0, len(page.Items))
 	for _, failure := range page.Items {
-		items = append(items, failureResponse{
-			ID:                 strconv.FormatInt(failure.ID, 10),
-			DeliveryID:         failure.DeliveryID,
-			RepositoryFullName: failure.RepositoryFullName,
-			Event:              failure.Event,
-			Stage:              failure.Stage,
-			Reason:             failure.Reason,
-			Retryable:          failure.Retryable,
-			OccurredAt:         failure.OccurredAt,
-		})
+		items = append(items, failureDTO(failure))
 	}
 
 	return pageResponse[failureResponse]{
 		Items: items, NextCursor: offsetCursor(page.NextOffset), Total: page.Total,
+	}
+}
+
+func failureDTO(failure storage.DeliveryFailure) failureResponse {
+	return failureResponse{
+		ID: strconv.FormatInt(failure.ID, 10), DeliveryID: failure.DeliveryID,
+		RepositoryFullName: failure.RepositoryFullName, Event: failure.Event,
+		Stage: failure.Stage, Reason: failure.Reason,
+		Retryable: failure.Retryable, OccurredAt: failure.OccurredAt,
 	}
 }
 

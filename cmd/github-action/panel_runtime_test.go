@@ -83,7 +83,7 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 				publicOrigin: "https://smyklot.example",
 				basePath:     defaultPanelBase,
 				statePath:    GinkgoT().TempDir() + "/panel.sqlite3",
-				ownerLogin:   "smykla-skalski",
+				superRootID:  42,
 				clientID:     "Iv1.test",
 				clientSecret: "oauth-secret",
 				authorizeURL: endpoint.URL + "/authorize",
@@ -119,7 +119,7 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 				publicOrigin: "https://smyklot.com",
 				basePath:     "",
 				statePath:    GinkgoT().TempDir() + "/panel.sqlite3",
-				ownerLogin:   "bartsmykla",
+				superRootID:  42,
 				clientID:     "Iv1.test",
 				clientSecret: "oauth-secret",
 				authorizeURL: endpoint.URL + "/authorize",
@@ -200,52 +200,80 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 	It("shows the root owner installations discovered after sign-in", func() {
 		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
 		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.members = `[{"id":42,"login":"smykla-skalski"}]`
 		_, err := service.SyncCatalog(GinkgoT().Context())
 		Expect(err).NotTo(HaveOccurred())
 
 		now := time.Now().UTC()
 		owner := storage.Account{
-			ID:          "github:test:user:42",
-			Provider:    "github:test",
+			ID:          githubProvider(endpoint.URL) + ":user:42",
+			Provider:    githubProvider(endpoint.URL),
 			SubjectID:   "42",
 			Login:       "smykla-skalski",
 			DisplayName: "Smykla Skalski",
 			UpdatedAt:   now,
 		}
 		Expect(service.store.UpsertAccount(GinkgoT().Context(), owner)).To(Succeed())
-		claimed, err := service.store.ClaimOwner(GinkgoT().Context(), owner.ID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(claimed).To(BeTrue())
+		Expect(service.store.ReconcileSuperRoot(GinkgoT().Context(), owner.ID, now)).To(Succeed())
 		stub.installations = `[
 			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
 			{"id":222,"account":{"id":8,"login":"another-org","type":"Organization"}}
 		]`
 		service.maintainPanel(GinkgoT().Context())
 
-		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID)
+		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(targets).To(HaveLen(2))
+	})
+
+	It("persists every GitHub organization admin as an installation Owner", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.members = `[
+			{"id":42,"login":"bart","avatar_url":"https://avatars.example/42"},
+			{"id":43,"login":"ada"}
+		]`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target.Ownership.Source).To(Equal(storage.OwnershipSourceOrganizationAdmin))
+		Expect(target.Ownership.Status).To(Equal(storage.OwnershipStatusFresh))
+		Expect(target.Ownership.OwnerCount).To(Equal(2))
+		Expect(target.Ownership.Detail).To(BeNil())
+	})
+
+	It("records installation permission approval without hiding catalog diagnostics", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.membersStatus = http.StatusForbidden
+		stub.members = `{"message":"Resource not accessible by integration"}`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target.Available).To(BeTrue())
+		Expect(target.Ownership.Status).To(Equal(storage.OwnershipStatusPermissionPending))
+		Expect(target.Ownership.OwnerCount).To(BeZero())
+		Expect(target.Ownership.Detail).To(HaveValue(ContainSubstring("permission")))
 	})
 
 	It("announces catalog changes after the catalog commits", func() {
 		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
 		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.members = `[{"id":42,"login":"smykla-skalski"}]`
 		_, err := service.SyncCatalog(GinkgoT().Context())
 		Expect(err).NotTo(HaveOccurred())
 
 		now := time.Now().UTC()
 		owner := storage.Account{
-			ID:          "github:test:user:42",
-			Provider:    "github:test",
+			ID:          githubProvider(endpoint.URL) + ":user:42",
+			Provider:    githubProvider(endpoint.URL),
 			SubjectID:   "42",
 			Login:       "smykla-skalski",
 			DisplayName: "Smykla Skalski",
 			UpdatedAt:   now,
 		}
 		Expect(service.store.UpsertAccount(GinkgoT().Context(), owner)).To(Succeed())
-		claimed, err := service.store.ClaimOwner(GinkgoT().Context(), owner.ID)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(claimed).To(BeTrue())
+		Expect(service.store.ReconcileSuperRoot(GinkgoT().Context(), owner.ID, now)).To(Succeed())
 		const sessionToken = "catalog-event-session"
 		digest := sha256.Sum256([]byte(sessionToken))
 		Expect(service.store.CreateSession(GinkgoT().Context(), storage.Session{
@@ -295,7 +323,7 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		Eventually(events).Should(Receive(&event))
 		Expect(event.Type).To(Equal("resync"))
 
-		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID)
+		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(targets).To(HaveLen(2))
 
@@ -331,7 +359,7 @@ var _ = Describe("Production panel runtime [Unit]", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(events).Should(Receive(&event))
 		Expect(event.Type).To(Equal("resync"))
-		targets, err = service.store.ListTargets(GinkgoT().Context(), owner.ID)
+		targets, err = service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(targets).To(BeEmpty())
 	})

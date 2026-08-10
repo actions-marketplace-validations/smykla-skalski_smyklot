@@ -6,8 +6,7 @@ import type { Connect, Plugin } from 'vite';
 import type {
   AuditEntry,
   AccessDecision,
-  AddGlobalInvitationInput,
-  AddGlobalUserInput,
+  AddRootInvitationInput,
   AddTargetInvitationInput,
   AddTargetUserInput,
   ConfigKey,
@@ -20,14 +19,22 @@ import type {
   PanelInvitation,
   PanelTarget,
   PanelUser,
-  PanelRole,
+  InstallationRole,
   TargetUserAccess,
   RepositoryDetail,
   RepositorySettingsInput,
   RepositorySummary,
+  RootElevation,
+  RootElevationInput,
+  RootInstallation,
+  RootOverview,
+  RootPanelUser,
+  RootRuntimeSettings,
+  RootRuntimeSettingsInput,
+  SecurityNotification,
   TargetSettingsInput,
-  UpdateGlobalUserInput,
   UpdateTargetUserInput,
+  UpdateRootUserInput,
   InvitationDays,
   InvitationStatus,
 } from '../src/lib/types';
@@ -64,8 +71,12 @@ const OWNER_CAPABILITIES = {
   read: true,
   write: true,
   manage_target_users: true,
-  manage_global_users: true,
-  manage_owners: true,
+};
+
+const ROOT_READ_CAPABILITIES = {
+  read: true,
+  write: false,
+  manage_target_users: false,
 };
 
 class MockApiError extends Error {
@@ -103,6 +114,19 @@ interface MockState {
   targetAccess: Map<string, Map<string, TargetUserAccess>>;
   invitations: MockInvitation[];
   invitationCounter: number;
+  elevationCounter: number;
+  elevations: Map<string, RootElevation>;
+  notifications: SecurityNotification[];
+  runtime: {
+    behaviorOverride: ConfigValues | null;
+    logLevelOverride: string | null;
+    pollIntervalOverride: number | null;
+    sessionTTLOverride: number | null;
+    revision: number;
+    updatedAt?: string;
+    updatedBy?: PanelAccount;
+    startedAt: number;
+  };
   streams: Set<Duplex>;
 }
 
@@ -312,15 +336,18 @@ function seed(): MockState {
 
   const users = userSeeds(iso);
   const invitations = invitationSeeds(iso, users[0]?.account ?? VIEWER, organization.value);
+  const notifications = securityNotificationSeeds(
+    iso,
+    organization.value.account,
+    users[0]?.account ?? VIEWER,
+  );
   const organizationAccess = new Map<string, TargetUserAccess>();
-  organizationAccess.set('1003', {
-    role: 'admin',
-    suspended: false,
-    revision: 1,
-    effective_role: 'admin',
-    source: 'target',
-    capabilities: capabilitiesFor('admin'),
-  });
+  for (const user of users) {
+    const role = user.target_access?.role;
+    if (role !== undefined && role !== null) {
+      organizationAccess.set(user.account.id, targetAccess(role, false, 1));
+    }
+  }
   organizationAccess.set('1004', {
     role: 'viewer',
     suspended: true,
@@ -353,6 +380,17 @@ function seed(): MockState {
     targetAccess: new Map([[organization.value.id, organizationAccess]]),
     invitations,
     invitationCounter: invitations.length + 1,
+    elevationCounter: 1,
+    elevations: new Map(),
+    notifications,
+    runtime: {
+      behaviorOverride: null,
+      logLevelOverride: null,
+      pollIntervalOverride: null,
+      sessionTTLOverride: null,
+      revision: 0,
+      startedAt: now,
+    },
     streams: new Set(),
   };
 }
@@ -372,9 +410,11 @@ function invitationSeeds(
   });
   const invitations: MockInvitation[] = [
     {
-      id: 'mock-invitation-global-pending',
+      id: 'mock-invitation-target-pending',
       token: 'p'.repeat(43),
       account: invited('1101', 'katherine', 'Katherine Johnson'),
+      target_id: target.id,
+      target_name: target.account.display_name,
       role: 'editor',
       status: 'pending',
       expires_at: iso(7 * 86_400_000),
@@ -382,9 +422,11 @@ function invitationSeeds(
       created_at: iso(-20 * 60_000),
     },
     {
-      id: 'mock-invitation-global-accepted',
+      id: 'mock-invitation-target-accepted',
       token: 'a'.repeat(43),
       account: invited('1102', 'dorothy', 'Dorothy Vaughan'),
+      target_id: target.id,
+      target_name: target.account.display_name,
       role: 'viewer',
       status: 'accepted',
       expires_at: iso(6 * 86_400_000),
@@ -406,7 +448,7 @@ function invitationSeeds(
     },
   ];
   const statuses: InvitationStatus[] = ['pending', 'accepted', 'declined', 'revoked', 'expired'];
-  const roles: Array<Exclude<PanelRole, 'none'>> = ['viewer', 'editor', 'admin'];
+  const roles: Array<Exclude<InstallationRole, 'none'>> = ['viewer', 'editor', 'admin'];
   for (let index = 0; index < 25; index += 1) {
     const status = cycled(statuses, index);
     invitations.push({
@@ -417,9 +459,8 @@ function invitationSeeds(
         `invitee-${String(index + 1).padStart(2, '0')}`,
         `Invited User ${String(index + 1).padStart(2, '0')}`,
       ),
-      ...(index % 2 === 0
-        ? {}
-        : { target_id: target.id, target_name: target.account.display_name }),
+      target_id: target.id,
+      target_name: target.account.display_name,
       role: cycled(roles, index),
       status,
       expires_at: iso((index - 8) * 86_400_000),
@@ -431,13 +472,51 @@ function invitationSeeds(
   return invitations;
 }
 
-function capabilitiesFor(role: PanelRole) {
+function securityNotificationSeeds(
+  iso: (offsetMs: number) => string,
+  installation: PanelAccount,
+  actor: PanelAccount,
+): SecurityNotification[] {
+  return [
+    {
+      id: 'security-3',
+      installation,
+      actor,
+      elevation_id: 'elevation-prod-incident',
+      audit_event_id: '203',
+      action: 'repository.settings.updated',
+      reason: 'Restore command handling during production incident',
+      created_at: iso(-18 * 60_000),
+    },
+    {
+      id: 'security-2',
+      installation,
+      actor,
+      elevation_id: 'elevation-prod-incident',
+      audit_event_id: '202',
+      action: 'target.settings.updated',
+      reason: 'Restore command handling during production incident',
+      created_at: iso(-24 * 60_000),
+    },
+    {
+      id: 'security-1',
+      installation,
+      actor,
+      elevation_id: 'elevation-support',
+      audit_event_id: '188',
+      action: 'repository.settings.updated',
+      reason: 'Owner-approved support investigation',
+      created_at: iso(-2 * 86_400_000),
+      read_at: iso(-47 * 3_600_000),
+    },
+  ];
+}
+
+function capabilitiesFor(role: InstallationRole) {
   return {
     read: role !== 'none',
     write: role === 'owner' || role === 'admin' || role === 'editor',
     manage_target_users: role === 'owner' || role === 'admin',
-    manage_global_users: role === 'owner',
-    manage_owners: role === 'owner',
   };
 }
 
@@ -445,20 +524,25 @@ function targetUsers(state: MockState, targetId: string): PanelUser[] {
   const overrides = state.targetAccess.get(targetId) ?? new Map<string, TargetUserAccess>();
   return state.users
     .filter((user) => user.status !== 'removed')
-    .filter((user) => user.global_role !== 'none' || overrides.has(user.account.id))
+    .filter((user) => user.account.id === VIEWER.id || overrides.has(user.account.id))
     .map((user) => {
       const override = overrides.get(user.account.id);
       const manageable = user.manageable && user.status === 'active';
       if (override !== undefined) {
+        const access = structuredClone(override);
+        if (user.status !== 'active') {
+          access.effective_role = 'none';
+          access.source = 'denied';
+          access.capabilities = capabilitiesFor('none');
+        }
         return {
           ...structuredClone(user),
           manageable,
-          target_access: structuredClone(override),
+          target_access: access,
         };
       }
-      const effectiveRole = user.status === 'active' ? user.global_role : 'none';
-      const source: TargetUserAccess['source'] =
-        user.status === 'active' ? (user.root ? 'root' : 'global') : 'denied';
+      const effectiveRole = user.status === 'active' ? 'owner' : 'none';
+      const source: TargetUserAccess['source'] = user.status === 'active' ? 'owner' : 'denied';
       return {
         ...structuredClone(user),
         manageable,
@@ -487,13 +571,13 @@ function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
     id: string,
     login: string,
     displayName: string,
-    role: PanelRole,
+    role: InstallationRole,
     offsetMs: number,
   ): PanelUser => ({
     account: account(id, login, displayName),
-    root: false,
+    system_role: 'none',
     status: 'active',
-    global_role: role,
+    ...(role === 'none' || role === 'owner' ? {} : { target_access: targetAccess(role, false, 1) }),
     revision: 1,
     created_at: iso(-30 * 86_400_000),
     updated_at: iso(offsetMs),
@@ -503,7 +587,7 @@ function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
   const root: PanelUser = {
     ...user(VIEWER.id, VIEWER.login, VIEWER.display_name, 'owner', -5 * 60_000),
     account: VIEWER,
-    root: true,
+    system_role: 'super_root',
     manageable: false,
   };
   const banned = user('1005', 'lin', 'Lin Chen', 'viewer', -9 * 86_400_000);
@@ -518,7 +602,7 @@ function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
     user('1004', 'margaret', 'Margaret Hamilton', 'viewer', -2 * 86_400_000),
     banned,
   ];
-  const roles: PanelRole[] = ['viewer', 'editor', 'admin', 'none'];
+  const roles: InstallationRole[] = ['viewer', 'editor', 'admin', 'none'];
   for (let index = 0; index < 31; index += 1) {
     users.push(
       user(
@@ -565,7 +649,7 @@ function targetSeed(input: {
       revision: 1,
       repository_counts: { total: 0, enabled: 0, disabled: 0 },
       effective_role: 'owner',
-      access_source: 'root',
+      access_source: 'owner',
       capabilities: OWNER_CAPABILITIES,
     },
     repositories: [],
@@ -877,72 +961,114 @@ async function handle(
     if (path === route('/api/v1/session') && method === 'GET') {
       respond(res, 200, {
         account: VIEWER,
-        root: true,
+        system_role: 'super_root',
         status: 'active',
-        global_role: 'owner',
-        capabilities: OWNER_CAPABILITIES,
-        target_count: state.targets.length,
+        target_count: state.targets.filter((target) => mockRootOwns(target)).length,
       });
       return;
     }
     if (path === route('/api/v1/targets') && method === 'GET') {
-      respond(res, 200, { targets: state.targets.map((target) => target.value) });
+      respond(res, 200, {
+        targets: state.targets
+          .filter((target) => mockRootOwns(target))
+          .map((target) => target.value),
+      });
       return;
     }
-    if (path === route('/api/v1/users') && method === 'GET') {
+    if (path === route('/api/v1/root/installations') && method === 'GET') {
+      respond(res, 200, {
+        installations: state.targets.map((target, index) => rootInstallationValue(target, index)),
+      });
+      return;
+    }
+    if (path === route('/api/v1/root/installations/sync') && method === 'POST') {
+      broadcast(state, { type: 'resync' });
+      respond(res, 200, { target_ids: state.targets.map((target) => target.value.id) });
+      return;
+    }
+    if (path === route('/api/v1/root/overview') && method === 'GET') {
+      respond(res, 200, rootOverviewValue(state));
+      return;
+    }
+    if (path === route('/api/v1/root/settings') && method === 'GET') {
+      respond(res, 200, rootRuntimeSettingsValue(state));
+      return;
+    }
+    if (path === route('/api/v1/root/settings') && method === 'PUT') {
+      const input = await readBody<RootRuntimeSettingsInput>(req);
+      if (input.expected_revision !== state.runtime.revision) {
+        throw new MockApiError(409, 'conflict', 'runtime settings changed; reload and try again');
+      }
+      state.runtime.behaviorOverride = copyOptionalConfig(input.bot_config);
+      state.runtime.logLevelOverride = input.log_level;
+      state.runtime.pollIntervalOverride = input.reaction_poll_interval_seconds;
+      state.runtime.sessionTTLOverride = input.session_ttl_seconds;
+      state.runtime.revision += 1;
+      state.runtime.updatedAt = new Date().toISOString();
+      state.runtime.updatedBy = VIEWER;
+      const value = rootRuntimeSettingsValue(state);
+      broadcast(state, { type: 'resync' });
+      respond(res, 200, value);
+      return;
+    }
+    if (path === route('/api/v1/root/access/users') && method === 'GET') {
+      const systemRoles = parsed.searchParams.getAll('system_role');
+      const statuses = parsed.searchParams.getAll('status');
       respond(
         res,
         200,
-        userPage(
-          state.users.filter((user) => user.status !== 'removed'),
+        historyPage(
+          rootPanelUsers(state),
           parsed.searchParams,
-          false,
+          (user) => user.last_login_at ?? '',
+          (user, sort) => {
+            if (sort.startsWith('role_')) {
+              return ['none', 'root', 'super_root'].indexOf(user.system_role);
+            }
+            if (sort.startsWith('login_')) return user.last_login_at ?? '';
+            return user.account.display_name.toLocaleLowerCase();
+          },
+          (user, query) =>
+            [user.account.display_name, user.account.login].some((value) =>
+              value.toLocaleLowerCase().includes(query),
+            ),
+          (user) =>
+            (systemRoles.length === 0 || systemRoles.includes(user.system_role)) &&
+            (statuses.length === 0 || statuses.includes(user.status)),
         ),
       );
       return;
     }
-    if (path === route('/api/v1/invitations') && method === 'GET') {
+    if (path === route('/api/v1/root/access/invitations') && method === 'GET') {
       respond(
         res,
         200,
         invitationPage(
-          state.invitations.filter((invitation) => invitation.target_id === undefined),
+          state.invitations.filter((entry) => entry.system_role === 'root'),
           parsed.searchParams,
         ),
       );
       return;
     }
-    if (path === route('/api/v1/invitations') && method === 'POST') {
-      const input = await readBody<AddGlobalInvitationInput>(req);
-      const invitation = createMockInvitation(state, input, undefined);
-      broadcast(state, { type: 'resync' });
-      respond(res, 201, invitationValue(invitation));
+    if (path === route('/api/v1/root/access/invitations') && method === 'POST') {
+      const input = await readBody<AddRootInvitationInput>(req);
+      const created = createRootMockInvitation(state, input);
+      broadcastInvitation(state, created);
+      respond(res, 201, invitationValue(created));
       return;
     }
-    if (path === route('/api/v1/users') && method === 'POST') {
-      const input = await readBody<AddGlobalUserInput>(req);
-      if (
-        state.users.some(
-          (user) =>
-            user.account.login.toLowerCase() === input.login.toLowerCase() &&
-            user.status !== 'removed',
-        )
-      ) {
-        throw new MockApiError(409, 'conflict', 'this GitHub user already has panel access');
-      }
-      const existing = state.users.find(
-        (user) => user.account.login.toLowerCase() === input.login.toLowerCase(),
-      );
-      const added = existing ?? mockUser(input.login, input.role);
-      added.status = 'active';
-      added.global_role = input.role;
-      added.ban_reason = undefined;
-      added.banned_at = undefined;
-      added.revision += existing === undefined ? 0 : 1;
-      added.updated_at = new Date().toISOString();
-      if (existing === undefined) state.users.push(added);
-      broadcast(state, { type: 'resync' });
-      respond(res, 201, added);
+    if (path === route('/api/v1/notifications') && method === 'GET') {
+      const offset = Math.max(0, Number(parsed.searchParams.get('cursor') ?? '0'));
+      const limit = Math.min(100, Math.max(1, Number(parsed.searchParams.get('limit') ?? '20')));
+      const items = state.notifications.slice(offset, offset + limit);
+      const next = offset + items.length;
+      respond(res, 200, {
+        items,
+        next_cursor: next < state.notifications.length ? String(next) : null,
+        total: state.notifications.length,
+        unread: state.notifications.filter((notification) => notification.read_at === undefined)
+          .length,
+      });
       return;
     }
     if (path === route('/api/v1/events') && method === 'GET') {
@@ -951,36 +1077,322 @@ async function handle(
     }
 
     const targetSettings = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/settings$/);
-    const globalUser = path.match(/^\/api\/v1\/users\/(?<account>[^/]+)$/);
-    const globalUserDecisions = path.match(/^\/api\/v1\/users\/(?<account>[^/]+)\/decisions$/);
+    const rootTargetSettings = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/settings$/,
+    );
+    const rootElevation = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/elevation$/,
+    );
+    const rootElevationEnd = path.match(/^\/api\/v1\/root\/elevations\/(?<elevation>[^/]+)$/);
+    const notificationRead = path.match(/^\/api\/v1\/notifications\/(?<notification>[^/]+)\/read$/);
     const scopedUsers = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/users$/);
+    const rootScopedUsers = path.match(/^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/users$/);
+    const rootUser = path.match(/^\/api\/v1\/root\/access\/users\/(?<account>[^/]+)$/);
+    const rootInvitationReissue = path.match(
+      /^\/api\/v1\/root\/access\/invitations\/(?<invitation>[^/]+)\/reissue$/,
+    );
+    const rootInvitation = path.match(
+      /^\/api\/v1\/root\/access\/invitations\/(?<invitation>[^/]+)$/,
+    );
     const scopedUser = path.match(
       /^\/api\/v1\/targets\/(?<target>[^/]+)\/users\/(?<account>[^/]+)$/,
+    );
+    const rootScopedUser = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/users\/(?<account>[^/]+)$/,
     );
     const scopedUserDecisions = path.match(
       /^\/api\/v1\/targets\/(?<target>[^/]+)\/users\/(?<account>[^/]+)\/decisions$/,
     );
+    const rootScopedUserDecisions = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/users\/(?<account>[^/]+)\/decisions$/,
+    );
     const scopedInvitations = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/invitations$/);
-    const reissueInvitation = path.match(/^\/api\/v1\/invitations\/(?<invitation>[^/]+)\/reissue$/);
-    const invitation = path.match(/^\/api\/v1\/invitations\/(?<invitation>[^/]+)$/);
+    const rootScopedInvitations = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/invitations$/,
+    );
+    const reissueInvitation = path.match(
+      /^\/api\/v1\/targets\/(?<target>[^/]+)\/invitations\/(?<invitation>[^/]+)\/reissue$/,
+    );
+    const rootScopedInvitationReissue = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/invitations\/(?<invitation>[^/]+)\/reissue$/,
+    );
+    const invitation = path.match(
+      /^\/api\/v1\/targets\/(?<target>[^/]+)\/invitations\/(?<invitation>[^/]+)$/,
+    );
+    const rootScopedInvitation = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/invitations\/(?<invitation>[^/]+)$/,
+    );
     const repositories = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/repositories$/);
+    const rootRepositories = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/repositories$/,
+    );
     const repository = path.match(
       /^\/api\/v1\/targets\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)$/,
+    );
+    const rootRepository = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)$/,
     );
     const repositorySettings = path.match(
       /^\/api\/v1\/targets\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)\/settings$/,
     );
+    const rootRepositorySettings = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)\/settings$/,
+    );
     const audit = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/audit$/);
     const failures = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/failures$/);
+    const rootTargetAudit = path.match(/^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/audit$/);
+    const rootTargetFailures = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/failures$/,
+    );
+    const rootHistory = path.match(/^\/api\/v1\/root\/history\/(?<history>audit|failures)$/);
+    const installationUsers = scopedUsers ?? rootScopedUsers;
+    const installationUser = scopedUser ?? rootScopedUser;
+    const installationUserDecisions = scopedUserDecisions ?? rootScopedUserDecisions;
+    const installationInvitations = scopedInvitations ?? rootScopedInvitations;
+    const installationInvitationReissue = reissueInvitation ?? rootScopedInvitationReissue;
+    const installationInvitation = invitation ?? rootScopedInvitation;
+    const installationAudit = audit ?? rootTargetAudit;
+    const installationFailures = failures ?? rootTargetFailures;
 
-    if (globalUserDecisions && method === 'GET') {
-      const user = findUser(state, globalUserDecisions.groups?.account ?? '');
-      respond(res, 200, { decisions: mockDecisions(user) });
+    if (rootUser && method === 'PUT') {
+      const accountID = decodeURIComponent(rootUser.groups?.account ?? '');
+      const user = state.users.find((candidate) => candidate.account.id === accountID);
+      if (user === undefined) throw new MockApiError(404, 'not_found', 'account not found');
+      const input = await readBody<UpdateRootUserInput>(req);
+      if (input.expected_revision !== user.revision) {
+        throw new MockApiError(409, 'conflict', 'account changed; reload and try again');
+      }
+      if ('system_role' in input) {
+        user.system_role = input.system_role;
+      } else {
+        user.status = input.status;
+        user.ban_reason = input.reason;
+        user.banned_at = input.status === 'banned' ? new Date().toISOString() : undefined;
+      }
+      user.revision += 1;
+      user.updated_at = new Date().toISOString();
+      respond(res, 204, null);
       return;
     }
-    if (scopedUserDecisions && method === 'GET') {
-      const target = findTarget(state, scopedUserDecisions.groups?.target ?? '');
-      const accountId = decodeURIComponent(scopedUserDecisions.groups?.account ?? '');
+
+    if (rootInvitationReissue && method === 'POST') {
+      const current = findInvitation(state, rootInvitationReissue.groups?.invitation ?? '');
+      if (current.system_role !== 'root') {
+        throw new MockApiError(404, 'not_found', 'Root invitation not found');
+      }
+      const input = await readBody<{ expires_in_days: InvitationDays }>(req);
+      current.token = mockInvitationToken(state.invitationCounter++);
+      current.status = 'pending';
+      current.expires_at = new Date(Date.now() + input.expires_in_days * 86_400_000).toISOString();
+      current.created_at = new Date().toISOString();
+      current.created_by = VIEWER;
+      current.responded_at = undefined;
+      broadcastInvitation(state, current);
+      respond(res, 200, invitationValue(current));
+      return;
+    }
+
+    if (rootInvitation && method === 'DELETE') {
+      const current = findInvitation(state, rootInvitation.groups?.invitation ?? '');
+      if (current.system_role !== 'root') {
+        throw new MockApiError(404, 'not_found', 'Root invitation not found');
+      }
+      current.status = 'revoked';
+      current.responded_at = new Date().toISOString();
+      broadcastInvitation(state, current);
+      respond(res, 200, publicInvitationValue(current));
+      return;
+    }
+
+    if (rootHistory && method === 'GET') {
+      if (rootHistory.groups?.history === 'audit') {
+        const categories = parsed.searchParams
+          .getAll('category')
+          .filter((value) => value !== 'all');
+        respond(
+          res,
+          200,
+          historyPage(
+            rootAuditEntries(state),
+            parsed.searchParams,
+            (entry) => entry.created_at,
+            (entry, sort) => {
+              if (sort.startsWith('actor_')) return entry.actor.display_name.toLocaleLowerCase();
+              if (sort.startsWith('target_')) {
+                return (entry.installation?.display_name ?? 'Smyklot').toLocaleLowerCase();
+              }
+              if (sort.startsWith('change_')) return entry.summary.toLocaleLowerCase();
+              return entry.created_at;
+            },
+            (entry, query) =>
+              [
+                entry.category ?? '',
+                entry.installation?.display_name ?? 'Smyklot',
+                entry.installation?.login ?? '',
+                entry.actor.display_name,
+                entry.actor.login,
+                entry.subject?.display_name ?? '',
+                entry.subject?.login ?? '',
+                entry.action,
+                entry.summary,
+              ].some((value) => value.toLocaleLowerCase().includes(query)),
+            (entry) => categories.length === 0 || categories.includes(entry.category ?? ''),
+          ),
+        );
+      } else {
+        const kind = parsed.searchParams.get('kind') ?? 'all';
+        const items = state.targets.flatMap((target) =>
+          target.failures.map((failure) => ({
+            installation: target.value.account,
+            failure,
+          })),
+        );
+        respond(
+          res,
+          200,
+          historyPage(
+            items,
+            parsed.searchParams,
+            (item) => item.failure.occurred_at,
+            (item, sort) => {
+              if (sort.startsWith('status_')) return item.failure.retryable ? 1 : 0;
+              if (sort.startsWith('repository_')) {
+                return item.failure.repository_full_name.toLocaleLowerCase();
+              }
+              return item.failure.occurred_at;
+            },
+            (item, query) =>
+              [
+                item.installation.display_name,
+                item.installation.login,
+                item.failure.delivery_id,
+                item.failure.repository_full_name,
+                item.failure.event,
+                item.failure.stage,
+                item.failure.reason,
+              ].some((value) => value.toLocaleLowerCase().includes(query)),
+            (item) =>
+              kind === 'all' ||
+              (kind === 'retryable' && item.failure.retryable) ||
+              (kind === 'permanent' && !item.failure.retryable),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (notificationRead && method === 'PUT') {
+      const id = decodeURIComponent(notificationRead.groups?.notification ?? '');
+      const index = state.notifications.findIndex((notification) => notification.id === id);
+      if (index < 0) throw new MockApiError(404, 'not_found', 'security notification not found');
+      const current = state.notifications[index];
+      if (current === undefined)
+        throw new MockApiError(404, 'not_found', 'security notification not found');
+      const updated = { ...current, read_at: current.read_at ?? new Date().toISOString() };
+      state.notifications[index] = updated;
+      respond(res, 200, updated);
+      return;
+    }
+
+    if (rootElevation && method === 'GET') {
+      const target = findTarget(state, rootElevation.groups?.target ?? '');
+      const elevation = activeMockElevation(state, target.value.id);
+      if (elevation === undefined)
+        throw new MockApiError(404, 'not_found', 'elevated installation access was not found');
+      respond(res, 200, elevation);
+      return;
+    }
+    if (rootElevation && method === 'POST') {
+      const target = findTarget(state, rootElevation.groups?.target ?? '');
+      const input = await readBody<RootElevationInput>(req);
+      if (input.acknowledged !== true)
+        throw new MockApiError(
+          400,
+          'acknowledgment_required',
+          'confirm the elevated access warning',
+        );
+      if (mockRootOwns(target))
+        throw new MockApiError(409, 'conflict', 'you already own this installation');
+      const targetIndex = state.targets.indexOf(target);
+      if (!rootInstallationValue(target, targetIndex).available)
+        throw new MockApiError(409, 'conflict', 'fresh Owners are required');
+      const started = new Date();
+      const elevation: RootElevation = {
+        id: `mock-elevation-${state.elevationCounter++}`,
+        target_id: target.value.id,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+        started_at: started.toISOString(),
+        expires_at: new Date(started.getTime() + 15 * 60_000).toISOString(),
+      };
+      state.elevations.set(target.value.id, elevation);
+      respond(res, 201, elevation);
+      return;
+    }
+    if (rootElevationEnd && method === 'DELETE') {
+      const id = decodeURIComponent(rootElevationEnd.groups?.elevation ?? '');
+      const entry = [...state.elevations.entries()].find(([, elevation]) => elevation.id === id);
+      if (entry === undefined)
+        throw new MockApiError(404, 'not_found', 'elevated installation access was not found');
+      const [targetId, elevation] = entry;
+      const ended = { ...elevation, ended_at: new Date().toISOString() };
+      state.elevations.delete(targetId);
+      respond(res, 200, ended);
+      return;
+    }
+
+    if (rootTargetSettings && method === 'GET') {
+      const target = findTarget(state, rootTargetSettings.groups?.target ?? '');
+      respond(res, 200, rootTargetValue(state, target));
+      return;
+    }
+    if (rootTargetSettings && method === 'PUT') {
+      const target = findTarget(state, rootTargetSettings.groups?.target ?? '');
+      requireRootWrite(state, target);
+      const input = await readBody<TargetSettingsInput>(req);
+      requireRevision(target.value.revision, input.expected_revision);
+      target.value.repository_default_enabled = input.repository_default_enabled;
+      target.value.config_patch = structuredClone(input.config_patch);
+      target.value.revision += 1;
+      recomputeTarget(target);
+      addAudit(target, 'target.settings.updated', 'updated account defaults');
+      respond(res, 200, rootTargetValue(state, target));
+      return;
+    }
+    if (rootRepositories && method === 'GET') {
+      const target = findTarget(state, rootRepositories.groups?.target ?? '');
+      respond(res, 200, repositoryPage(target.repositories, parsed.searchParams));
+      return;
+    }
+    if (rootRepository && method === 'GET') {
+      const target = findTarget(state, rootRepository.groups?.target ?? '');
+      respond(res, 200, findRepository(target, rootRepository.groups?.repository ?? '').detail);
+      return;
+    }
+    if (rootRepositorySettings && method === 'PUT') {
+      const target = findTarget(state, rootRepositorySettings.groups?.target ?? '');
+      requireRootWrite(state, target);
+      const stored = findRepository(target, rootRepositorySettings.groups?.repository ?? '');
+      const input = await readBody<RepositorySettingsInput>(req);
+      requireRevision(stored.detail.revision, input.expected_revision);
+      stored.detail.repository.enabled_override = input.enabled_override;
+      stored.detail.config_patch = structuredClone(input.config_patch);
+      stored.detail.ignore_repository_file = input.ignore_repository_file;
+      stored.detail.revision += 1;
+      stored.detail.repository.updated_at = new Date().toISOString();
+      recomputeTarget(target);
+      addAudit(
+        target,
+        'repository.settings.updated',
+        'updated repository settings for',
+        stored.detail.repository.full_name,
+      );
+      respond(res, 200, stored.detail);
+      return;
+    }
+
+    if (installationUserDecisions && method === 'GET') {
+      const target = findTarget(state, installationUserDecisions.groups?.target ?? '');
+      const accountId = decodeURIComponent(installationUserDecisions.groups?.account ?? '');
       const user = targetUsers(state, target.value.id).find(
         (entry) => entry.account.id === accountId,
       );
@@ -989,31 +1401,8 @@ async function handle(
       return;
     }
 
-    if (globalUser && method === 'PUT') {
-      const user = findUser(state, globalUser.groups?.account ?? '');
-      const input = await readBody<UpdateGlobalUserInput>(req);
-      requireRevision(user.revision, input.expected_revision);
-      user.global_role = input.status === 'removed' ? 'none' : input.global_role;
-      user.status = input.status;
-      user.ban_reason = input.status === 'banned' ? input.ban_reason : undefined;
-      user.banned_at = input.status === 'banned' ? new Date().toISOString() : undefined;
-      user.revision += 1;
-      user.updated_at = new Date().toISOString();
-      if (input.status === 'removed') {
-        for (const access of state.targetAccess.values()) access.delete(user.account.id);
-        for (const invitation of state.invitations) {
-          if (invitation.account.id === user.account.id && invitation.status === 'pending') {
-            invitation.status = 'revoked';
-            invitation.responded_at = new Date().toISOString();
-          }
-        }
-      }
-      broadcast(state, { type: 'resync' });
-      respond(res, 200, user);
-      return;
-    }
-    if (scopedInvitations && method === 'GET') {
-      const target = findTarget(state, scopedInvitations.groups?.target ?? '');
+    if (installationInvitations && method === 'GET') {
+      const target = findTarget(state, installationInvitations.groups?.target ?? '');
       respond(
         res,
         200,
@@ -1024,16 +1413,22 @@ async function handle(
       );
       return;
     }
-    if (scopedInvitations && method === 'POST') {
-      const target = findTarget(state, scopedInvitations.groups?.target ?? '');
+    if (installationInvitations && method === 'POST') {
+      const target = findTarget(state, installationInvitations.groups?.target ?? '');
+      if (rootScopedInvitations !== null) requireRootWrite(state, target);
       const input = await readBody<AddTargetInvitationInput>(req);
       const created = createMockInvitation(state, input, target.value);
       broadcast(state, { type: 'invitation.changed', target_id: target.value.id });
       respond(res, 201, invitationValue(created));
       return;
     }
-    if (reissueInvitation && method === 'POST') {
-      const current = findInvitation(state, reissueInvitation.groups?.invitation ?? '');
+    if (installationInvitationReissue && method === 'POST') {
+      const target = findTarget(state, installationInvitationReissue.groups?.target ?? '');
+      if (rootScopedInvitationReissue !== null) requireRootWrite(state, target);
+      const current = findInvitation(state, installationInvitationReissue.groups?.invitation ?? '');
+      if (current.target_id !== target.value.id) {
+        throw new MockApiError(404, 'not_found', 'installation invitation not found');
+      }
       const input = await readBody<{ expires_in_days: InvitationDays }>(req);
       current.token = mockInvitationToken(state.invitationCounter++);
       current.status = 'pending';
@@ -1044,28 +1439,38 @@ async function handle(
       respond(res, 200, invitationValue(current));
       return;
     }
-    if (invitation && method === 'DELETE') {
-      const current = findInvitation(state, invitation.groups?.invitation ?? '');
+    if (installationInvitation && method === 'DELETE') {
+      const target = findTarget(state, installationInvitation.groups?.target ?? '');
+      if (rootScopedInvitation !== null) requireRootWrite(state, target);
+      const current = findInvitation(state, installationInvitation.groups?.invitation ?? '');
+      if (current.target_id !== target.value.id) {
+        throw new MockApiError(404, 'not_found', 'installation invitation not found');
+      }
       current.status = 'revoked';
       current.responded_at = new Date().toISOString();
       broadcastInvitation(state, current);
       respond(res, 200, publicInvitationValue(current));
       return;
     }
-    if (scopedUsers && method === 'GET') {
-      const target = findTarget(state, scopedUsers.groups?.target ?? '');
-      respond(res, 200, userPage(targetUsers(state, target.value.id), parsed.searchParams, true));
+    if (installationUsers && method === 'GET') {
+      const target = findTarget(state, installationUsers.groups?.target ?? '');
+      respond(res, 200, userPage(targetUsers(state, target.value.id), parsed.searchParams));
       return;
     }
-    if (scopedUsers && method === 'POST') {
-      const target = findTarget(state, scopedUsers.groups?.target ?? '');
+    if (installationUsers && method === 'POST') {
+      const target = findTarget(state, installationUsers.groups?.target ?? '');
+      if (rootScopedUsers !== null) requireRootWrite(state, target);
       const input = await readBody<AddTargetUserInput>(req);
       let user = state.users.find(
         (entry) => entry.account.login.toLowerCase() === input.login.toLowerCase(),
       );
       if (user === undefined) {
-        user = mockUser(input.login, 'none');
+        user = mockUser(input.login);
         state.users.push(user);
+      } else if (user.status === 'removed') {
+        user.status = 'active';
+        user.revision += 1;
+        user.updated_at = new Date().toISOString();
       }
       const access = targetAccessFor(state, target.value.id);
       if (access.has(user.account.id)) {
@@ -1076,9 +1481,10 @@ async function handle(
       respond(res, 201, scopedUserValue(state, target.value.id, user));
       return;
     }
-    if (scopedUser && method === 'PUT') {
-      const target = findTarget(state, scopedUser.groups?.target ?? '');
-      const user = findUser(state, scopedUser.groups?.account ?? '');
+    if (installationUser && method === 'PUT') {
+      const target = findTarget(state, installationUser.groups?.target ?? '');
+      if (rootScopedUser !== null) requireRootWrite(state, target);
+      const user = findUser(state, installationUser.groups?.account ?? '');
       const input = await readBody<UpdateTargetUserInput>(req);
       const access = targetAccessFor(state, target.value.id);
       const current = access.get(user.account.id);
@@ -1090,7 +1496,6 @@ async function handle(
           input.suspended,
           (current?.revision ?? 0) + 1,
           input.suspension_reason,
-          user.global_role,
         ),
       );
       broadcast(state, { type: 'access.changed', target_id: target.value.id });
@@ -1146,8 +1551,8 @@ async function handle(
       respond(res, 200, stored.detail);
       return;
     }
-    if (audit && method === 'GET') {
-      const target = findTarget(state, audit.groups?.target ?? '');
+    if (installationAudit && method === 'GET') {
+      const target = findTarget(state, installationAudit.groups?.target ?? '');
       const scope = parsed.searchParams.get('scope') ?? 'all';
       const change = parsed.searchParams.get('change') ?? 'all';
       respond(
@@ -1192,8 +1597,8 @@ async function handle(
       );
       return;
     }
-    if (failures && method === 'GET') {
-      const target = findTarget(state, failures.groups?.target ?? '');
+    if (installationFailures && method === 'GET') {
+      const target = findTarget(state, installationFailures.groups?.target ?? '');
       const kind = parsed.searchParams.get('kind') ?? 'all';
       respond(
         res,
@@ -1251,6 +1656,259 @@ function findTarget(state: MockState, encodedId: string): MockTarget {
   return target;
 }
 
+function mockRootOwns(target: MockTarget): boolean {
+  return target.value.id === '2001' || target.value.id === '1001';
+}
+
+function rootInstallationValue(target: MockTarget, index: number): RootInstallation {
+  const permissionPending = index === 2;
+  const syncError = index === 3;
+  const available = !permissionPending && !syncError;
+  const detail = permissionPending
+    ? 'Approve the GitHub App Members permission'
+    : syncError
+      ? 'GitHub owner synchronization failed'
+      : undefined;
+
+  return {
+    id: target.value.id,
+    installation_id: target.value.installation_id,
+    type: target.value.type,
+    account: target.value.account,
+    available,
+    owned_by_viewer: mockRootOwns(target),
+    repository_counts: target.value.repository_counts,
+    delivery_health: {
+      failed: index === 0 ? 1 : 0,
+      ...(index === 0 ? { last_failure_at: new Date(Date.now() - 18 * 60_000).toISOString() } : {}),
+    },
+    ownership: {
+      source: target.value.type === 'User' ? 'personal' : 'organization_admin',
+      status: permissionPending ? 'permission_pending' : syncError ? 'error' : 'fresh',
+      ...(detail === undefined ? {} : { detail }),
+      synced_at: new Date(Date.now() - (available ? 3 : 19) * 60_000).toISOString(),
+      owner_count: available ? (target.value.type === 'User' ? 1 : 2) : 0,
+      stale: permissionPending,
+    },
+  };
+}
+
+function rootRuntimeSettingsValue(state: MockState): RootRuntimeSettings {
+  const behaviorOverride = copyOptionalConfig(state.runtime.behaviorOverride);
+  return {
+    behavior_defaults: {
+      deployment: copyConfig(DEFAULT_CONFIG),
+      override: behaviorOverride,
+      effective: behaviorOverride ?? copyConfig(DEFAULT_CONFIG),
+    },
+    log_level: {
+      deployment: 'info',
+      override: state.runtime.logLevelOverride,
+      effective: state.runtime.logLevelOverride ?? 'info',
+    },
+    reaction_poll_interval: {
+      deployment_seconds: 300,
+      override_seconds: state.runtime.pollIntervalOverride,
+      effective_seconds: state.runtime.pollIntervalOverride ?? 300,
+    },
+    session_lifetime: {
+      deployment_seconds: 86_400,
+      override_seconds: state.runtime.sessionTTLOverride,
+      effective_seconds: state.runtime.sessionTTLOverride ?? 86_400,
+    },
+    revision: state.runtime.revision,
+    ...(state.runtime.updatedAt === undefined ? {} : { updated_at: state.runtime.updatedAt }),
+    ...(state.runtime.updatedBy === undefined ? {} : { updated_by: state.runtime.updatedBy }),
+    service: {
+      version: 'dev',
+      uptime_seconds: Math.max(0, Math.floor((Date.now() - state.runtime.startedAt) / 1_000)),
+      storage: 'healthy',
+      listeners: { public: ':8080', admin: '127.0.0.1:8081' },
+      public_paths: { panel: '/', webhook: '/webhook' },
+      provider_endpoints: {
+        api: 'https://api.github.com',
+        authorize: 'https://github.com/login/oauth/authorize',
+        token: 'https://github.com/login/oauth/access_token',
+      },
+      credential_presence: { webhook: true, app: true, oauth: true },
+    },
+  };
+}
+
+function copyOptionalConfig(value: ConfigValues | null): ConfigValues | null {
+  return value === null ? null : copyConfig(value);
+}
+
+function copyConfig(value: ConfigValues): ConfigValues {
+  return {
+    ...value,
+    allowed_commands: [...value.allowed_commands],
+    command_aliases: { ...value.command_aliases },
+  };
+}
+
+function rootOverviewValue(state: MockState): RootOverview {
+  const installations = state.targets.map((target, index) => rootInstallationValue(target, index));
+  const repositories = state.targets.flatMap((target) => target.repositories);
+  const recentFailures = state.targets
+    .flatMap((target) =>
+      target.failures.map((failure) => ({ installation: target.value.account, failure })),
+    )
+    .sort(
+      (left, right) => Date.parse(right.failure.occurred_at) - Date.parse(left.failure.occurred_at),
+    )
+    .slice(0, 5);
+
+  return {
+    service: {
+      status: 'healthy',
+      version: 'dev',
+      service_host: 'local mock service',
+      uptime_seconds: 9_322,
+      storage: 'healthy',
+    },
+    catalog: {
+      installations: state.targets.length,
+      repositories: repositories.length,
+      enabled_repositories: repositories.filter(
+        (repository) => repository.detail.repository.effective_enabled,
+      ).length,
+    },
+    ownership: {
+      fresh: installations.filter(
+        (installation) =>
+          installation.ownership.status === 'fresh' && !installation.ownership.stale,
+      ).length,
+      stale: installations.filter(
+        (installation) => installation.ownership.status === 'fresh' && installation.ownership.stale,
+      ).length,
+      permission_pending: installations.filter(
+        (installation) => installation.ownership.status === 'permission_pending',
+      ).length,
+      error: installations.filter((installation) => installation.ownership.status === 'error')
+        .length,
+    },
+    active_elevations: [...state.elevations.values()].filter(
+      (elevation) => Date.parse(elevation.expires_at) > Date.now(),
+    ).length,
+    unread_security_events: state.notifications.filter(
+      (notification) => notification.read_at === undefined,
+    ).length,
+    recent_failures: recentFailures,
+  };
+}
+
+function rootAuditEntries(state: MockState): AuditEntry[] {
+  const installationEvents = state.targets.flatMap((target) =>
+    target.audit.map((entry) => ({
+      ...entry,
+      id: `${target.value.id}-${entry.id}`,
+      category: 'configuration' as const,
+      installation: target.value.account,
+    })),
+  );
+  const primaryInstallation = state.targets[0]?.value.account;
+  const subject = state.users[0]?.account;
+  const now = Date.now();
+  const systemEvents: AuditEntry[] = [
+    {
+      id: 'root-runtime-1',
+      category: 'runtime',
+      actor: VIEWER,
+      action: 'runtime.settings.updated',
+      summary: 'Updated panel session lifetime',
+      created_at: new Date(now - 7 * 60_000).toISOString(),
+    },
+    {
+      id: 'root-elevation-1',
+      category: 'elevation',
+      installation: primaryInstallation,
+      actor: VIEWER,
+      elevation_id: 'elevation-204',
+      action: 'elevation.started',
+      summary: 'Started audited installation access',
+      created_at: new Date(now - 22 * 60_000).toISOString(),
+    },
+    {
+      id: 'root-access-1',
+      category: 'access',
+      installation: primaryInstallation,
+      actor: VIEWER,
+      subject,
+      action: 'target.access.updated',
+      summary: 'Updated installation access',
+      created_at: new Date(now - 48 * 60_000).toISOString(),
+    },
+    {
+      id: 'root-ownership-1',
+      category: 'ownership',
+      installation: primaryInstallation,
+      actor: VIEWER,
+      action: 'ownership.synced',
+      summary: 'Synchronized installation owners',
+      created_at: new Date(now - 76 * 60_000).toISOString(),
+    },
+    {
+      id: 'root-notification-1',
+      category: 'notification',
+      installation: primaryInstallation,
+      actor: VIEWER,
+      action: 'owner.notification.created',
+      summary: 'Notified owners about elevated access',
+      created_at: new Date(now - 80 * 60_000).toISOString(),
+    },
+  ];
+
+  return [...installationEvents, ...systemEvents].sort(
+    (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
+  );
+}
+
+function rootPanelUsers(state: MockState): RootPanelUser[] {
+  return state.users.map((user) => ({
+    account: user.account,
+    system_role: user.system_role,
+    status: user.status,
+    ...(user.ban_reason === undefined ? {} : { ban_reason: user.ban_reason }),
+    ...(user.banned_at === undefined ? {} : { banned_at: user.banned_at }),
+    ...(user.last_login_at === undefined ? {} : { last_login_at: user.last_login_at }),
+    revision: user.revision,
+    owned_installations:
+      user.account.id === VIEWER.id
+        ? state.targets.filter((target) => mockRootOwns(target)).length
+        : 0,
+    assigned_installations: state.targets.filter((target) =>
+      state.targetAccess.get(target.value.id)?.has(user.account.id),
+    ).length,
+    manageable: user.account.id !== VIEWER.id && user.system_role === 'none',
+    can_manage_system_role: user.account.id !== VIEWER.id && user.system_role !== 'super_root',
+  }));
+}
+
+function activeMockElevation(state: MockState, targetId: string): RootElevation | undefined {
+  const elevation = state.elevations.get(targetId);
+  if (elevation === undefined) return undefined;
+  if (Date.parse(elevation.expires_at) > Date.now()) return elevation;
+  state.elevations.delete(targetId);
+  return undefined;
+}
+
+function rootTargetValue(state: MockState, target: MockTarget): PanelTarget {
+  if (mockRootOwns(target)) return structuredClone(target.value);
+  const elevated = activeMockElevation(state, target.value.id) !== undefined;
+  return {
+    ...structuredClone(target.value),
+    effective_role: 'none',
+    access_source: elevated ? 'elevation' : 'root',
+    capabilities: { ...ROOT_READ_CAPABILITIES, write: elevated },
+  };
+}
+
+function requireRootWrite(state: MockState, target: MockTarget): void {
+  if (mockRootOwns(target) || activeMockElevation(state, target.value.id) !== undefined) return;
+  throw new MockApiError(403, 'elevation_required', 'start elevated access for this installation');
+}
+
 function findUser(state: MockState, encodedId: string): PanelUser {
   const id = decodeURIComponent(encodedId);
   const user = state.users.find((entry) => entry.account.id === id);
@@ -1274,11 +1932,11 @@ function findInvitationByToken(state: MockState, encodedToken: string): MockInvi
 
 function createMockInvitation(
   state: MockState,
-  input: AddGlobalInvitationInput | AddTargetInvitationInput,
-  target: PanelTarget | undefined,
+  input: AddTargetInvitationInput,
+  target: PanelTarget,
 ): MockInvitation {
   const now = new Date();
-  const account = mockUser(input.login, 'none').account;
+  const account = mockUser(input.login).account;
   for (const invitation of state.invitations) {
     if (
       invitation.account.login.toLowerCase() === input.login.toLowerCase() &&
@@ -1294,10 +1952,37 @@ function createMockInvitation(
     id: `mock-invitation-${counter}`,
     token: mockInvitationToken(counter),
     account,
-    ...(target === undefined
-      ? {}
-      : { target_id: target.id, target_name: target.account.display_name }),
+    target_id: target.id,
+    target_name: target.account.display_name,
     role: input.role,
+    status: 'pending',
+    expires_at: new Date(now.getTime() + input.expires_in_days * 86_400_000).toISOString(),
+    created_by: VIEWER,
+    created_at: now.toISOString(),
+  };
+  state.invitations.unshift(invitation);
+  return invitation;
+}
+
+function createRootMockInvitation(state: MockState, input: AddRootInvitationInput): MockInvitation {
+  const now = new Date();
+  const account = mockUser(input.login).account;
+  for (const invitation of state.invitations) {
+    if (
+      invitation.account.login.toLowerCase() === input.login.toLowerCase() &&
+      invitation.system_role === 'root' &&
+      invitation.status === 'pending'
+    ) {
+      invitation.status = 'revoked';
+      invitation.responded_at = now.toISOString();
+    }
+  }
+  const counter = state.invitationCounter++;
+  const invitation: MockInvitation = {
+    id: `mock-root-invitation-${counter}`,
+    token: mockInvitationToken(counter),
+    account,
+    system_role: 'root',
     status: 'pending',
     expires_at: new Date(now.getTime() + input.expires_in_days * 86_400_000).toISOString(),
     created_by: VIEWER,
@@ -1318,6 +2003,7 @@ function publicInvitationValue(invitation: MockInvitation): PanelInvitation {
     ...(invitation.target_id === undefined ? {} : { target_id: invitation.target_id }),
     ...(invitation.target_name === undefined ? {} : { target_name: invitation.target_name }),
     role: invitation.role,
+    ...(invitation.system_role === undefined ? {} : { system_role: invitation.system_role }),
     status: invitation.status,
     expires_at: invitation.expires_at,
     created_by: invitation.created_by,
@@ -1341,7 +2027,7 @@ function broadcastInvitation(state: MockState, invitation: MockInvitation): void
   }
 }
 
-function mockUser(login: string, role: PanelRole): PanelUser {
+function mockUser(login: string): PanelUser {
   const normalized = login.trim();
   const now = new Date().toISOString();
   return {
@@ -1353,9 +2039,8 @@ function mockUser(login: string, role: PanelRole): PanelUser {
       display_name: normalized,
       avatar_url: null,
     },
-    root: false,
+    system_role: 'none',
     status: 'active',
-    global_role: role,
     revision: 1,
     created_at: now,
     updated_at: now,
@@ -1377,9 +2062,8 @@ function targetAccess(
   suspended: boolean,
   revision: number,
   reason?: string,
-  globalRole: PanelRole = 'none',
 ): TargetUserAccess {
-  const effectiveRole = suspended ? 'none' : (role ?? globalRole);
+  const effectiveRole = suspended ? 'none' : (role ?? 'none');
   return {
     role,
     suspended,
@@ -1387,7 +2071,7 @@ function targetAccess(
     revision,
     updated_at: new Date().toISOString(),
     effective_role: effectiveRole,
-    source: suspended ? 'suspended' : role === null ? 'global' : 'target',
+    source: suspended ? 'suspended' : role === null ? 'denied' : 'target',
     capabilities: capabilitiesFor(effectiveRole),
   };
 }
@@ -1426,28 +2110,19 @@ function addAudit(target: MockTarget, action: string, summary: string, repositor
   });
 }
 
-function mockDecisions(user: PanelUser, target?: PanelTarget): AccessDecision[] {
+function mockDecisions(user: PanelUser, target: PanelTarget): AccessDecision[] {
   const now = Date.now();
   const current =
-    target === undefined
-      ? user.status === 'banned'
-        ? {
-            action: 'user.banned',
-            summary: `banned user${user.ban_reason === undefined ? '' : `: ${user.ban_reason}`}`,
-            created_at: user.banned_at ?? new Date(now - 2 * 86_400_000).toISOString(),
-          }
-        : { action: 'user.role.updated', summary: `changed global role to ${user.global_role}` }
-      : user.target_access?.suspended === true
-        ? {
-            action: 'target.access.suspended',
-            summary: `suspended installation access${user.target_access.suspension_reason === undefined ? '' : `: ${user.target_access.suspension_reason}`}`,
-            created_at:
-              user.target_access.updated_at ?? new Date(now - 3 * 86_400_000).toISOString(),
-          }
-        : {
-            action: 'target.access.updated',
-            summary: `updated access to ${target.account.display_name}`,
-          };
+    user.target_access?.suspended === true
+      ? {
+          action: 'target.access.suspended',
+          summary: `suspended installation access${user.target_access.suspension_reason === undefined ? '' : `: ${user.target_access.suspension_reason}`}`,
+          created_at: user.target_access.updated_at ?? new Date(now - 3 * 86_400_000).toISOString(),
+        }
+      : {
+          action: 'target.access.updated',
+          summary: `updated access to ${target.account.display_name}`,
+        };
   return [
     {
       id: `${user.account.id}-decision-3`,
@@ -1458,9 +2133,8 @@ function mockDecisions(user: PanelUser, target?: PanelTarget): AccessDecision[] 
     {
       id: `${user.account.id}-decision-2`,
       actor: VIEWER,
-      action: target === undefined ? 'user.role.updated' : 'target.access.updated',
-      summary:
-        target === undefined ? 'changed global role to viewer' : 'updated installation access',
+      action: 'target.access.updated',
+      summary: 'updated installation access',
       created_at: new Date(now - 18 * 86_400_000).toISOString(),
     },
     {
@@ -1473,19 +2147,15 @@ function mockDecisions(user: PanelUser, target?: PanelTarget): AccessDecision[] 
   ];
 }
 
-function userPage(
-  users: PanelUser[],
-  parameters: URLSearchParams,
-  scoped: boolean,
-): Page<PanelUser> {
+function userPage(users: PanelUser[], parameters: URLSearchParams): Page<PanelUser> {
   const query = (parameters.get('q') ?? '').trim().toLocaleLowerCase();
   const roles = parameters.getAll('role');
   const statuses = parameters.getAll('status');
   const ordered = users
     .filter((user) => {
-      const role = scoped ? user.target_access?.effective_role : user.global_role;
+      const role = user.target_access?.effective_role;
       const status =
-        scoped && user.status === 'active' && user.target_access?.suspended === true
+        user.status === 'active' && user.target_access?.suspended === true
           ? 'suspended'
           : user.status;
       return (
@@ -1499,9 +2169,7 @@ function userPage(
     .map((user) => structuredClone(user));
 
   const roleLevel = (user: PanelUser): number => {
-    const role = scoped
-      ? (user.target_access?.effective_role ?? user.global_role)
-      : user.global_role;
+    const role = user.target_access?.effective_role ?? 'none';
     return ['none', 'viewer', 'editor', 'admin', 'owner'].indexOf(role);
   };
 
@@ -1557,6 +2225,10 @@ function invitationPage(
   const roles = parameters.getAll('role');
   const statuses = parameters.getAll('status');
   const now = Date.now();
+  const roleLevel = (invitation: PanelInvitation): number =>
+    invitation.system_role === 'root'
+      ? 4
+      : ['viewer', 'editor', 'admin'].indexOf(invitation.role ?? '');
   const ordered = invitations
     .map((invitation) => {
       const value = publicInvitationValue(invitation);
@@ -1570,7 +2242,7 @@ function invitationPage(
           invitation.account.login.toLocaleLowerCase().includes(query) ||
           invitation.account.display_name.toLocaleLowerCase().includes(query) ||
           invitation.created_by.login.toLocaleLowerCase().includes(query)) &&
-        (roles.length === 0 || roles.includes(invitation.role)) &&
+        (roles.length === 0 || roles.includes(invitation.role ?? '')) &&
         (statuses.length === 0 || statuses.includes(invitation.status)),
     );
 
@@ -1597,16 +2269,14 @@ function invitationPage(
     case 'role_asc':
       ordered.sort(
         (left, right) =>
-          ['viewer', 'editor', 'admin', 'owner'].indexOf(left.role) -
-            ['viewer', 'editor', 'admin', 'owner'].indexOf(right.role) ||
+          roleLevel(left) - roleLevel(right) ||
           left.account.display_name.localeCompare(right.account.display_name),
       );
       break;
     case 'role_desc':
       ordered.sort(
         (left, right) =>
-          ['viewer', 'editor', 'admin', 'owner'].indexOf(right.role) -
-            ['viewer', 'editor', 'admin', 'owner'].indexOf(left.role) ||
+          roleLevel(right) - roleLevel(left) ||
           left.account.display_name.localeCompare(right.account.display_name),
       );
       break;
