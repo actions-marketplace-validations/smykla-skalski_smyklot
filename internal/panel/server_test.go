@@ -913,7 +913,15 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
 	targetPath := "/panel/api/v1/targets/github:installation:10"
+	seedPanelHistory(t, harness, targetPath, session)
+	assertAuditPagination(t, harness, targetPath, session)
+	assertAuditChangeFilter(t, harness, targetPath, session)
+	assertFailureHistory(t, harness, targetPath, session)
+	assertInvalidHistoryQueries(t, harness, targetPath, session)
+}
 
+func seedPanelHistory(t *testing.T, harness *panelHarness, targetPath string, session *http.Cookie) {
+	t.Helper()
 	for revision := int64(1); revision <= 2; revision++ {
 		input := fmt.Sprintf(
 			`{"repository_default_enabled":true,"config_patch":{"quiet_success":true},"expected_revision":%d}`,
@@ -930,7 +938,12 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 			t.Fatalf("target update %d = %d %s", revision, response.Code, response.Body.String())
 		}
 	}
+	seedFailure(t, harness, "delivery-permanent", "repository configuration is invalid", false)
+	seedFailure(t, harness, "delivery-retryable", "GitHub request timed out", true)
+}
 
+func assertAuditPagination(t *testing.T, harness *panelHarness, targetPath string, session *http.Cookie) {
+	t.Helper()
 	first := harness.request(
 		t,
 		http.MethodGet,
@@ -971,9 +984,31 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 		secondPage.Items[0].ID <= firstPage.Items[0].ID {
 		t.Fatalf("unexpected second audit page: %#v", secondPage)
 	}
+}
 
-	seedFailure(t, harness, "delivery-permanent", "repository configuration is invalid", false)
-	seedFailure(t, harness, "delivery-retryable", "GitHub request timed out", true)
+func assertAuditChangeFilter(t *testing.T, harness *panelHarness, targetPath string, session *http.Cookie) {
+	t.Helper()
+	accountChanges := harness.request(
+		t,
+		http.MethodGet,
+		targetPath+"/audit?change=account&sort=change_asc&limit=10",
+		nil,
+		session,
+	)
+	var accountPage pageResponse[auditResponse]
+	if accountChanges.Code != http.StatusOK {
+		t.Fatalf("account-change audit = %d %s", accountChanges.Code, accountChanges.Body.String())
+	}
+	if err := json.Unmarshal(accountChanges.Body.Bytes(), &accountPage); err != nil {
+		t.Fatal(err)
+	}
+	if accountPage.Total != 2 || len(accountPage.Items) != 2 {
+		t.Fatalf("unexpected account-change audit: %#v", accountPage)
+	}
+}
+
+func assertFailureHistory(t *testing.T, harness *panelHarness, targetPath string, session *http.Cookie) {
+	t.Helper()
 	failures := harness.request(
 		t,
 		http.MethodGet,
@@ -991,6 +1026,47 @@ func TestPanelHistoryPaginationFilteringAndSorting(t *testing.T) {
 	if failurePage.Total != 1 || len(failurePage.Items) != 1 ||
 		failurePage.Items[0].DeliveryID != "delivery-retryable" {
 		t.Fatalf("unexpected failure page: %#v", failurePage)
+	}
+
+	statusAscending := harness.request(
+		t,
+		http.MethodGet,
+		targetPath+"/failures?sort=status_asc&limit=10",
+		nil,
+		session,
+	)
+	if statusAscending.Code != http.StatusOK {
+		t.Fatalf("status-sorted failures = %d %s", statusAscending.Code, statusAscending.Body.String())
+	}
+	if err := json.Unmarshal(statusAscending.Body.Bytes(), &failurePage); err != nil {
+		t.Fatal(err)
+	}
+	if len(failurePage.Items) != 2 || failurePage.Items[0].Retryable {
+		t.Fatalf("unexpected status-sorted failures: %#v", failurePage)
+	}
+}
+
+func assertInvalidHistoryQueries(t *testing.T, harness *panelHarness, targetPath string, session *http.Cookie) {
+	t.Helper()
+	wrongAuditSort := harness.request(
+		t,
+		http.MethodGet,
+		targetPath+"/audit?sort=status_asc",
+		nil,
+		session,
+	)
+	if wrongAuditSort.Code != http.StatusBadRequest {
+		t.Fatalf("failure-only audit sort = %d %s", wrongAuditSort.Code, wrongAuditSort.Body.String())
+	}
+	invalidChange := harness.request(
+		t,
+		http.MethodGet,
+		targetPath+"/audit?change=sideways",
+		nil,
+		session,
+	)
+	if invalidChange.Code != http.StatusBadRequest {
+		t.Fatalf("invalid audit change = %d %s", invalidChange.Code, invalidChange.Body.String())
 	}
 
 	invalid := harness.request(
@@ -1095,6 +1171,26 @@ func TestPanelRepositoryPaginationFilteringAndSorting(t *testing.T) {
 	if secondPage.Total != 3 || len(secondPage.Items) != 1 ||
 		secondPage.Items[0].Name != "beta-service" {
 		t.Fatalf("unexpected second repository page: %#v", secondPage)
+	}
+
+	filePage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+"/repositories?sort=file_asc&limit=10",
+		session,
+	)
+	if len(filePage.Items) != 3 || filePage.Items[0].Name != "beta-service" {
+		t.Fatalf("unexpected file-sorted repositories: %#v", filePage)
+	}
+
+	overridePage := getRepositoryPage(
+		t,
+		harness,
+		"/panel/api/v1/targets/"+targetID+"/repositories?sort=overrides_desc&limit=10",
+		session,
+	)
+	if len(overridePage.Items) != 3 || overridePage.Items[0].Name != "beta-service" {
+		t.Fatalf("unexpected override-sorted repositories: %#v", overridePage)
 	}
 
 	invalid := harness.request(

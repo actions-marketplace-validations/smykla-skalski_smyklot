@@ -1,6 +1,5 @@
 <script lang="ts">
   import HistoryPanel from './components/HistoryPanel.svelte';
-  import HelpPanel from './components/HelpPanel.svelte';
   import IdentityBar from './components/IdentityBar.svelte';
   import PageFooter from './components/PageFooter.svelte';
   import Plate from './components/Plate.svelte';
@@ -34,6 +33,7 @@
     RepositorySettingsInput,
     TargetSettingsInput,
   } from './lib/types';
+  import { MediaQuery } from 'svelte/reactivity';
 
   type FailureSource = 'load' | 'sign-out' | 'stream';
   type PanelFailure = { message: string; source: FailureSource };
@@ -59,12 +59,52 @@
   let revokedReason = $state<string | null>(null);
   let sidebarCollapsed = $state(readSidebarDisplay() === 'collapsed');
   let theme = $state<ThemeDisplay>(readThemeDisplay());
+  const systemDarkTheme = new MediaQuery('prefers-color-scheme: dark');
+  const resolvedTheme = $derived(
+    theme === 'system' && systemDarkTheme.current ? 'dark' : theme === 'system' ? 'light' : theme,
+  );
   const targetReads = new LatestRequest();
   const streamRefreshes = new LatestRequest();
 
   const selectedTarget = $derived(
     selectedId === null ? null : (targets.find((target) => target.id === selectedId) ?? null),
   );
+  const tableScrollView = $derived(
+    selectedTarget !== null && ['repositories', 'users', 'invitations', 'history'].includes(view),
+  );
+
+  function forwardTableWheel(event: WheelEvent): void {
+    if (
+      !tableScrollView ||
+      !window.matchMedia('(min-width: 64.001rem)').matches ||
+      event.defaultPrevented ||
+      event.ctrlKey ||
+      event.deltaY === 0 ||
+      Math.abs(event.deltaX) > Math.abs(event.deltaY)
+    )
+      return;
+
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest('[data-panel-scroll], [role="dialog"], [role="menu"]') !== null
+    )
+      return;
+
+    const workspace = event.currentTarget as HTMLDivElement;
+    const scroller = workspace.querySelector<HTMLElement>('[data-panel-scroll]');
+    if (scroller === null || scroller.scrollHeight <= scroller.clientHeight) return;
+
+    const previous = scroller.scrollTop;
+    const delta =
+      event.deltaMode === 1
+        ? event.deltaY * 16
+        : event.deltaMode === 2
+          ? event.deltaY * scroller.clientHeight
+          : event.deltaY;
+    scroller.scrollTop += delta;
+    if (scroller.scrollTop !== previous) event.preventDefault();
+  }
 
   async function load(): Promise<void> {
     loading = viewer === null;
@@ -110,7 +150,7 @@
   async function selectTarget(targetId: string): Promise<void> {
     const target = targets.find((entry) => entry.id === targetId);
     if (target === undefined || selectedId === targetId) return;
-    if (view === 'help' || (view === 'users' && globalUsers)) {
+    if (isAccessView(view) && globalUsers) {
       selectedId = target.id;
       writeLastInstallation(target.account.login);
       failure = null;
@@ -151,7 +191,8 @@
     selectedId = target.id;
     view = resolved.view;
     globalUsers =
-      requested?.view === 'users' &&
+      requested !== null &&
+      isAccessView(requested.view) &&
       !('account' in requested) &&
       viewer?.capabilities.manage_global_users === true;
     writeLastInstallation(target.account.login);
@@ -176,8 +217,7 @@
   }
 
   function routeFor(target: PanelTarget, nextView: PanelView): PanelRoute {
-    if (nextView === 'help') return { view: 'help' };
-    if (nextView === 'users' && globalUsers) return { view: 'users' };
+    if (isAccessView(nextView) && globalUsers) return { view: nextView };
     return { account: target.account.login, view: nextView };
   }
 
@@ -278,11 +318,11 @@
   }
 
   function selectUserScope(targetId: string | null): void {
-    if (view !== 'users') return;
+    if (!isAccessView(view)) return;
     if (targetId === null) {
       if (viewer?.capabilities.manage_global_users !== true || selectedTarget === null) return;
       globalUsers = true;
-      router.push({ view: 'users' });
+      router.push({ view });
       userVersion += 1;
       return;
     }
@@ -291,8 +331,18 @@
     globalUsers = false;
     selectedId = target.id;
     writeLastInstallation(target.account.login);
-    router.push({ account: target.account.login, view: 'users' });
+    router.push({ account: target.account.login, view });
     userVersion += 1;
+  }
+
+  function selectUserSection(section: 'users' | 'invitations'): void {
+    if (!isAccessView(view) || view === section || selectedTarget === null) return;
+    view = section;
+    router.push(routeFor(selectedTarget, section));
+  }
+
+  function isAccessView(candidate: PanelView): candidate is 'users' | 'invitations' {
+    return candidate === 'users' || candidate === 'invitations';
   }
 
   function revokeAccess(reason: string): void {
@@ -358,9 +408,12 @@
 
   function selectTheme(nextTheme: ThemeDisplay): void {
     theme = nextTheme;
-    document.documentElement.dataset.theme = nextTheme;
     writeThemeDisplay(nextTheme);
   }
+
+  $effect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+  });
 
   void load();
 </script>
@@ -388,7 +441,7 @@
     onSelectTheme={selectTheme}
   />
 
-  <div class="workspace">
+  <div class="workspace" class:table-scroll-view={tableScrollView} onwheel={forwardTableWheel}>
     <div id="panel-content" class="workspace-content" tabindex="-1">
       {#if failure !== null}
         <Plate label="Problem" tone="alarm">
@@ -444,10 +497,11 @@
                 />
               {/key}
             </div>
-          {:else if view === 'users'}
-            <div id="users-panel" aria-labelledby="users-navigation">
-              {#key `${selectedTarget.id}:${globalUsers}`}
+          {:else if isAccessView(view)}
+            <div id="access-panel" aria-labelledby="users-navigation">
+              {#key selectedTarget.id}
                 <UserManagement
+                  section={view}
                   scope={globalUsers ? 'global' : 'target'}
                   targetId={selectedTarget.id}
                   targetName={selectedTarget.account.display_name}
@@ -456,6 +510,7 @@
                   canManageOwners={viewer.capabilities.manage_owners}
                   refreshVersion={userVersion}
                   onScope={selectUserScope}
+                  onSection={selectUserSection}
                   fetchUsers={api.fetchUsers}
                   addUser={api.addUser}
                   updateUser={api.updateUser}
@@ -483,10 +538,6 @@
                 />
               {/key}
             </div>
-          {:else}
-            <div id="help-panel" aria-labelledby="help-navigation">
-              <HelpPanel />
-            </div>
           {/if}
         {:else if failure === null}
           <Plate label="No installations">
@@ -511,6 +562,15 @@
 </main>
 
 <style>
+  #repositories-panel,
+  #access-panel,
+  #history-panel {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
   .panel-skeleton {
     display: grid;
     gap: var(--space-3);

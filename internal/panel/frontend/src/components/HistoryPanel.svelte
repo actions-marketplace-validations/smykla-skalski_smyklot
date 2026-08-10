@@ -1,5 +1,16 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import {
+    columnFilteringFeature,
+    createColumnHelper,
+    createTable,
+    filterFn_includesString,
+    rowSortingFeature,
+    tableFeatures,
+  } from '@tanstack/svelte-table';
+  import type { ColumnFiltersState, SortingState, Updater } from '@tanstack/svelte-table';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { MediaQuery } from 'svelte/reactivity';
+  import { get } from 'svelte/store';
 
   import { formatDateTime, formatRelative, formatTimestamp } from '../lib/format';
   import type { FilterSection } from '../lib/filter-menu';
@@ -7,6 +18,7 @@
   import type { TimeDisplay } from '../lib/preferences';
   import type {
     AuditEntry,
+    AuditChange,
     AuditHistoryRequest,
     AuditScope,
     DeliveryFailure,
@@ -20,10 +32,11 @@
   import FilterMenu from './FilterMenu.svelte';
   import HistoryDisplayMenu from './HistoryDisplayMenu.svelte';
   import Icon from './Icon.svelte';
-  import PaginationBar from './PaginationBar.svelte';
+  import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
   import PanelHeader from './PanelHeader.svelte';
   import SearchField from './SearchField.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
+  import TableEmptyState from './TableEmptyState.svelte';
 
   type HistoryType = 'audit' | 'failures';
 
@@ -42,6 +55,17 @@
     },
   ] satisfies readonly FilterSection[];
 
+  const AUDIT_CHANGE_FILTERS = [
+    {
+      options: [
+        { value: 'all', label: 'All changes' },
+        { value: 'enablement', label: 'Enablement' },
+        { value: 'repository', label: 'Repository settings' },
+        { value: 'account', label: 'Account settings' },
+      ],
+    },
+  ] satisfies readonly FilterSection[];
+
   const FAILURE_KIND_FILTERS = [
     {
       options: [
@@ -51,6 +75,34 @@
       ],
     },
   ] satisfies readonly FilterSection[];
+  const HISTORY_TABLE_FEATURES = tableFeatures({
+    columnFilteringFeature,
+    filterFns: { includesString: filterFn_includesString },
+    rowSortingFeature,
+  });
+  const auditColumn = createColumnHelper<typeof HISTORY_TABLE_FEATURES, AuditEntry>();
+  const AUDIT_COLUMNS = auditColumn.columns([
+    auditColumn.accessor((entry) => entry.actor.display_name, {
+      id: 'actor',
+      enableColumnFilter: false,
+    }),
+    auditColumn.accessor((entry) => entry.repository_full_name ?? 'Account', { id: 'target' }),
+    auditColumn.accessor('summary', { id: 'change' }),
+    auditColumn.accessor('created_at', { id: 'when', enableColumnFilter: false }),
+  ]);
+  const failureColumn = createColumnHelper<typeof HISTORY_TABLE_FEATURES, DeliveryFailure>();
+  const FAILURE_COLUMNS = failureColumn.columns([
+    failureColumn.accessor((failure) => (failure.retryable ? 'retryable' : 'permanent'), {
+      id: 'status',
+    }),
+    failureColumn.accessor('repository_full_name', { id: 'repository', enableColumnFilter: false }),
+    failureColumn.accessor('reason', {
+      id: 'failure',
+      enableColumnFilter: false,
+      enableSorting: false,
+    }),
+    failureColumn.accessor('occurred_at', { id: 'when', enableColumnFilter: false }),
+  ]);
 
   const {
     targetId,
@@ -69,25 +121,28 @@
   let appliedQuery = $state('');
   let sort = $state<HistorySort>('newest');
   let auditScope = $state<AuditScope>('all');
+  let auditChange = $state<AuditChange>('all');
   let failureKind = $state<FailureKind>('all');
   let timeDisplay = $state<TimeDisplay>(readTimeDisplay());
-  let limit = $state<number>(20);
+  const limit = 20;
   let auditPage = $state<Page<AuditEntry> | null>(null);
   let failurePage = $state<Page<DeliveryFailure> | null>(null);
-  let pageIndex = $state(0);
   let loading = $state(false);
   let problem = $state<string | null>(null);
+  let loadMoreProblem = $state<string | null>(null);
   let now = $state(Date.now());
   let requestSequence = 0;
-  let historyTools: HTMLDivElement;
-  let scrollAfterPageSizeChange = false;
+  let failureWarmupSequence = 0;
+  let historyResults = $state<HTMLDivElement>();
+  let auditScroll = $state<HTMLTableSectionElement>();
+  let failureScroll = $state<HTMLTableSectionElement>();
 
   const currentPage = $derived(historyType === 'audit' ? auditPage : failurePage);
-  const itemCount = $derived(currentPage?.items.length ?? 0);
-  const total = $derived(currentPage?.total ?? 0);
-  const pageCount = $derived(Math.max(1, Math.ceil(total / limit)));
   const hasFilters = $derived(
-    appliedQuery !== '' || (historyType === 'audit' ? auditScope !== 'all' : failureKind !== 'all'),
+    appliedQuery !== '' ||
+      (historyType === 'audit'
+        ? auditScope !== 'all' || auditChange !== 'all'
+        : failureKind !== 'all'),
   );
   const description = $derived(
     historyType === 'audit'
@@ -102,9 +157,92 @@
       appliedQuery,
       sort,
       auditScope,
+      auditChange,
       failureKind,
       limit,
     ].join(':'),
+  );
+  const auditRows = $derived(auditPage?.items ?? []);
+  const failureRows = $derived(failurePage?.items ?? []);
+  const auditTable = createTable({
+    features: HISTORY_TABLE_FEATURES,
+    columns: AUDIT_COLUMNS,
+    get data() {
+      return auditRows;
+    },
+    getRowId: (entry) => entry.id,
+    manualFiltering: true,
+    manualSorting: true,
+    state: {
+      get sorting() {
+        return historySortingState('audit');
+      },
+      get columnFilters() {
+        return [
+          { id: 'target', value: auditScope },
+          { id: 'change', value: auditChange },
+        ];
+      },
+    },
+    onSortingChange: (next) => selectHistorySorting('audit', next),
+    onColumnFiltersChange: selectAuditColumnFilters,
+  });
+  const failureTable = createTable({
+    features: HISTORY_TABLE_FEATURES,
+    columns: FAILURE_COLUMNS,
+    get data() {
+      return failureRows;
+    },
+    getRowId: (failure) => failure.id,
+    manualFiltering: true,
+    manualSorting: true,
+    state: {
+      get sorting() {
+        return historySortingState('failures');
+      },
+      get columnFilters() {
+        return [{ id: 'status', value: failureKind }];
+      },
+    },
+    onSortingChange: (next) => selectHistorySorting('failures', next),
+    onColumnFiltersChange: selectFailureColumnFilters,
+  });
+  const auditTableRows = $derived(auditTable.getRowModel().rows);
+  const failureTableRows = $derived(failureTable.getRowModel().rows);
+  const desktopTableLayout = new MediaQuery('min-width: 64.001rem', true);
+  const auditVirtualizer = createVirtualizer<HTMLTableSectionElement, HTMLTableRowElement>({
+    count: 0,
+    estimateSize: () => 65,
+    getScrollElement: () => auditScroll ?? null,
+    overscan: 6,
+  });
+  const failureVirtualizer = createVirtualizer<HTMLTableSectionElement, HTMLTableRowElement>({
+    count: 0,
+    estimateSize: () => 65,
+    getScrollElement: () => failureScroll ?? null,
+    overscan: 6,
+  });
+  const auditRenderRows = $derived.by(() =>
+    desktopTableLayout.current
+      ? $auditVirtualizer.getVirtualItems().map((row) => ({ ...row, virtual: true as const }))
+      : auditTableRows.map((row, index) => ({
+          index,
+          key: row.id,
+          size: 0,
+          start: 0,
+          virtual: false as const,
+        })),
+  );
+  const failureRenderRows = $derived.by(() =>
+    desktopTableLayout.current
+      ? $failureVirtualizer.getVirtualItems().map((row) => ({ ...row, virtual: true as const }))
+      : failureTableRows.map((row, index) => ({
+          index,
+          key: row.id,
+          size: 0,
+          start: 0,
+          virtual: false as const,
+        })),
   );
 
   $effect(() => {
@@ -120,6 +258,54 @@
   });
 
   $effect(() => {
+    const version = ++failureWarmupSequence;
+    const expectedTarget = targetId;
+    const expectedRefresh = refreshVersion;
+    if (failurePage !== null || historyType !== 'audit') return;
+    void fetchFailures({ query: '', sort: 'newest', limit, kind: 'all' })
+      .then((loaded) => {
+        if (
+          version === failureWarmupSequence &&
+          targetId === expectedTarget &&
+          refreshVersion === expectedRefresh &&
+          failurePage === null
+        ) {
+          failurePage = loaded;
+        }
+      })
+      .catch(() => undefined);
+  });
+
+  $effect(() => {
+    const rows = auditTableRows;
+    get(auditVirtualizer).setOptions({
+      count: desktopTableLayout.current ? rows.length : 0,
+      getScrollElement: () => auditScroll ?? null,
+      getItemKey: (index) => rows[index]?.id ?? index,
+    });
+  });
+
+  $effect(() => {
+    const rows = failureTableRows;
+    get(failureVirtualizer).setOptions({
+      count: desktopTableLayout.current ? rows.length : 0,
+      getScrollElement: () => failureScroll ?? null,
+      getItemKey: (index) => rows[index]?.id ?? index,
+    });
+  });
+
+  $effect(() => {
+    if (!desktopTableLayout.current) return;
+    const rows = historyType === 'audit' ? auditTableRows : failureTableRows;
+    const items =
+      historyType === 'audit'
+        ? $auditVirtualizer.getVirtualItems()
+        : $failureVirtualizer.getVirtualItems();
+    const last = items.at(-1);
+    if (last !== undefined && last.index >= rows.length - 5) void loadNextPage();
+  });
+
+  $effect(() => {
     const tick = window.setInterval(() => {
       now = Date.now();
     }, 30_000);
@@ -127,7 +313,10 @@
   });
 
   function selectHistoryType(value: string): void {
-    if (value === 'audit' || value === 'failures') historyType = value;
+    if ((value === 'audit' || value === 'failures') && value !== historyType) {
+      historyType = value;
+      sort = 'newest';
+    }
   }
 
   function selectTimeDisplay(value: TimeDisplay): void {
@@ -135,13 +324,99 @@
     writeTimeDisplay(value);
   }
 
-  function toggleSort(): void {
-    sort = sort === 'newest' ? 'oldest' : 'newest';
+  function toggleSort(
+    column: 'actor' | 'target' | 'change' | 'status' | 'repository' | 'when',
+  ): void {
+    const table = historyType === 'audit' ? auditTable : failureTable;
+    const target = table.getColumn(column);
+    target?.toggleSorting(target.getIsSorted() === 'asc');
+  }
+
+  function sortDirection(
+    column: 'actor' | 'target' | 'change' | 'status' | 'repository' | 'when',
+  ): 'ascending' | 'descending' | undefined {
+    const table = historyType === 'audit' ? auditTable : failureTable;
+    const direction = table.getColumn(column)?.getIsSorted();
+    return direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : undefined;
+  }
+
+  function historySortingState(type: HistoryType): SortingState {
+    const allowed =
+      type === 'audit'
+        ? new Set<HistorySort>([
+            'actor_asc',
+            'actor_desc',
+            'target_asc',
+            'target_desc',
+            'change_asc',
+            'change_desc',
+          ])
+        : new Set<HistorySort>(['status_asc', 'status_desc', 'repository_asc', 'repository_desc']);
+    if (sort === 'newest' || sort === 'oldest') return [{ id: 'when', desc: sort === 'newest' }];
+    if (!allowed.has(sort)) return [{ id: 'when', desc: true }];
+    const [id, direction] = sort.split('_');
+    return [{ id: id ?? 'when', desc: direction === 'desc' }];
+  }
+
+  function selectHistorySorting(type: HistoryType, next: Updater<SortingState>): void {
+    const current = historySortingState(type);
+    const resolved = typeof next === 'function' ? next(current) : next;
+    const selected = resolved[0];
+    if (selected === undefined) return;
+    if (selected.id === 'when') {
+      sort = selected.desc ? 'newest' : 'oldest';
+      return;
+    }
+    const candidate = `${selected.id}_${selected.desc ? 'desc' : 'asc'}` as HistorySort;
+    sort = candidate;
+  }
+
+  function selectAuditColumnFilters(next: Updater<ColumnFiltersState>): void {
+    const current: ColumnFiltersState = [
+      { id: 'target', value: auditScope },
+      { id: 'change', value: auditChange },
+    ];
+    const resolved = typeof next === 'function' ? next(current) : next;
+    const target = resolved.find((filter) => filter.id === 'target')?.value;
+    const change = resolved.find((filter) => filter.id === 'change')?.value;
+    selectAuditScope(target === undefined ? ['all'] : [String(target)]);
+    selectAuditChange(change === undefined ? ['all'] : [String(change)]);
+  }
+
+  function selectFailureColumnFilters(next: Updater<ColumnFiltersState>): void {
+    const current: ColumnFiltersState = [{ id: 'status', value: failureKind }];
+    const resolved = typeof next === 'function' ? next(current) : next;
+    const value = resolved.find((filter) => filter.id === 'status')?.value;
+    selectFailureKind(value === undefined ? ['all'] : [String(value)]);
+  }
+
+  function auditEntryAt(index: number): AuditEntry {
+    const row = auditTableRows[index];
+    if (row === undefined) throw new Error(`missing virtual audit row ${index}`);
+    return row.original;
+  }
+
+  function failureAt(index: number): DeliveryFailure {
+    const row = failureTableRows[index];
+    if (row === undefined) throw new Error(`missing virtual failure row ${index}`);
+    return row.original;
   }
 
   function selectAuditScope(values: string[]): void {
     const value = values[0];
     if (value === 'all' || value === 'account' || value === 'repositories') auditScope = value;
+  }
+
+  function selectAuditChange(values: string[]): void {
+    const value = values[0];
+    if (
+      value === 'all' ||
+      value === 'enablement' ||
+      value === 'repository' ||
+      value === 'account'
+    ) {
+      auditChange = value;
+    }
   }
 
   function selectFailureKind(values: string[]): void {
@@ -152,6 +427,12 @@
   function auditScopeLabel(): string {
     return (
       AUDIT_SCOPE_FILTERS[0]?.options.find((option) => option.value === auditScope)?.label ?? ''
+    );
+  }
+
+  function auditChangeLabel(): string {
+    return (
+      AUDIT_CHANGE_FILTERS[0]?.options.find((option) => option.value === auditChange)?.label ?? ''
     );
   }
 
@@ -186,33 +467,34 @@
   }
 
   async function resetAndLoad(key: string): Promise<void> {
-    pageIndex = 0;
-    await loadPage(0, key);
+    loadMoreProblem = null;
+    scrollResultsToTop();
+    await loadPage(undefined, key, false);
   }
 
-  async function loadPage(index: number, key: string): Promise<void> {
+  async function loadPage(cursor: string | undefined, key: string, append: boolean): Promise<void> {
     const sequence = ++requestSequence;
     loading = true;
-    problem = null;
-    const cursor = index === 0 ? undefined : String(index * limit);
+    if (!append) problem = null;
+    else loadMoreProblem = null;
     try {
       if (historyType === 'audit') {
-        const page = await fetchAudit({
+        const loaded = await fetchAudit({
           cursor,
           query: appliedQuery,
           sort,
           limit,
           scope: auditScope,
+          change: auditChange,
         });
         if (sequence === requestSequence && key === requestKey) {
-          if (index > 0 && page.total <= index * limit) {
-            await resetAndLoad(key);
-            return;
-          }
-          auditPage = page;
+          auditPage =
+            append && auditPage !== null
+              ? { ...loaded, items: [...auditPage.items, ...loaded.items] }
+              : loaded;
         }
       } else {
-        const page = await fetchFailures({
+        const loaded = await fetchFailures({
           cursor,
           query: appliedQuery,
           sort,
@@ -220,53 +502,51 @@
           kind: failureKind,
         });
         if (sequence === requestSequence && key === requestKey) {
-          if (index > 0 && page.total <= index * limit) {
-            await resetAndLoad(key);
-            return;
-          }
-          failurePage = page;
+          failurePage =
+            append && failurePage !== null
+              ? { ...loaded, items: [...failurePage.items, ...loaded.items] }
+              : loaded;
         }
       }
     } catch (error) {
       if (sequence === requestSequence && key === requestKey) {
-        problem = error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
+        if (append) loadMoreProblem = message;
+        else problem = message;
       }
     } finally {
       if (sequence === requestSequence && key === requestKey) {
         loading = false;
-        await scrollToResultsAfterPageSizeChange();
       }
     }
   }
 
-  function selectPageSize(nextLimit: number): void {
-    if (nextLimit === limit) return;
-    scrollAfterPageSizeChange = true;
-    limit = nextLimit;
+  async function loadNextPage(): Promise<void> {
+    const cursor = currentPage?.next_cursor;
+    if (loading || cursor === null || cursor === undefined) return;
+    await loadPage(cursor, requestKey, true);
   }
 
-  async function scrollToResultsAfterPageSizeChange(): Promise<void> {
-    if (!scrollAfterPageSizeChange) return;
-    scrollAfterPageSizeChange = false;
-    await tick();
-    historyTools.scrollIntoView({ block: 'start' });
+  function scrollResultsToTop(): void {
+    if (isDesktopTableLayout()) {
+      historyResults?.querySelector<HTMLElement>('[data-panel-scroll]')?.scrollTo({ top: 0 });
+    }
   }
 
-  async function selectPage(nextIndex: number): Promise<void> {
-    const bounded = Math.min(pageCount - 1, Math.max(0, nextIndex));
-    if (bounded === pageIndex || loading) return;
-    pageIndex = bounded;
-    await loadPage(bounded, requestKey);
+  function isDesktopTableLayout(): boolean {
+    return window.matchMedia('(min-width: 64.001rem)').matches;
   }
 
   function retry(): void {
-    void loadPage(pageIndex, requestKey);
+    if (currentPage === null) void loadPage(undefined, requestKey, false);
+    else void loadNextPage();
   }
 
   function clearFilters(): void {
     search = '';
     appliedQuery = '';
     auditScope = 'all';
+    auditChange = 'all';
     failureKind = 'all';
   }
 </script>
@@ -289,7 +569,7 @@
 >
   <PanelHeader id="history-heading" title="History" {description} actions={headerActions} />
 
-  <div class="history-tools" bind:this={historyTools}>
+  <div class="history-tools">
     <SearchField
       label="Search history"
       placeholder={historyType === 'audit' ? 'Search changes' : 'Search failures'}
@@ -297,34 +577,10 @@
       onInput={(value) => (search = value)}
     />
 
-    <div class="filter-field scope-field">
-      {#if historyType === 'audit'}
-        <FilterMenu
-          label="Audit scope"
-          summary={auditScopeLabel()}
-          hint="Choose which configuration changes to show"
-          sections={AUDIT_SCOPE_FILTERS}
-          selected={[auditScope]}
-          showIcon
-          onChange={selectAuditScope}
-        />
-      {:else}
-        <FilterMenu
-          label="Failure kind"
-          summary={failureKindLabel()}
-          hint="Choose which delivery failures to show"
-          sections={FAILURE_KIND_FILTERS}
-          selected={[failureKind]}
-          showIcon
-          onChange={selectFailureKind}
-        />
-      {/if}
-    </div>
-
     <HistoryDisplayMenu value={timeDisplay} onSelect={selectTimeDisplay} />
   </div>
 
-  <div class:loading class="history-results" aria-busy={loading}>
+  <div class:loading class="history-results" bind:this={historyResults} aria-busy={loading}>
     {#if problem !== null}
       <div class="result-state" role="alert">
         <strong>History could not be loaded</strong>
@@ -346,20 +602,99 @@
           <caption class="visually-hidden">Audit history</caption>
           <colgroup>
             <col class="actor-column" />
-            <col class="change-column" />
             <col class="target-column" />
+            <col class="change-column" />
             <col class="time-column" />
           </colgroup>
           <thead>
             <tr>
-              <th scope="col">Actor</th>
-              <th scope="col">Change</th>
-              <th scope="col">Target</th>
-              <th scope="col" aria-sort={sort === 'newest' ? 'descending' : 'ascending'}>
-                <button class="sort-button" type="button" onclick={toggleSort}>
+              <th scope="col" aria-sort={sortDirection('actor')}>
+                <button
+                  class="sort-button table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('actor')}
+                >
+                  <span>Actor</span>
+                  <span
+                    class:descending={sortDirection('actor') === 'descending'}
+                    class="sort-indicator"
+                    aria-hidden="true"
+                  >
+                    <Icon name="sort" size={14} />
+                  </span>
+                </button>
+              </th>
+              <th scope="col" aria-sort={sortDirection('target')}>
+                <div class="table-heading-layout">
+                  <button
+                    class="sort-button table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('target')}
+                  >
+                    <span>Target</span>
+                    <span
+                      class:descending={sortDirection('target') === 'descending'}
+                      class="sort-indicator"
+                      aria-hidden="true"
+                    >
+                      <Icon name="sort" size={14} />
+                    </span>
+                  </button>
+                  <FilterMenu
+                    label="Target"
+                    summary={auditScopeLabel()}
+                    hint="Choose which configuration changes to show"
+                    sections={AUDIT_SCOPE_FILTERS}
+                    selected={[auditScope]}
+                    fallbackValue="all"
+                    align="end"
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) => auditTable.getColumn('target')?.setFilterValue(values[0])}
+                  />
+                </div>
+              </th>
+              <th scope="col" aria-sort={sortDirection('change')}>
+                <div class="table-heading-layout">
+                  <button
+                    class="sort-button table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('change')}
+                  >
+                    <span>Change</span>
+                    <span
+                      class:descending={sortDirection('change') === 'descending'}
+                      class="sort-indicator"
+                      aria-hidden="true"
+                    >
+                      <Icon name="sort" size={14} />
+                    </span>
+                  </button>
+                  <FilterMenu
+                    label="Change"
+                    summary={auditChangeLabel()}
+                    hint="Choose which configuration changes to show"
+                    sections={AUDIT_CHANGE_FILTERS}
+                    selected={[auditChange]}
+                    fallbackValue="all"
+                    align="end"
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) => auditTable.getColumn('change')?.setFilterValue(values[0])}
+                  />
+                </div>
+              </th>
+              <th scope="col" aria-sort={sortDirection('when')}>
+                <button
+                  class="sort-button table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('when')}
+                >
                   <span>When</span>
                   <span
-                    class:descending={sort === 'newest'}
+                    class:descending={sortDirection('when') === 'descending'}
                     class="sort-indicator"
                     aria-hidden="true"
                   >
@@ -369,18 +704,31 @@
               </th>
             </tr>
           </thead>
-          <tbody>
-            {#each auditPage?.items ?? [] as entry (entry.id)}
-              <tr>
+          <tbody bind:this={auditScroll} data-panel-scroll>
+            {#if desktopTableLayout.current}
+              <tr
+                class="virtual-spacer"
+                aria-hidden="true"
+                style:height={`${$auditVirtualizer.getTotalSize()}px`}><td colspan="4"></td></tr
+              >
+            {/if}
+            {#each auditRenderRows as virtualRow (virtualRow.key)}
+              {@const entry = auditEntryAt(virtualRow.index)}
+              <tr
+                class:virtual-row={virtualRow.virtual}
+                style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
+                style:transform={virtualRow.virtual
+                  ? `translateY(${virtualRow.start}px)`
+                  : undefined}
+              >
                 <td data-label="Actor">
                   <span class="actor">
-                    <Avatar account={entry.actor} size={24} />
-                    <strong>{entry.actor.display_name}</strong>
+                    <Avatar account={entry.actor} size={32} />
+                    <span class="actor-copy">
+                      <strong>{entry.actor.display_name}</strong>
+                      <span class="actor-login mono">@{entry.actor.login}</span>
+                    </span>
                   </span>
-                </td>
-                <td data-label="Change">
-                  <span class="cell-primary">{auditSummary(entry.summary)}</span>
-                  <span class="cell-meta mono">{entry.action}</span>
                 </td>
                 <td data-label="Target">
                   {#if entry.repository_full_name !== undefined}
@@ -390,6 +738,10 @@
                   {:else}
                     <span class="dim">Account</span>
                   {/if}
+                </td>
+                <td data-label="Change">
+                  <span class="cell-primary">{auditSummary(entry.summary)}</span>
+                  <span class="cell-meta mono">{entry.action}</span>
                 </td>
                 <td data-label="When">
                   <time
@@ -402,12 +754,16 @@
                 </td>
               </tr>
             {:else}
-              <tr>
-                <td class="empty-cell dim" colspan="4">
-                  <strong>No configuration changes found</strong>
-                  {#if hasFilters}
-                    <button class="btn" type="button" onclick={clearFilters}>Clear filters</button>
-                  {/if}
+              <tr class="empty-row">
+                <td class="empty-cell" colspan="4">
+                  <TableEmptyState
+                    title="No configuration changes found"
+                    description={hasFilters
+                      ? 'Try another search or clear the active filters'
+                      : 'Configuration changes will appear here'}
+                    actionLabel={hasFilters ? 'Clear filters' : undefined}
+                    onAction={hasFilters ? clearFilters : undefined}
+                  />
                 </td>
               </tr>
             {/each}
@@ -433,14 +789,64 @@
           </colgroup>
           <thead>
             <tr>
-              <th scope="col">Status</th>
-              <th scope="col">Repository</th>
+              <th scope="col" aria-sort={sortDirection('status')}>
+                <div class="table-heading-layout">
+                  <button
+                    class="sort-button table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('status')}
+                  >
+                    <span>Status</span>
+                    <span
+                      class:descending={sortDirection('status') === 'descending'}
+                      class="sort-indicator"
+                      aria-hidden="true"
+                    >
+                      <Icon name="sort" size={14} />
+                    </span>
+                  </button>
+                  <FilterMenu
+                    label="Status"
+                    summary={failureKindLabel()}
+                    hint="Choose which delivery failures to show"
+                    sections={FAILURE_KIND_FILTERS}
+                    selected={[failureKind]}
+                    fallbackValue="all"
+                    align="end"
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) =>
+                      failureTable.getColumn('status')?.setFilterValue(values[0])}
+                  />
+                </div>
+              </th>
+              <th scope="col" aria-sort={sortDirection('repository')}>
+                <button
+                  class="sort-button table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('repository')}
+                >
+                  <span>Repository</span>
+                  <span
+                    class:descending={sortDirection('repository') === 'descending'}
+                    class="sort-indicator"
+                    aria-hidden="true"
+                  >
+                    <Icon name="sort" size={14} />
+                  </span>
+                </button>
+              </th>
               <th scope="col">Failure</th>
-              <th scope="col" aria-sort={sort === 'newest' ? 'descending' : 'ascending'}>
-                <button class="sort-button" type="button" onclick={toggleSort}>
+              <th scope="col" aria-sort={sortDirection('when')}>
+                <button
+                  class="sort-button table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('when')}
+                >
                   <span>When</span>
                   <span
-                    class:descending={sort === 'newest'}
+                    class:descending={sortDirection('when') === 'descending'}
                     class="sort-indicator"
                     aria-hidden="true"
                   >
@@ -450,9 +856,23 @@
               </th>
             </tr>
           </thead>
-          <tbody>
-            {#each failurePage?.items ?? [] as failure (failure.id)}
-              <tr class="failure-row">
+          <tbody bind:this={failureScroll} data-panel-scroll>
+            {#if desktopTableLayout.current}
+              <tr
+                class="virtual-spacer"
+                aria-hidden="true"
+                style:height={`${$failureVirtualizer.getTotalSize()}px`}><td colspan="4"></td></tr
+              >
+            {/if}
+            {#each failureRenderRows as virtualRow (virtualRow.key)}
+              {@const failure = failureAt(virtualRow.index)}
+              <tr
+                class={['failure-row', virtualRow.virtual && 'virtual-row']}
+                style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
+                style:transform={virtualRow.virtual
+                  ? `translateY(${virtualRow.start}px)`
+                  : undefined}
+              >
                 <td data-label="Status">
                   <Chip tone={failure.retryable ? 'warning' : 'stop'} dot>
                     {failure.retryable ? 'Retryable' : 'Failed'}
@@ -483,12 +903,16 @@
                 </td>
               </tr>
             {:else}
-              <tr>
-                <td class="empty-cell dim" colspan="4">
-                  <strong>No delivery failures found</strong>
-                  {#if hasFilters}
-                    <button class="btn" type="button" onclick={clearFilters}>Clear filters</button>
-                  {/if}
+              <tr class="empty-row">
+                <td class="empty-cell" colspan="4">
+                  <TableEmptyState
+                    title="No delivery failures found"
+                    description={hasFilters
+                      ? 'Try another search or clear the active filters'
+                      : 'Delivery failures will appear here'}
+                    actionLabel={hasFilters ? 'Clear filters' : undefined}
+                    onAction={hasFilters ? clearFilters : undefined}
+                  />
                 </td>
               </tr>
             {/each}
@@ -496,21 +920,18 @@
         </table>
       </div>
     {/if}
-  </div>
-
-  {#if problem === null && !(loading && currentPage === null)}
-    <PaginationBar
-      label="History rows"
-      {pageIndex}
-      {pageCount}
-      pageSize={limit}
-      {itemCount}
-      {total}
-      disabled={loading}
-      onPageSelect={(nextIndex) => void selectPage(nextIndex)}
-      onPageSizeSelect={selectPageSize}
+    <InfiniteLoadSentinel
+      active={!desktopTableLayout.current && !loading && currentPage?.next_cursor != null}
+      cursor={currentPage?.next_cursor}
+      onVisible={() => void loadNextPage()}
     />
-  {/if}
+    {#if loadMoreProblem !== null}
+      <div class="load-more-alert" role="alert">
+        <span>{loadMoreProblem}</span>
+        <button class="btn" type="button" onclick={() => void loadNextPage()}>Try again</button>
+      </div>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -521,7 +942,11 @@
     border: 0;
     border-radius: 0;
     box-shadow: none;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
     margin-bottom: 0;
+    min-height: 0;
     overflow: visible;
   }
 
@@ -532,49 +957,57 @@
     border-radius: 0;
     display: grid;
     gap: var(--space-2);
-    grid-template-columns: minmax(12rem, 1fr) max-content auto;
+    grid-template-columns: minmax(12rem, 1fr) auto;
     padding: 0 0 var(--space-3);
   }
 
-  .filter-field {
-    min-width: 0;
-  }
-
-  .filter-field {
-    display: block;
-  }
-
-  .scope-field {
-    width: 9.75rem;
-  }
-
-  .scope-field :global(.filter-menu),
-  .scope-field :global(summary) {
-    width: 100%;
-  }
-
   .history-results {
-    background: var(--surface-base);
+    background: var(--table-filler-bg);
     border: 1px solid var(--border-subtle);
-    border-bottom: 0;
-    border-radius: var(--radius-surface) var(--radius-surface) 0 0;
+    border-radius: var(--radius-surface);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
     min-height: 5rem;
     overflow: hidden;
-    transition: opacity 120ms ease-out;
+    position: relative;
+  }
+
+  .load-more-alert {
+    align-items: center;
+    background: var(--popover-bg);
+    border: 1px solid var(--popover-border);
+    border-radius: var(--radius-control);
+    bottom: var(--space-3);
+    box-shadow: var(--shadow-popover);
+    display: flex;
+    gap: var(--space-3);
+    left: 50%;
+    max-width: calc(100% - 2 * var(--space-4));
+    padding: var(--space-2) var(--space-3);
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: var(--layer-menu);
+  }
+
+  .load-more-alert span {
+    color: var(--text-secondary);
+    font-size: var(--font-size-meta);
   }
 
   .history-results.loading {
-    opacity: 0.55;
+    cursor: progress;
   }
 
   .table-scroll {
+    background: var(--surface-base);
     max-width: 100%;
     overflow-x: auto;
   }
 
   .history-table {
+    background: var(--surface-base);
     border-collapse: collapse;
-    font-size: 0.75rem;
     min-width: 40rem;
     table-layout: fixed;
     width: 100%;
@@ -582,13 +1015,16 @@
 
   .history-table th,
   .history-table td {
+    border-bottom: 1px solid var(--rule);
     padding: 0.625rem 0.75rem;
     text-align: left;
     vertical-align: middle;
   }
 
-  .history-table th:last-child,
-  .history-table td:last-child {
+  .failure-table th:last-child,
+  .failure-table td:last-child,
+  .audit-table th:last-child,
+  .audit-table td:last-child {
     text-align: right;
   }
 
@@ -599,8 +1035,12 @@
     letter-spacing: 0.02em;
   }
 
+  .history-table th[aria-sort='ascending'],
+  .history-table th[aria-sort='descending'] {
+    background: var(--table-sorted-bg);
+  }
+
   .history-table tbody tr {
-    border-top: 1px solid var(--rule);
     transition: background-color 100ms ease-out;
   }
 
@@ -608,8 +1048,132 @@
     background: var(--table-row-hover);
   }
 
+  @media (min-width: 64.001rem) {
+    .history-results {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .table-scroll {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow-x: auto;
+    }
+
+    .history-table {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .history-table colgroup {
+      display: none;
+    }
+
+    .history-table thead {
+      display: block;
+      flex: none;
+    }
+
+    .history-table tbody {
+      background: var(--table-filler-bg);
+      display: block;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      position: relative;
+    }
+
+    .history-table thead tr,
+    .history-table tbody tr {
+      display: grid;
+      grid-template-columns: var(--history-columns);
+      width: 100%;
+    }
+
+    .history-table tbody tr:not(.virtual-spacer) {
+      background: var(--surface-base);
+    }
+
+    .history-table tbody tr:not(.virtual-spacer) td {
+      align-content: center;
+      display: grid;
+    }
+
+    .history-table tbody tr:not(.virtual-spacer) td:last-child {
+      justify-items: end;
+    }
+
+    .history-table tbody .empty-row {
+      background: var(--surface-base);
+      border: 0;
+      display: flex;
+      inset: 0;
+      position: absolute;
+    }
+
+    .history-table tbody .empty-row .empty-cell {
+      align-items: center;
+      display: flex;
+      grid-column: 1 / -1;
+      height: 100%;
+      justify-content: center;
+      padding: var(--space-6);
+      width: 100%;
+    }
+
+    .history-table tbody .virtual-row {
+      left: 0;
+      position: absolute;
+      top: 0;
+    }
+
+    .history-table tbody .virtual-spacer {
+      background: transparent;
+      border: 0;
+      display: block;
+      pointer-events: none;
+      width: 1px;
+    }
+
+    .virtual-spacer td {
+      display: none;
+    }
+
+    .audit-table {
+      --history-columns: 12rem 11rem minmax(0, 1fr) 7.5rem;
+    }
+
+    .failure-table {
+      --history-columns: 7rem 11rem minmax(0, 1fr) 7.5rem;
+    }
+
+    .absolute-time .audit-table {
+      --history-columns: 12rem 11rem minmax(0, 1fr) 9.5rem;
+    }
+
+    .absolute-time .failure-table {
+      --history-columns: 7rem 11rem minmax(0, 1fr) 9.5rem;
+    }
+  }
+
   .history-table th:has(.sort-button) {
     padding: 0;
+  }
+
+  .table-heading-layout {
+    align-items: center;
+    display: flex;
+    height: 100%;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .table-heading-layout :global(.header-filter) {
+    margin-inline: var(--space-1);
   }
 
   .sort-button {
@@ -620,18 +1184,16 @@
     display: flex;
     font: inherit;
     gap: var(--space-2);
-    justify-content: flex-end;
+    height: 100%;
+    justify-content: flex-start;
     letter-spacing: inherit;
     padding: 0.625rem 0.75rem;
-    text-align: right;
+    text-align: left;
     text-transform: inherit;
-    width: 100%;
-  }
-
-  .sort-button:hover,
-  .sort-button:focus-visible {
-    background: var(--interactive-hover);
-    color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    width: auto;
   }
 
   .sort-indicator {
@@ -646,11 +1208,13 @@
 
   .history-table code {
     display: inline-block;
+    justify-self: start;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
     white-space: nowrap;
+    width: max-content;
   }
 
   .actor-column {
@@ -681,7 +1245,26 @@
     min-width: 0;
   }
 
+  .actor-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
   .actor strong {
+    font-size: var(--font-size-body);
+    font-weight: 600;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .actor-login {
+    color: var(--text-muted);
+    font-size: var(--font-size-compact);
+    line-height: 1.2;
+    margin-top: 0.125rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -694,13 +1277,14 @@
   }
 
   .cell-primary {
-    line-height: 1.35;
+    font-size: var(--font-size-body);
+    line-height: 1.25;
   }
 
   .cell-meta {
     color: var(--dim);
-    font-size: 0.5625rem;
-    line-height: 1.3;
+    font-size: var(--font-size-compact);
+    line-height: 1.25;
     margin-top: 0.15rem;
   }
 
@@ -708,11 +1292,9 @@
     align-items: center;
     color: var(--dim);
     display: inline-flex;
-    font-family: var(--mono);
-    font-size: 0.625rem;
+    font-size: var(--font-size-compact);
     height: var(--control-height-compact);
     line-height: 1;
-    transform: translateY(-1px);
     vertical-align: middle;
     white-space: nowrap;
   }
@@ -720,12 +1302,6 @@
   .empty-cell {
     height: 9rem;
     text-align: center !important;
-  }
-
-  .empty-cell strong {
-    color: var(--text);
-    display: block;
-    margin-bottom: var(--space-2);
   }
 
   .table-skeleton {
@@ -781,11 +1357,6 @@
   .result-state span {
     color: var(--dim);
     font-size: 0.75rem;
-  }
-
-  .history-panel :global(.pagination-bar) {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
   }
 
   @media (max-width: 48rem) {
@@ -863,6 +1434,7 @@
     }
 
     .history-table td {
+      border: 0;
       display: grid;
       gap: var(--space-1);
       padding: 0;
@@ -896,10 +1468,6 @@
 
     .history-tools :global(.search-field) {
       grid-column: 1 / -1;
-    }
-
-    .scope-field {
-      width: 100%;
     }
   }
 

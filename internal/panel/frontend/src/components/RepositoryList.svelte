@@ -1,6 +1,19 @@
 <script lang="ts">
+  import {
+    columnFilteringFeature,
+    createColumnHelper,
+    createTable,
+    filterFn_equals,
+    filterFn_inNumberRange,
+    filterFn_includesString,
+    rowSortingFeature,
+    tableFeatures,
+  } from '@tanstack/svelte-table';
+  import type { ColumnFiltersState, SortingState, Updater } from '@tanstack/svelte-table';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { tick, untrack } from 'svelte';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { MediaQuery, SvelteSet } from 'svelte/reactivity';
+  import { get } from 'svelte/store';
 
   import { BOOLEAN_FIELDS } from '../lib/config';
   import type { FilterSection } from '../lib/filter-menu';
@@ -30,11 +43,12 @@
   import FilterMenu from './FilterMenu.svelte';
   import HelpTip from './HelpTip.svelte';
   import Icon from './Icon.svelte';
+  import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
   import Modal from './Modal.svelte';
-  import PaginationBar from './PaginationBar.svelte';
   import PanelHeader from './PanelHeader.svelte';
   import SearchField from './SearchField.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
+  import TableEmptyState from './TableEmptyState.svelte';
 
   type RepositoryEnablement = 'inherit' | 'enabled' | 'disabled';
   type RepositoryFailure = { message: string; source: RepositoryFailureSource };
@@ -112,6 +126,39 @@
       ],
     },
   ] as const satisfies readonly FilterSection[];
+  const REPOSITORY_TABLE_FEATURES = tableFeatures({
+    columnFilteringFeature,
+    filterFns: {
+      equals: filterFn_equals,
+      inNumberRange: filterFn_inNumberRange,
+      includesString: filterFn_includesString,
+    },
+    rowSortingFeature,
+  });
+  const repositoryColumn = createColumnHelper<
+    typeof REPOSITORY_TABLE_FEATURES,
+    RepositorySummary
+  >();
+  const REPOSITORY_COLUMNS = repositoryColumn.columns([
+    repositoryColumn.accessor('name', { id: 'repository', enableColumnFilter: false }),
+    repositoryColumn.accessor('private', {
+      id: 'visibility',
+      enableColumnFilter: false,
+      enableSorting: false,
+    }),
+    repositoryColumn.accessor('default_branch', {
+      id: 'branch',
+      enableColumnFilter: false,
+      enableSorting: false,
+    }),
+    repositoryColumn.accessor('config_file_status', { id: 'file' }),
+    repositoryColumn.accessor('config_override_count', { id: 'overrides' }),
+    repositoryColumn.accessor('updated_at', { id: 'updated', enableColumnFilter: false }),
+    repositoryColumn.accessor('effective_enabled', {
+      id: 'enablement',
+      enableSorting: false,
+    }),
+  ]);
   const {
     targetId,
     refreshVersion,
@@ -136,11 +183,11 @@
   let stateFilter = $state<RepositoryStateFilter>('all');
   let fileFilters = $state<RepositoryFileStatus[]>([]);
   let settingFilter = $state<RepositorySettingFilter>({ mode: 'all' });
-  let limit = $state<number>(20);
+  const limit = 20;
   let page = $state<Page<RepositorySummary> | null>(null);
-  let pageIndex = $state(0);
   let loading = $state(false);
   let problem = $state<string | null>(null);
+  let loadMoreProblem = $state<string | null>(null);
   let details = $state<Record<string, RepositoryDetail>>({});
   let failures = $state<Record<string, RepositoryFailure>>({});
   let pendingEnablement = $state<Record<string, RepositoryEnablement>>({});
@@ -153,13 +200,10 @@
   let now = $state(Date.now());
   let requestSequence = 0;
   let observedRefreshVersion: number | undefined;
-  let repositoryTools: HTMLDivElement;
-  let scrollAfterPageSizeChange = false;
+  let repositoryResults = $state<HTMLDivElement>();
+  let repositoryScroll = $state<HTMLTableSectionElement>();
 
   const repositories = $derived(page?.items ?? []);
-  const total = $derived(page?.total ?? 0);
-  const itemCount = $derived(repositories.length);
-  const pageCount = $derived(Math.max(1, Math.ceil(total / limit)));
   const settingSelection = $derived(
     settingFilter.mode === 'keys' ? settingFilter.keys : [settingFilter.mode],
   );
@@ -196,6 +240,45 @@
       limit,
     ].join(':'),
   );
+  const repositoryTable = createTable({
+    features: REPOSITORY_TABLE_FEATURES,
+    columns: REPOSITORY_COLUMNS,
+    get data() {
+      return repositories;
+    },
+    getRowId: (repository) => repository.id,
+    manualFiltering: true,
+    manualSorting: true,
+    state: {
+      get sorting() {
+        return repositorySortingState(sort);
+      },
+      get columnFilters() {
+        return repositoryColumnFilters();
+      },
+    },
+    onSortingChange: selectRepositorySorting,
+    onColumnFiltersChange: selectRepositoryColumnFilters,
+  });
+  const repositoryRows = $derived(repositoryTable.getRowModel().rows);
+  const desktopTableLayout = new MediaQuery('min-width: 64.001rem', true);
+  const repositoryVirtualizer = createVirtualizer<HTMLTableSectionElement, HTMLTableRowElement>({
+    count: 0,
+    estimateSize: () => 65,
+    getScrollElement: () => repositoryScroll ?? null,
+    overscan: 6,
+  });
+  const repositoryRenderRows = $derived.by(() =>
+    desktopTableLayout.current
+      ? $repositoryVirtualizer.getVirtualItems().map((row) => ({ ...row, virtual: true as const }))
+      : repositoryRows.map((row, index) => ({
+          index,
+          key: row.id,
+          size: 0,
+          start: 0,
+          virtual: false as const,
+        })),
+  );
 
   $effect(() => {
     const nextQuery = search.trim();
@@ -207,6 +290,22 @@
 
   $effect(() => {
     void resetAndLoad(filterKey);
+  });
+
+  $effect(() => {
+    const rows = repositoryRows;
+    get(repositoryVirtualizer).setOptions({
+      count: desktopTableLayout.current ? rows.length : 0,
+      getScrollElement: () => repositoryScroll ?? null,
+      getItemKey: (index) => rows[index]?.id ?? index,
+    });
+  });
+
+  $effect(() => {
+    if (!desktopTableLayout.current) return;
+    const rows = repositoryRows;
+    const last = $repositoryVirtualizer.getVirtualItems().at(-1);
+    if (last !== undefined && last.index >= rows.length - 5) void loadNextPage();
   });
 
   $effect(() => {
@@ -225,24 +324,25 @@
     if (version === observedRefreshVersion) return;
     observedRefreshVersion = version;
     untrack(() => {
-      void loadPage(pageIndex, filterKey);
+      void resetAndLoad(filterKey);
       refreshVisibleRepository(version);
     });
   });
 
   async function resetAndLoad(key: string): Promise<void> {
-    pageIndex = 0;
-    page = null;
-    await loadPage(0, key);
+    loadMoreProblem = null;
+    scrollResultsToTop();
+    await loadPage(undefined, key, false);
   }
 
-  async function loadPage(index: number, key: string): Promise<void> {
+  async function loadPage(cursor: string | undefined, key: string, append: boolean): Promise<void> {
     const sequence = ++requestSequence;
     loading = true;
-    problem = null;
+    if (!append) problem = null;
+    else loadMoreProblem = null;
     try {
       const loaded = await fetchPage({
-        cursor: index === 0 ? undefined : String(index * limit),
+        cursor,
         query: appliedQuery,
         sort,
         limit,
@@ -251,45 +351,97 @@
         setting: settingFilter,
       });
       if (sequence !== requestSequence || key !== filterKey) return;
-      if (index > 0 && loaded.total <= index * limit) {
-        await resetAndLoad(key);
-        return;
-      }
-      page = loaded;
+      page =
+        append && page !== null ? { ...loaded, items: [...page.items, ...loaded.items] } : loaded;
     } catch (error) {
       if (sequence === requestSequence && key === filterKey) {
-        problem = error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
+        if (append) loadMoreProblem = message;
+        else problem = message;
       }
     } finally {
       if (sequence === requestSequence && key === filterKey) {
         loading = false;
-        await scrollToResultsAfterPageSizeChange();
       }
     }
   }
 
-  function selectPageSize(nextLimit: number): void {
-    if (nextLimit === limit) return;
-    scrollAfterPageSizeChange = true;
-    limit = nextLimit;
+  async function loadNextPage(): Promise<void> {
+    if (loading || page?.next_cursor === null || page?.next_cursor === undefined) return;
+    await loadPage(page.next_cursor, filterKey, true);
   }
 
-  async function scrollToResultsAfterPageSizeChange(): Promise<void> {
-    if (!scrollAfterPageSizeChange) return;
-    scrollAfterPageSizeChange = false;
-    await tick();
-    repositoryTools.scrollIntoView({ block: 'start' });
+  function scrollResultsToTop(): void {
+    if (isDesktopTableLayout()) {
+      repositoryResults?.querySelector<HTMLElement>('[data-panel-scroll]')?.scrollTo({ top: 0 });
+    }
   }
 
-  async function selectPage(nextIndex: number): Promise<void> {
-    const bounded = Math.min(pageCount - 1, Math.max(0, nextIndex));
-    if (bounded === pageIndex || loading) return;
-    pageIndex = bounded;
-    await loadPage(bounded, filterKey);
+  function isDesktopTableLayout(): boolean {
+    return window.matchMedia('(min-width: 64.001rem)').matches;
   }
 
   function retry(): void {
-    void loadPage(pageIndex, filterKey);
+    if (page === null) void loadPage(undefined, filterKey, false);
+    else void loadNextPage();
+  }
+
+  function repositoryAt(index: number): RepositorySummary {
+    const row = repositoryRows[index];
+    if (row === undefined) throw new Error(`missing virtual repository row ${index}`);
+    return row.original;
+  }
+
+  function repositorySortingState(value: RepositorySort): SortingState {
+    const mapping: Record<RepositorySort, { id: string; desc: boolean }> = {
+      name_asc: { id: 'repository', desc: false },
+      name_desc: { id: 'repository', desc: true },
+      file_asc: { id: 'file', desc: false },
+      file_desc: { id: 'file', desc: true },
+      overrides_asc: { id: 'overrides', desc: false },
+      overrides_desc: { id: 'overrides', desc: true },
+      newest: { id: 'updated', desc: true },
+      oldest: { id: 'updated', desc: false },
+    };
+    return [mapping[value]];
+  }
+
+  function repositoryColumnFilters(): ColumnFiltersState {
+    return [
+      { id: 'enablement', value: stateFilter },
+      { id: 'file', value: fileFilters },
+      { id: 'overrides', value: settingSelection },
+    ];
+  }
+
+  function selectRepositorySorting(next: Updater<SortingState>): void {
+    const resolved = typeof next === 'function' ? next(repositorySortingState(sort)) : next;
+    const selected = resolved[0];
+    if (selected === undefined) return;
+    const mapping: Record<string, readonly [RepositorySort, RepositorySort]> = {
+      repository: ['name_asc', 'name_desc'],
+      file: ['file_asc', 'file_desc'],
+      overrides: ['overrides_asc', 'overrides_desc'],
+      updated: ['oldest', 'newest'],
+    };
+    const options = mapping[selected.id];
+    if (options !== undefined) sort = options[selected.desc ? 1 : 0];
+  }
+
+  function selectRepositoryColumnFilters(next: Updater<ColumnFiltersState>): void {
+    const current = repositoryColumnFilters();
+    const resolved = typeof next === 'function' ? next(current) : next;
+    const value = (id: string): string[] => {
+      const selected = resolved.find((filter) => filter.id === id)?.value;
+      return Array.isArray(selected)
+        ? selected.map(String)
+        : selected === undefined
+          ? []
+          : [String(selected)];
+    };
+    selectStateFilter(value('enablement'));
+    selectFileFilters(value('file'));
+    selectSettingFilter(value('overrides'));
   }
 
   function clearFilters(): void {
@@ -379,22 +531,32 @@
   }
 
   function toggleNameSort(): void {
-    sort = sort === 'name_asc' ? 'name_desc' : 'name_asc';
+    toggleColumnSort('repository');
   }
 
   function toggleUpdatedSort(): void {
-    sort = sort === 'newest' ? 'oldest' : 'newest';
+    toggleColumnSort('updated');
   }
 
-  function sortDirection(column: 'name' | 'updated'): 'ascending' | 'descending' | 'none' {
-    if (column === 'name') {
-      if (sort === 'name_asc') return 'ascending';
-      if (sort === 'name_desc') return 'descending';
-      return 'none';
-    }
-    if (sort === 'oldest') return 'ascending';
-    if (sort === 'newest') return 'descending';
-    return 'none';
+  function toggleFileSort(): void {
+    toggleColumnSort('file');
+  }
+
+  function toggleOverridesSort(): void {
+    toggleColumnSort('overrides');
+  }
+
+  function toggleColumnSort(columnId: string): void {
+    const column = repositoryTable.getColumn(columnId);
+    column?.toggleSorting(column.getIsSorted() === 'asc');
+  }
+
+  function sortDirection(
+    column: 'name' | 'file' | 'overrides' | 'updated',
+  ): 'ascending' | 'descending' | undefined {
+    const ids = { name: 'repository', file: 'file', overrides: 'overrides', updated: 'updated' };
+    const direction = repositoryTable.getColumn(ids[column])?.getIsSorted();
+    return direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : undefined;
   }
 
   async function refresh(
@@ -599,48 +761,20 @@
     actions={headerActions}
   />
 
-  <div class="repository-tools" bind:this={repositoryTools}>
+  <div class="repository-tools">
     <SearchField
       label="Search repositories"
       placeholder="Search repositories"
       value={search}
       onInput={(value) => (search = value)}
     />
-
-    <FilterMenu
-      label="Repository state"
-      summary={stateSummary}
-      hint="Filter by Smyklot's effective state"
-      sections={STATE_FILTER_SECTIONS}
-      selected={[stateFilter]}
-      onChange={selectStateFilter}
-    />
-
-    <FilterMenu
-      label="Repository files"
-      summary={fileSummary}
-      hint="Select one or more file states"
-      sections={FILE_FILTER_SECTIONS}
-      selected={fileFilters}
-      multiple
-      onChange={selectFileFilters}
-    />
-
-    <FilterMenu
-      label="Custom settings"
-      summary={settingSummary}
-      hint="Match any selected repository override"
-      sections={SETTING_FILTER_SECTIONS}
-      selected={settingSelection}
-      multiple
-      fallbackValue="all"
-      align="end"
-      wide
-      onChange={selectSettingFilter}
-    />
   </div>
 
-  <div class={['repository-results', loading && 'loading']} aria-busy={loading}>
+  <div
+    class={['repository-results', loading && 'loading']}
+    bind:this={repositoryResults}
+    aria-busy={loading}
+  >
     {#if problem !== null}
       <div class="result-state" role="alert">
         <strong>Repositories could not be loaded</strong>
@@ -655,16 +789,15 @@
       </div>
       <p class="visually-hidden" role="status">Loading repositories</p>
     {:else if repositories.length === 0}
-      <div class="result-state dim">
-        <strong>{hasFilters ? 'No repositories match' : 'No repositories installed'}</strong>
-        <span>
-          {hasFilters
-            ? 'Try another search or clear the current filters'
+      <div class="result-state table-empty">
+        <TableEmptyState
+          title={hasFilters ? 'No repositories match' : 'No repositories installed'}
+          description={hasFilters
+            ? 'Try another search or clear the active filters'
             : 'Repositories will appear after the installation catalog is refreshed'}
-        </span>
-        {#if hasFilters}
-          <button class="btn" type="button" onclick={clearFilters}>Clear filters</button>
-        {/if}
+          actionLabel={hasFilters ? 'Clear filters' : undefined}
+          onAction={hasFilters ? clearFilters : undefined}
+        />
       </div>
     {:else}
       <div class="repository-table-scroll">
@@ -672,7 +805,7 @@
           <thead>
             <tr>
               <th class="sortable-heading" aria-sort={sortDirection('name')}>
-                <button class="sort-heading" onclick={toggleNameSort}>
+                <button class="sort-heading table-sort-button" onclick={toggleNameSort}>
                   Repository
                   <span class="sort-indicator" aria-hidden="true"
                     ><Icon name="sort" size={14} /></span
@@ -681,23 +814,103 @@
               </th>
               <th>Visibility</th>
               <th>Default branch</th>
-              <th>File state</th>
-              <th class="numeric-heading">Overrides</th>
+              <th class="sortable-heading" aria-sort={sortDirection('file')}>
+                <div class="table-heading-layout">
+                  <button class="sort-heading table-sort-button" onclick={toggleFileSort}>
+                    File state
+                    <span class="sort-indicator" aria-hidden="true"
+                      ><Icon name="sort" size={14} /></span
+                    >
+                  </button>
+                  <FilterMenu
+                    label="File state"
+                    summary={fileSummary}
+                    hint="Select one or more file states"
+                    sections={FILE_FILTER_SECTIONS}
+                    selected={fileFilters}
+                    multiple
+                    align="end"
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) => repositoryTable.getColumn('file')?.setFilterValue(values)}
+                  />
+                </div>
+              </th>
+              <th class="numeric-heading sortable-heading" aria-sort={sortDirection('overrides')}>
+                <div class="table-heading-layout">
+                  <button class="sort-heading table-sort-button" onclick={toggleOverridesSort}>
+                    Overrides
+                    <span class="sort-indicator" aria-hidden="true"
+                      ><Icon name="sort" size={14} /></span
+                    >
+                  </button>
+                  <FilterMenu
+                    label="Overrides"
+                    summary={settingSummary}
+                    hint="Match any selected repository override"
+                    sections={SETTING_FILTER_SECTIONS}
+                    selected={settingSelection}
+                    multiple
+                    fallbackValue="all"
+                    align="end"
+                    wide
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) =>
+                      repositoryTable.getColumn('overrides')?.setFilterValue(values)}
+                  />
+                </div>
+              </th>
               <th class="sortable-heading" aria-sort={sortDirection('updated')}>
-                <button class="sort-heading" onclick={toggleUpdatedSort}>
+                <button class="sort-heading table-sort-button" onclick={toggleUpdatedSort}>
                   Updated
                   <span class="sort-indicator" aria-hidden="true"
                     ><Icon name="sort" size={14} /></span
                   >
                 </button>
               </th>
-              <th>Enablement</th>
+              <th class="filterable-heading">
+                <div class="table-heading-layout">
+                  <span>Enablement</span>
+                  <FilterMenu
+                    label="Enablement"
+                    summary={stateSummary}
+                    hint="Filter by Smyklot's effective state"
+                    sections={STATE_FILTER_SECTIONS}
+                    selected={[stateFilter]}
+                    fallbackValue="all"
+                    align="end"
+                    showIcon
+                    iconOnly
+                    placement="header"
+                    onChange={(values) =>
+                      repositoryTable.getColumn('enablement')?.setFilterValue(values[0])}
+                  />
+                </div>
+              </th>
             </tr>
           </thead>
-          <tbody>
-            {#each repositories as repository (repository.id)}
+          <tbody bind:this={repositoryScroll} data-panel-scroll>
+            {#if desktopTableLayout.current}
+              <tr
+                class="virtual-spacer"
+                aria-hidden="true"
+                style:height={`${$repositoryVirtualizer.getTotalSize()}px`}
+                ><td colspan="7"></td></tr
+              >
+            {/if}
+            {#each repositoryRenderRows as virtualRow (virtualRow.key)}
+              {@const repository = repositoryAt(virtualRow.index)}
               {@const repositoryFailure = failures[repository.id]}
-              <tr class="repository-row">
+              <tr
+                class={['repository-row', virtualRow.virtual && 'virtual-row']}
+                style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
+                style:transform={virtualRow.virtual
+                  ? `translateY(${virtualRow.start}px)`
+                  : undefined}
+              >
                 <td>
                   <button
                     class="expand"
@@ -760,32 +973,27 @@
               </tr>
 
               {#if repositoryFailure !== undefined && activeRepository?.id !== repository.id}
-                <tr class="repository-message-row">
-                  <td colspan="7"
-                    ><p class="form-error" role="alert">{repositoryFailure.message}</p></td
-                  >
+                <tr class="visually-hidden">
+                  <td colspan="7"><span role="alert">{repositoryFailure.message}</span></td>
                 </tr>
               {/if}
             {/each}
           </tbody>
         </table>
       </div>
+      <InfiniteLoadSentinel
+        active={!desktopTableLayout.current && !loading && page?.next_cursor != null}
+        cursor={page?.next_cursor}
+        onVisible={() => void loadNextPage()}
+      />
+    {/if}
+    {#if loadMoreProblem !== null}
+      <div class="load-more-alert" role="alert">
+        <span>{loadMoreProblem}</span>
+        <button class="btn" type="button" onclick={() => void loadNextPage()}>Try again</button>
+      </div>
     {/if}
   </div>
-
-  {#if problem === null && page !== null}
-    <PaginationBar
-      label="Repositories"
-      {pageIndex}
-      {pageCount}
-      pageSize={limit}
-      {itemCount}
-      {total}
-      disabled={loading}
-      onPageSelect={(nextIndex) => void selectPage(nextIndex)}
-      onPageSizeSelect={selectPageSize}
-    />
-  {/if}
 </section>
 
 {#if activeRepository !== null}
@@ -957,7 +1165,11 @@
     border: 0;
     border-radius: 0;
     box-shadow: none;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
     margin-bottom: 0;
+    min-height: 0;
     overflow: visible;
   }
 
@@ -966,26 +1178,24 @@
     background: transparent;
     display: grid;
     gap: var(--space-2);
-    grid-template-columns: minmax(16rem, 1fr) 7rem 7.5rem 10.5rem;
+    grid-template-columns: minmax(16rem, 1fr);
     padding: 0 0 var(--space-3);
   }
 
   .repository-results {
-    background: var(--surface-base);
+    background: var(--table-filler-bg);
     border: 1px solid var(--border-subtle);
-    border-bottom: 0;
-    border-radius: var(--radius-surface) var(--radius-surface) 0 0;
+    border-radius: var(--radius-surface);
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
-    transition: opacity 120ms ease-out;
-  }
-
-  .repository-panel :global(.pagination-bar) {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
+    position: relative;
   }
 
   .repository-results.loading {
-    opacity: 0.55;
+    cursor: progress;
   }
 
   .result-state {
@@ -997,6 +1207,13 @@
     min-height: 9rem;
     padding: 1.5rem;
     text-align: center;
+  }
+
+  .result-state.table-empty {
+    border: 0;
+    flex: 1;
+    margin: 0;
+    min-height: 12rem;
   }
 
   .result-state span {
@@ -1044,10 +1261,12 @@
   }
 
   .repository-table-scroll {
+    background: var(--surface-base);
     overflow-x: auto;
   }
 
   .repositories {
+    background: var(--surface-base);
     border-collapse: collapse;
     min-width: 58rem;
     table-layout: fixed;
@@ -1071,7 +1290,7 @@
   }
 
   th:first-child {
-    width: 25%;
+    width: 23%;
   }
 
   th:nth-child(2) {
@@ -1079,19 +1298,19 @@
   }
 
   th:nth-child(3) {
-    width: 12%;
+    width: 11%;
   }
 
   th:nth-child(4) {
-    width: 12%;
+    width: 13%;
   }
 
   th:nth-child(5) {
-    width: 9%;
+    width: 13%;
   }
 
   th:nth-child(6) {
-    width: 14%;
+    width: 12%;
   }
 
   th:nth-child(7) {
@@ -1114,8 +1333,32 @@
     text-align: center;
   }
 
+  .numeric-heading .sort-heading {
+    justify-content: center;
+  }
+
   .sortable-heading {
     padding: 0;
+  }
+
+  .filterable-heading {
+    padding-block: 0;
+  }
+
+  .table-heading-layout {
+    align-items: center;
+    display: flex;
+    height: 2.75rem;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .table-heading-layout :global(.header-filter) {
+    margin-inline: var(--space-1);
+  }
+
+  .filterable-heading .table-heading-layout {
+    gap: var(--space-1);
   }
 
   .sortable-heading:first-child {
@@ -1135,17 +1378,14 @@
     margin: 0;
     padding: 0 var(--space-3);
     text-transform: inherit;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    width: auto;
   }
 
   .sortable-heading:first-child .sort-heading {
     padding-left: var(--space-4);
-  }
-
-  .sort-heading:hover,
-  .sort-heading:focus-visible {
-    background: var(--interactive-hover);
-    color: var(--text-primary);
   }
 
   .sort-indicator {
@@ -1167,6 +1407,87 @@
     transition: background-color var(--duration-fast) var(--ease-standard);
   }
 
+  @media (min-width: 64.001rem) {
+    .repository-results {
+      overflow: hidden;
+    }
+
+    .repository-table-scroll {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow-x: auto;
+    }
+
+    .repositories {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .repositories thead {
+      display: block;
+      flex: none;
+    }
+
+    .repositories tbody {
+      background: var(--table-filler-bg);
+      display: block;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      position: relative;
+    }
+
+    .repositories thead tr,
+    .repositories tbody tr {
+      display: grid;
+      grid-template-columns: 23% 10% 11% 13% 13% 12% 18%;
+      width: 100%;
+    }
+
+    .repositories th {
+      width: auto;
+    }
+
+    .repositories tbody tr:not(.virtual-spacer) {
+      background: var(--surface-base);
+    }
+
+    .repositories tbody tr:not(.virtual-spacer) td {
+      align-items: center;
+      display: flex;
+    }
+
+    .repositories tbody .numeric-cell {
+      justify-content: center;
+    }
+
+    .repositories tbody td:last-child {
+      justify-content: flex-end;
+    }
+
+    .repositories tbody .virtual-row {
+      left: 0;
+      position: absolute;
+      top: 0;
+    }
+
+    .repositories tbody .virtual-spacer {
+      background: transparent;
+      border: 0;
+      display: block;
+      pointer-events: none;
+      width: 1px;
+    }
+
+    .virtual-spacer td {
+      display: none;
+    }
+  }
+
   .repository-row:hover {
     background: var(--table-row-hover);
   }
@@ -1180,9 +1501,10 @@
     display: grid;
     gap: var(--space-1);
     grid-template-columns: 1.75rem minmax(0, 1fr);
-    margin: calc(var(--space-1) * -1) 0;
+    height: var(--control-height-compact);
+    margin: 0;
     min-width: 0;
-    padding: var(--space-1) 0;
+    padding: 0;
     text-align: left;
     width: 100%;
   }
@@ -1223,7 +1545,6 @@
     line-height: 1.25;
     overflow: hidden;
     text-overflow: ellipsis;
-    transform: translateY(-2px);
     white-space: nowrap;
   }
 
@@ -1248,7 +1569,8 @@
     border: 1px solid var(--border-subtle);
     color: var(--text-primary);
     font-size: var(--font-size-compact);
-    transform: translateY(-1px);
+    justify-self: start;
+    width: max-content;
   }
 
   .numeric-value {
@@ -1265,20 +1587,11 @@
     font-size: var(--font-size-meta);
     height: var(--control-height-compact);
     line-height: 1;
-    transform: translateY(-1px);
     white-space: nowrap;
   }
 
   td:last-child :global(fieldset) {
     margin-left: 0;
-  }
-
-  .repository-message-row td {
-    padding-block: var(--space-2);
-  }
-
-  .repository-message-row .form-error {
-    margin: 0;
   }
 
   .repository-detail {
@@ -1436,11 +1749,6 @@
     padding: 0.75rem;
   }
 
-  .repository-panel :global(.pagination-bar) {
-    border: 1px solid var(--border-subtle);
-    border-radius: 0 0 var(--radius-surface) var(--radius-surface);
-  }
-
   .switch-labelled {
     align-items: center;
     display: flex;
@@ -1482,9 +1790,7 @@
     .repositories,
     .repositories tbody,
     .repository-row,
-    .repository-row td,
-    .repository-message-row,
-    .repository-message-row td {
+    .repository-row td {
       display: block;
       width: 100%;
     }
