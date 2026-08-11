@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.22.0](https://github.com/smykla-skalski/smyklot/compare/v1.21.2...v1.22.0) (2026-08-11)
+
 ## [1.21.2](https://github.com/smykla-skalski/smyklot/compare/v1.21.1...v1.21.2) (2026-08-11)
 
 ## [1.21.1](https://github.com/smykla-skalski/smyklot/compare/v1.21.0...v1.21.1) (2026-08-11)
