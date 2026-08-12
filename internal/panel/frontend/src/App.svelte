@@ -14,9 +14,16 @@
   import type { PanelApi } from './lib/api';
   import type { PanelBuild } from './lib/base';
   import { LatestRequest } from './lib/latest-request';
-  import { DEFAULT_THEME_DISPLAY, isThemeDisplay, type ThemeDisplay } from './lib/preferences';
+  import {
+    applyDocumentTheme,
+    DEFAULT_THEME_DISPLAY,
+    isThemeDisplay,
+    type ThemeDisplay,
+  } from './lib/preferences';
   import { createPrefsSync, prefText } from './lib/preferences-sync';
   import {
+    panelDocumentTitle,
+    resolveDocumentTitleRoute,
     resolvePanelRoute,
     rootSection,
     rootSectionRoute,
@@ -57,6 +64,7 @@
   let rootDataVersion = $state(0);
   let view = $state<PanelView>('settings');
   let rootMode = $state(false);
+  let requestedDocumentRoute = $state<PanelRoute | null>(null);
   let identityBar = $state<ReturnType<typeof IdentityBar> | null>(null);
   let activeRootRoute = $state<RootRoute>({ rootView: 'overview' });
   /* History's table is part of the address, so a reload lands on the table the
@@ -89,6 +97,22 @@
   );
   const rootValue = $derived(rootSection(activeRootRoute));
   const rootRole = $derived(viewer?.system_role === 'super_root' ? 'Super Root' : 'Root');
+  const activeDocumentRoute = $derived(
+    rootMode
+      ? activeRootRoute
+      : view === 'history'
+        ? { account: '', view, section: historySection }
+        : { account: '', view },
+  );
+  const documentTitle = $derived(
+    panelDocumentTitle(
+      resolveDocumentTitleRoute(
+        activeDocumentRoute,
+        requestedDocumentRoute,
+        loading || viewer === null || failure?.source === 'load',
+      ),
+    ),
+  );
   const returnTarget = $derived(selectedTarget ?? targets[0] ?? null);
   const tableScrollView = $derived(
     rootMode
@@ -135,6 +159,7 @@
   }
 
   async function load(): Promise<void> {
+    requestedDocumentRoute = router.current();
     loading = viewer === null;
     streamReady = false;
     streamRefreshes.invalidate();
@@ -534,6 +559,7 @@
 
   $effect(() =>
     router.subscribe((route) => {
+      requestedDocumentRoute = route;
       if (viewer !== null && !loading) void activateRoute(route, 'none');
     }),
   );
@@ -579,11 +605,15 @@
   }
 
   $effect(() => {
-    document.documentElement.dataset.theme = resolvedTheme;
+    applyDocumentTheme(document, resolvedTheme, rootMode);
   });
 
   void load();
 </script>
+
+<svelte:head>
+  <title>{documentTitle}</title>
+</svelte:head>
 
 <a class="skip-link" href="#panel-content">Skip to panel content</a>
 

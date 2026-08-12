@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createPanelRouter,
+  panelDocumentTitle,
+  panelViewSection,
   panelRoutePath,
   parseInvitationToken,
   parsePanelRoute,
   resolvePanelRoute,
+  resolveDocumentTitleRoute,
+  routeSegmentLabel,
   type PanelRoute,
 } from '../src/lib/routes';
 
@@ -134,6 +138,54 @@ describe('panel routes', () => {
     expect(panelRoutePath('/panel', { account: 'bartsmykla', view: 'invitations' })).toBe(
       '/panel/i/bartsmykla/invitations',
     );
+  });
+});
+
+describe('panel document titles', () => {
+  it.each([
+    [{ account: 'acme', view: 'settings' }, 'Settings | SMYKLOT'],
+    [{ account: 'acme', view: 'repositories' }, 'Repositories | SMYKLOT'],
+    [{ account: 'acme', view: 'users' }, 'Users | Access | SMYKLOT'],
+    [{ account: 'acme', view: 'invitations' }, 'Invitations | Access | SMYKLOT'],
+    [{ account: 'acme', view: 'history', section: 'audit' }, 'Audit | History | SMYKLOT'],
+    [{ account: 'acme', view: 'history', section: 'failures' }, 'Failures | History | SMYKLOT'],
+    [{ rootView: 'overview' }, 'Overview | Root Console | SMYKLOT'],
+    [{ rootView: 'installations' }, 'Installations | Root Console | SMYKLOT'],
+    [{ rootView: 'access-users' }, 'Users | Access | Root Console | SMYKLOT'],
+    [{ rootView: 'access-invitations' }, 'Invitations | Access | Root Console | SMYKLOT'],
+    [{ rootView: 'history-audit' }, 'Audit | History | Root Console | SMYKLOT'],
+    [{ rootView: 'history-failures' }, 'Failures | History | Root Console | SMYKLOT'],
+    [{ rootView: 'settings' }, 'Settings | Root Console | SMYKLOT'],
+    [
+      { rootView: 'installation', account: 'acme', view: 'repositories' },
+      'Repositories | Root Console | SMYKLOT',
+    ],
+    [
+      {
+        rootView: 'installation',
+        account: 'acme',
+        view: 'history',
+        section: 'audit',
+      },
+      'Audit | History | Root Console | SMYKLOT',
+    ],
+  ] satisfies ReadonlyArray<[PanelRoute, string]>)('formats %j', (route, title) => {
+    expect(panelDocumentTitle(route)).toBe(title);
+  });
+
+  it('derives labels and title hierarchy from route segments', () => {
+    expect(panelViewSection('users')).toBe('access');
+    expect(panelViewSection('history')).toBe('history');
+    expect(routeSegmentLabel('root-console')).toBe('Root Console');
+  });
+
+  it('uses the requested route while app state is unresolved', () => {
+    const active: PanelRoute = { account: '', view: 'settings' };
+    const requested: PanelRoute = { rootView: 'history-audit' };
+    expect(panelDocumentTitle(resolveDocumentTitleRoute(active, requested, true))).toBe(
+      'Audit | History | Root Console | SMYKLOT',
+    );
+    expect(resolveDocumentTitleRoute(active, requested, false)).toBe(active);
   });
 });
 

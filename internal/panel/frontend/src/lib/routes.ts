@@ -10,6 +10,7 @@ export type ScopedPanelView = (typeof SCOPED_PANEL_VIEWS)[number];
 /** History's two tables are addressable, so a reload lands where you left off. */
 export type HistorySection = (typeof HISTORY_SECTIONS)[number];
 export type RootSection = 'overview' | 'installations' | 'access' | 'history' | 'settings';
+export type PanelSection = Exclude<ScopedPanelView, 'users' | 'invitations'> | 'access';
 export type RootRoute =
   | { rootView: 'overview' | 'installations' | 'access-users' | 'access-invitations' }
   | { rootView: 'history-audit' | 'history-failures' | 'settings' }
@@ -104,6 +105,32 @@ export function panelRoutePath(basePath: string, route: PanelRoute): string {
   return `${base}/i/${encodeURIComponent(route.account)}/${route.view}${sectionSuffix(route)}`;
 }
 
+export function panelDocumentTitle(route: PanelRoute): string {
+  const rootConsole = 'rootView' in route;
+  const segments = routeTitleSegments(route);
+  if (rootConsole) segments.push('root-console');
+  return [...segments.map(routeSegmentLabel), 'SMYKLOT'].join(' | ');
+}
+
+export function panelViewSection(view: ScopedPanelView): PanelSection {
+  return view === 'users' || view === 'invitations' ? 'access' : view;
+}
+
+export function routeSegmentLabel(segment: string): string {
+  return segment
+    .split('-')
+    .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+export function resolveDocumentTitleRoute(
+  active: PanelRoute,
+  requested: PanelRoute | null,
+  routePending: boolean,
+): PanelRoute {
+  return routePending && requested !== null ? requested : active;
+}
+
 export function resolvePanelRoute(
   availableAccounts: readonly string[],
   requested: InstallationRoute | null,
@@ -163,6 +190,16 @@ export function createPanelRouter(basePath: string, browser: BrowserNavigation):
 
 function isScopedPanelView(value: string): value is ScopedPanelView {
   return SCOPED_PANEL_VIEWS.some((view) => view === value);
+}
+
+function routeTitleSegments(route: PanelRoute): string[] {
+  if ('rootView' in route && route.rootView !== 'installation') {
+    return route.rootView.split('-').reverse();
+  }
+  const view = route.view;
+  const section = panelViewSection(view);
+  const leaf = route.section ?? view;
+  return leaf === section ? [leaf] : [leaf, section];
 }
 
 /** `undefined` for "no segment", `'invalid'` for a segment that cannot be one. */
