@@ -178,7 +178,8 @@
   }
 
   .role-trigger:active:not(:disabled) {
-    transform: translateY(1px);
+    background: var(--control-bg-pressed);
+    transform: scale(var(--press-scale-compact));
   }
 
   .role-trigger:focus-visible {

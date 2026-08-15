@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
+import { dirname, resolve } from 'node:path';
 import type { Duplex } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin } from 'vite';
 
 import type {
@@ -39,6 +42,7 @@ import type {
   InvitationStatus,
 } from '../src/lib/types';
 import { canonicalStringify, PREF_DEFAULTS } from '../src/lib/preferences-sync';
+import { parseInvitationToken, parsePanelRoute } from '../src/lib/routes';
 
 type DevHttpServer = HttpServer;
 const BASE = '';
@@ -136,7 +140,99 @@ function enabled(): boolean {
   return process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
 }
 
+/**
+ * Preferences outlive the process they were set in.
+ *
+ * Everything the panel remembers about you is a synced preference - the theme, whether the sidebar
+ * is collapsed, and every table's sort, filters and search. The mock held them in memory, so each
+ * Vite restart, and each edit to this file, handed back a factory-fresh panel and you set them all
+ * again. Only the preference document is kept: the rest of the mock is fixture data, and a fixture
+ * that drifts across restarts is worse than one that resets.
+ */
+const PREFERENCES_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '.mock-preferences.json');
+
+interface DevState {
+  prefs: MockState['prefs'];
+  /** Invitations issued while the mock was running, so a link you generated still opens later. */
+  invitations: MockInvitation[];
+  invitationCounter: number;
+}
+
+function readDevState(): Partial<DevState> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(PREFERENCES_FILE, 'utf8'));
+    return parsed !== null && typeof parsed === 'object' ? (parsed as Partial<DevState>) : {};
+  } catch {
+    // No file yet, or one this build cannot read. Starting clean beats refusing to serve.
+    return {};
+  }
+}
+
+function loadPreferences(): MockState['prefs'] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(PREFERENCES_FILE, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object') return { values: {}, rev: 0 };
+    const { values, rev } = parsed as { values?: unknown; rev?: unknown };
+    if (values === null || typeof values !== 'object') return { values: {}, rev: 0 };
+    return {
+      values: { ...(values as Record<string, unknown>) },
+      rev: typeof rev === 'number' && Number.isFinite(rev) ? rev : 0,
+    };
+  } catch {
+    // No file yet, or one this build cannot read. Starting clean beats refusing to serve.
+    return { values: {}, rev: 0 };
+  }
+}
+
+/**
+ * Invitations the mock issued, kept across restarts.
+ *
+ * Seeded ones are not: they are fixture data, regenerated on every boot, and a fixture that drifts
+ * is worse than one that resets. An invitation you created is different - you created it to open
+ * the link, and the link outlives the process you made it in.
+ */
+function loadIssuedInvitations(): { invitations: MockInvitation[]; counter: number } {
+  const stored = readDevState();
+  const invitations = Array.isArray(stored.invitations) ? stored.invitations : [];
+  const highest = invitations.reduce((top, entry) => {
+    const counter = Number(entry.token?.replace('mock-', ''));
+    return Number.isFinite(counter) && counter > top ? counter : top;
+  }, 0);
+  return {
+    invitations,
+    counter: Math.max(
+      typeof stored.invitationCounter === 'number' ? stored.invitationCounter : 0,
+      highest + 1,
+    ),
+  };
+}
+
+/** `mock-invitation-<counter>`, which is what `createMockInvitation` mints. The seeded fixtures are
+ *  `mock-invitation-seed-<n>` and `mock-invitation-target-<state>`, and they are rebuilt each boot. */
+const ISSUED_ID = /^mock-invitation-\d+$/u;
+
+function saveDevState(state: MockState): void {
+  try {
+    writeFileSync(
+      PREFERENCES_FILE,
+      `${JSON.stringify(
+        {
+          values: state.prefs.values,
+          rev: state.prefs.rev,
+          invitations: state.invitations.filter((entry) => ISSUED_ID.test(entry.id)),
+          invitationCounter: state.invitationCounter,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } catch {
+    // Persisting is a convenience, so a read-only checkout still runs the mock.
+  }
+}
+
 function seed(): MockState {
+  const issued = loadIssuedInvitations();
   const now = Date.now();
   const iso = (offsetMs: number): string => new Date(now + offsetMs).toISOString();
   const organization = targetSeed({
@@ -391,8 +487,9 @@ function seed(): MockState {
     ],
     users,
     targetAccess: new Map([[organization.value.id, organizationAccess]]),
-    invitations,
-    invitationCounter: invitations.length + 1,
+    // Fixture invitations, then any this mock issued in an earlier run.
+    invitations: [...invitations, ...issued.invitations],
+    invitationCounter: Math.max(invitations.length + 1, issued.counter),
     elevationCounter: 1,
     elevations: new Map(),
     notifications,
@@ -405,7 +502,7 @@ function seed(): MockState {
       startedAt: now,
     },
     streams: new Set(),
-    prefs: { values: {}, rev: 0 },
+    prefs: loadPreferences(),
   };
 }
 
@@ -993,6 +1090,7 @@ function handleClientFrame(state: MockState, socket: Duplex, payload: Buffer): v
       }
     }
     state.prefs.rev += 1;
+    saveDevState(state);
     for (const stream of state.streams) {
       writeWebSocket(stream, {
         version: 1,
@@ -1011,12 +1109,17 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
   socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`);
 }
 
+/** Where this mock is answering, so a generated invitation link opens on the port you are using
+ *  rather than the one someone happened to write down. */
+let devOrigin = 'http://localhost:5173';
+
 async function handle(
   state: MockState,
   req: IncomingMessage,
   res: ServerResponse,
   next: Connect.NextFunction,
 ): Promise<void> {
+  if (req.headers.host !== undefined) devOrigin = `http://${req.headers.host}`;
   const parsed = new URL(req.url ?? '/', 'http://localhost');
   const path = parsed.pathname;
   const method = req.method ?? 'GET';
@@ -1025,6 +1128,24 @@ async function handle(
     applyScenario(state, parsed.searchParams.get('scenario'));
     next();
     return;
+  }
+
+  /**
+   * A navigation to a path the panel does not own is a 404, as it is in production.
+   *
+   * Vite answers every navigation with index.html, so in dev an unknown path quietly rendered the
+   * panel and the server's own error response was unreachable - there was no way to look at it
+   * without building and running the Go binary. `serveAsset` decides this with
+   * `isPanelNavigationPath`; the same decision is `parsePanelRoute` plus the invitation form, so
+   * this asks the router the app itself uses rather than keeping a second list in step.
+   */
+  if (method === 'GET' && (req.headers.accept ?? '').includes('text/html')) {
+    const navigable =
+      parsePanelRoute('/', path) !== null || parseInvitationToken('/', path) !== null;
+    if (!navigable) {
+      respond(res, 404, { error: { code: 'not_found', message: 'panel route not found' } });
+      return;
+    }
   }
   if (path.startsWith('/__smyklot_panel_base__')) {
     respond(res, 404, { error: { code: 'not_found', message: 'the mock panel is mounted at /' } });
@@ -1195,6 +1316,7 @@ async function handle(
       const input = await readBody<AddRootInvitationInput>(req);
       const created = createRootMockInvitation(state, input);
       broadcastInvitation(state, created);
+      saveDevState(state);
       respond(res, 201, invitationValue(created));
       return;
     }
@@ -1329,6 +1451,7 @@ async function handle(
       current.created_by = VIEWER;
       current.responded_at = undefined;
       broadcastInvitation(state, current);
+      saveDevState(state);
       respond(res, 200, invitationValue(current));
       return;
     }
@@ -1341,6 +1464,7 @@ async function handle(
       current.status = 'revoked';
       current.responded_at = new Date().toISOString();
       broadcastInvitation(state, current);
+      saveDevState(state);
       respond(res, 200, publicInvitationValue(current));
       return;
     }
@@ -1559,6 +1683,7 @@ async function handle(
       const input = await readBody<AddTargetInvitationInput>(req);
       const created = createMockInvitation(state, input, target.value);
       broadcast(state, { type: 'invitation.changed', target_id: target.value.id });
+      saveDevState(state);
       respond(res, 201, invitationValue(created));
       return;
     }
@@ -1576,6 +1701,7 @@ async function handle(
       current.created_at = new Date().toISOString();
       current.responded_at = undefined;
       broadcastInvitation(state, current);
+      saveDevState(state);
       respond(res, 200, invitationValue(current));
       return;
     }
@@ -1589,6 +1715,7 @@ async function handle(
       current.status = 'revoked';
       current.responded_at = new Date().toISOString();
       broadcastInvitation(state, current);
+      saveDevState(state);
       respond(res, 200, publicInvitationValue(current));
       return;
     }
@@ -2160,7 +2287,7 @@ function publicInvitationValue(invitation: MockInvitation): PanelInvitation {
 function invitationValue(invitation: MockInvitation): PanelInvitation {
   return {
     ...publicInvitationValue(invitation),
-    invite_url: `http://localhost:5175/invite/${encodeURIComponent(invitation.token)}`,
+    invite_url: `${devOrigin}/invite/${encodeURIComponent(invitation.token)}`,
   };
 }
 

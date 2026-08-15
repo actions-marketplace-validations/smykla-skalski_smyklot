@@ -9,7 +9,15 @@
   import Avatar from './Avatar.svelte';
   import Icon from './Icon.svelte';
   import NotificationInbox from './NotificationInbox.svelte';
+  import SegmentedControl from './SegmentedControl.svelte';
   import ViewTabs from './ViewTabs.svelte';
+
+  /* Icon-only, so each option's label is its accessible name rather than visible text. */
+  const THEME_OPTIONS = [
+    { value: 'system', label: 'System theme', icon: 'system' },
+    { value: 'light', label: 'Light theme', icon: 'sun' },
+    { value: 'dark', label: 'Dark theme', icon: 'moon' },
+  ] as const;
 
   const {
     viewer,
@@ -105,10 +113,14 @@
         : '',
   );
 
-  /** The inbox lives inside the account menu, so opening it from elsewhere -
-   *  the overview's unread-security-events card - opens the menu first. */
+  /**
+   * The inbox trigger lives in the account menu, but the dialog does not: `Modal` moves itself out
+   * to the shell, so it no longer needs the menu rendered to be visible. Opening from elsewhere -
+   * the overview's unread-security-events card - therefore does not have to open the menu first,
+   * and opening from the menu closes it on the way through.
+   */
   export function openInbox(): void {
-    if (accountMenu !== null) accountMenu.open = true;
+    closeMenus();
     inbox?.showInbox();
   }
 
@@ -394,43 +406,21 @@
           markRead={markNotificationRead}
           refreshVersion={notificationVersion}
           onUnread={(next) => (unreadCount = next)}
+          onOpen={closeMenus}
         />
         <hr class="menu-divider" />
         <div class="theme-row">
           <span class="theme-icon" aria-hidden="true"><Icon name="sun-moon" size={15} /></span>
           <span class="theme-label">Theme</span>
-          <div class="theme-options" role="group" aria-label="Theme">
-            <button
-              type="button"
-              class:selected={theme === 'system'}
-              aria-pressed={theme === 'system'}
-              aria-label="System theme"
-              title="System theme"
-              onclick={() => onSelectTheme('system')}
-            >
-              <Icon name="system" size={14} />
-            </button>
-            <button
-              type="button"
-              class:selected={theme === 'light'}
-              aria-pressed={theme === 'light'}
-              aria-label="Light theme"
-              title="Light theme"
-              onclick={() => onSelectTheme('light')}
-            >
-              <Icon name="sun" size={14} />
-            </button>
-            <button
-              type="button"
-              class:selected={theme === 'dark'}
-              aria-pressed={theme === 'dark'}
-              aria-label="Dark theme"
-              title="Dark theme"
-              onclick={() => onSelectTheme('dark')}
-            >
-              <Icon name="moon" size={14} />
-            </button>
-          </div>
+          <SegmentedControl
+            name="panel-theme"
+            label="Theme"
+            options={THEME_OPTIONS}
+            value={theme}
+            surface="sidebar"
+            compact
+            onSelect={(selection) => onSelectTheme(selection as ThemeDisplay)}
+          />
         </div>
         <hr class="menu-divider" />
         <button class="account-action" type="button" onclick={signOut}>
@@ -466,7 +456,10 @@
     justify-content: space-between;
     margin-bottom: var(--space-2);
     min-height: 2.375rem;
-    padding: 0 var(--space-2);
+    /* No padding on the closing edge: it held the collapse trigger 8px inside the right edge every
+       navigation row below it lines up on. The mark keeps its own inset on the opening edge.
+       Collapsed, the row zeroes this out and centres instead. */
+    padding: 0 0 0 var(--space-2);
     position: relative;
   }
 
@@ -524,6 +517,9 @@
   }
 
   .sidebar-collapse-trigger {
+    /* A 28px square either way, so it takes the figure meant for a disc: the ordinary 0.98 would
+       move its edge a third of a pixel and read as nothing happening. */
+    --press-scale: var(--press-scale-disc);
     cursor: pointer;
     opacity: 0;
     position: relative;
@@ -551,7 +547,7 @@
   .sidebar-collapse-trigger:active,
   .mobile-navigation-trigger:active {
     background: var(--sidebar-item-pressed);
-    transform: translateY(1px);
+    transform: scale(var(--press-scale));
   }
 
   .mobile-navigation-trigger {
@@ -622,7 +618,6 @@
   .target-trigger:active {
     background: var(--sidebar-item-pressed);
     box-shadow: none;
-    transform: translateY(1px);
   }
 
   .target-trigger::-webkit-details-marker,
@@ -787,7 +782,6 @@
 
   .target-option:active {
     background: var(--sidebar-menu-pressed);
-    transform: translateY(1px);
   }
 
   .option-copy {
@@ -864,7 +858,6 @@
 
   .who:active {
     background: var(--sidebar-item-pressed);
-    transform: translateY(1px);
   }
 
   .who-avatar {
@@ -1000,47 +993,6 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .theme-options {
-    background: var(--sidebar-seg-track);
-    border: 1px solid var(--sidebar-seg-border);
-    border-radius: 7px;
-    display: inline-flex;
-    gap: 2px;
-    padding: 2px;
-  }
-
-  .theme-options button {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    border-radius: 5px;
-    color: var(--sidebar-menu-muted);
-    cursor: pointer;
-    display: inline-flex;
-    height: 1.625rem;
-    justify-content: center;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      transform var(--duration-press) var(--ease-standard);
-    width: 1.875rem;
-  }
-
-  .theme-options button:hover:not(.selected) {
-    background: color-mix(in srgb, var(--sidebar-menu-text) 8%, transparent);
-    color: var(--sidebar-menu-text);
-  }
-
-  .theme-options button:active {
-    transform: scale(0.92);
-  }
-
-  .theme-options button.selected {
-    background: var(--sidebar-seg-thumb);
-    box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
-    color: var(--sidebar-menu-text);
-  }
-
   .account-action {
     align-items: center;
     background: transparent;
@@ -1069,7 +1021,6 @@
 
   .account-action:active {
     background: var(--sidebar-menu-pressed);
-    transform: translateY(1px);
   }
 
   .action-icon {
@@ -1098,7 +1049,10 @@
     color: var(--sidebar-menu-text);
     font-size: var(--font-size-meta);
     font-weight: 500;
-    left: calc(100% + var(--space-2));
+    /* Clear of the sidebar rather than of the row it belongs to: the row stops one padding inside
+       the sidebar, so the same air on the outside is that padding, the border, and one more. The collapsed
+       rail pads by --space-2, which is the padding this has to match. */
+    left: calc(100% + var(--space-2) * 2 + 1px);
     opacity: 0;
     padding: var(--space-2) var(--space-3);
     pointer-events: none;
@@ -1138,11 +1092,14 @@
 
   /* Collapsed, the toggle joins the rail flow under the mark: always visible,
      nothing floating over the sidebar edge. */
+  /* Same height as the expanded row, so the mark's centre does not move. Collapsing dropped
+     min-height, the row shrank to the 34px mark inside it, and the mark's centre stepped from 35
+     to 33 - a two-pixel hop in the middle of a width animation. */
   .collapsed .brand-row {
     flex-direction: column;
     gap: var(--space-2);
     justify-content: center;
-    min-height: 0;
+    min-height: 2.375rem;
     padding: 0;
   }
 
@@ -1153,7 +1110,21 @@
      than inside it and the interior covers the robot edge to edge. It waits for
      a hover like the expanded one does, so the mark is what the sidebar shows
      at rest. */
+  /* The target is the whole row - the same reach the workspace tile below it has - while the disc
+     stays the size of the halo it sits on. A 32px circle is a small thing to hit for the control
+     that opens the sidebar. */
   .collapsed .sidebar-collapse-trigger {
+    border: 0;
+    border-radius: var(--radius-control);
+    box-shadow: none;
+    height: auto;
+    inset: 0;
+    position: absolute;
+    translate: none;
+    width: auto;
+  }
+
+  .collapsed .sidebar-collapse-trigger::before {
     border: 2.28px solid var(--sidebar-text-muted);
     border-radius: 50%;
     /* The halo's outer edge is antialiased and lands on a fraction of a pixel,
@@ -1161,6 +1132,7 @@
        the surface behind swallows it without moving the geometry. */
     box-shadow: 0 0 0 1.5px var(--sidebar-bg);
     box-sizing: border-box;
+    content: '';
     height: 32.43px;
     left: 50%;
     position: absolute;
@@ -1169,22 +1141,44 @@
     width: 32.43px;
   }
 
-  .collapsed .sidebar-collapse-trigger,
-  .collapsed .sidebar-collapse-trigger:hover,
-  .collapsed .sidebar-collapse-trigger:focus-visible {
+  .collapsed .sidebar-collapse-trigger > :global(svg) {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* The states belong to the disc, not to the row-sized target it is drawn on: a background on the
+     button itself would cover the mark it is meant to sit over. */
+  .collapsed .sidebar-collapse-trigger::before,
+  .collapsed .sidebar-collapse-trigger:hover::before,
+  .collapsed .sidebar-collapse-trigger:focus-visible::before {
     /* Opaque: the robot behind must not read through the glyph. */
     background: var(--sidebar-bg);
   }
 
+  .collapsed .sidebar-collapse-trigger:hover::before,
+  .collapsed .sidebar-collapse-trigger:focus-visible::before {
+    border-color: var(--sidebar-text);
+  }
+
   .collapsed .sidebar-collapse-trigger:hover,
   .collapsed .sidebar-collapse-trigger:focus-visible {
-    border-color: var(--sidebar-text);
     color: var(--sidebar-text);
   }
 
-  .collapsed .sidebar-collapse-trigger:active {
+  .collapsed .sidebar-collapse-trigger:active::before {
     background: var(--sidebar-item-pressed);
-    transform: none;
+  }
+
+  /* The mark shrinks with the disc that covers it. They are concentric, so scaling only the disc
+     let the halo underneath show past its own edge - a lit crescent at the bottom left, where the
+     halo's stroke is thickest. Pressed, the logo and the ring over it are one object. */
+  .collapsed .brand-row:has(.sidebar-collapse-trigger:active) .mark-icon,
+  .collapsed .sidebar-collapse-trigger:active {
+    transform: scale(var(--press-scale-disc));
+  }
+
+  .collapsed .mark-icon {
+    transition: transform var(--duration-press) var(--ease-standard);
   }
 
   .collapsed .mark {

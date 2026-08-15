@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { tick } from 'svelte';
+
   import {
     panelViewSection,
     routeSegmentLabel,
@@ -119,10 +121,191 @@
     if (section === 'history') return 'history';
     return 'settings';
   }
+  /**
+   * The selected row is a thumb that travels, the same object the segmented control moves.
+   *
+   * It was a background painted on whichever link happened to be current, so selection appeared in
+   * one place and vanished from another with nothing connecting the two. One element that slides
+   * says where the selection went; two that swap grounds only say that something changed.
+   */
+  /**
+   * The selected row's ground, kept under whichever row is current.
+   *
+   * Everything here is driven by explicit state rather than by the style engine. The fret used to
+   * be `:has(a:not(.active):active)`, which asks the browser to re-evaluate an ancestor selector on
+   * every pointer state change in the subtree, and the move used to be scheduled through a pair of
+   * animation frames that a ResizeObserver tick could cancel out from under it - so a click that
+   * landed while the sidebar was still settling produced no movement at all. Now a pointer handler
+   * owns the fret, and each placement is a numbered job where only the newest may finish.
+   */
+  function followSelection(node: HTMLElement, current: string) {
+    let selection = current;
+    /** Where the thumb is parked, in the list's own coordinates. */
+    let restingTop: number | null = null;
+    let travelling: Animation | null = null;
+    let fretting: Animation | null = null;
+    let fretTimer: ReturnType<typeof setTimeout> | undefined;
+    let job = 0;
+
+    const still = (): boolean => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const thumbOf = (): HTMLElement | null => node.querySelector<HTMLElement>('.nav-thumb');
+
+    /** How far the thumb currently sits from its parked position, mid-flight included. */
+    function offsetNow(thumb: HTMLElement): number {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(thumb).transform);
+      return matrix.f;
+    }
+
+    function stopFret(): void {
+      clearTimeout(fretTimer);
+      fretTimer = undefined;
+      fretting?.cancel();
+      fretting = null;
+    }
+
+    /**
+     * Held down on a row that is not the selected one, the selection frets.
+     *
+     * After 120ms, so an ordinary click never sets it off: holding is the only time the question
+     * of whether this is about to be taken away stays open long enough to be worth answering.
+     */
+    function beginFret(): void {
+      const thumb = thumbOf();
+      if (thumb === null || still() || travelling !== null) return;
+      fretting = thumb.animate(
+        [
+          { transform: 'translateX(0) rotate(0deg)' },
+          { offset: 0.25, transform: 'translateX(-1.6px) rotate(-0.35deg)' },
+          { offset: 0.75, transform: 'translateX(1.6px) rotate(0.35deg)' },
+          { transform: 'translateX(0) rotate(0deg)' },
+        ],
+        { duration: 200, iterations: Infinity, easing: 'ease-in-out' },
+      );
+    }
+
+    function pointerDown(event: PointerEvent): void {
+      stopFret();
+      const row = (event.target as Element | null)?.closest?.('a');
+      if (row === null || row === undefined || row.classList.contains('active')) return;
+      if (!node.contains(row)) return;
+      fretTimer = setTimeout(beginFret, 120);
+    }
+
+    /**
+     * The thumb gathers itself before it goes, and lands a little past where it is going.
+     *
+     * The wind-up is 28ms of the 280. Any longer and the control reads as slow to answer rather
+     * than as gathering itself: the first thing that happens after a click has to be movement, and
+     * a wind-up the eye can time is read as lag.
+     *
+     * `distance` is measured from where the thumb *is*, not from where it was parked, so a click
+     * that interrupts a move continues from the position on screen instead of snapping back.
+     */
+    function travel(thumb: HTMLElement, distance: number): void {
+      if (Math.abs(distance) < 1 || still()) return;
+      travelling?.cancel();
+      travelling = thumb.animate(
+        [
+          {
+            transform: `translateY(${distance}px) scale(1)`,
+            easing: 'cubic-bezier(0.5, 0, 0.8, 0.2)',
+          },
+          {
+            offset: 0.1,
+            transform: `translateY(${distance * 1.055}px) scale(0.972)`,
+            easing: 'cubic-bezier(0.25, 0, 0.15, 1)',
+          },
+          {
+            offset: 0.62,
+            transform: `translateY(${distance * -0.085}px) scale(0.985)`,
+            easing: 'ease-out',
+          },
+          {
+            offset: 0.82,
+            transform: `translateY(${distance * 0.02}px) scale(1.012)`,
+            easing: 'ease-out',
+          },
+          { transform: 'translateY(0) scale(1)' },
+        ],
+        { duration: 280, fill: 'none' },
+      );
+      const mine = travelling;
+      const settle = (): void => {
+        if (travelling === mine) travelling = null;
+      };
+      mine.addEventListener('finish', settle);
+      mine.addEventListener('cancel', settle);
+    }
+
+    /**
+     * Measure and park the thumb. `moved` asks for the travel; a resize never does.
+     *
+     * Numbered so a placement queued behind a newer one cannot land after it: the old job returns
+     * without touching anything rather than writing a stale position.
+     */
+    async function place(moved: boolean): Promise<void> {
+      const mine = ++job;
+      await tick();
+      if (mine !== job) return;
+      const active = node.querySelector<HTMLElement>('a.active');
+      const thumb = thumbOf();
+      if (active === null || thumb === null) {
+        node.style.setProperty('--nav-thumb-height', '0px');
+        node.classList.remove('thumb-ready');
+        restingTop = null;
+        return;
+      }
+      const top = active.offsetTop;
+      const parked = node.classList.contains('thumb-ready');
+      const from = parked && restingTop !== null ? restingTop + offsetNow(thumb) : top;
+      node.style.setProperty('--nav-thumb-top', `${top}px`);
+      node.style.setProperty('--nav-thumb-height', `${active.offsetHeight}px`);
+      node.classList.add('thumb-ready');
+      restingTop = top;
+      if (moved && parked) {
+        stopFret();
+        travel(thumb, from - top);
+      }
+    }
+
+    void place(false);
+    node.addEventListener('pointerdown', pointerDown);
+    node.addEventListener('pointerup', stopFret);
+    node.addEventListener('pointercancel', stopFret);
+    node.addEventListener('pointerleave', stopFret);
+    window.addEventListener('blur', stopFret);
+    // A width change is not a move: collapsing the sidebar re-measures without anything travelling.
+    const resize = new ResizeObserver(() => void place(false));
+    resize.observe(node);
+
+    return {
+      update(next: string) {
+        if (next === selection) return;
+        const moved =
+          next.split(':').slice(0, 3).join(':') !== selection.split(':').slice(0, 3).join(':');
+        selection = next;
+        void place(moved);
+      },
+      destroy() {
+        resize.disconnect();
+        stopFret();
+        travelling?.cancel();
+        node.removeEventListener('pointerdown', pointerDown);
+        node.removeEventListener('pointerup', stopFret);
+        node.removeEventListener('pointercancel', stopFret);
+        node.removeEventListener('pointerleave', stopFret);
+        window.removeEventListener('blur', stopFret);
+      },
+    };
+  }
 </script>
 
 <nav class={['panel-navigation', collapsed && 'collapsed']} aria-label="Panel navigation">
-  <div class="view-links">
+  <div
+    class="view-links"
+    use:followSelection={`${rootMode ? 'root' : 'panel'}:${rootValue ?? ''}:${value ?? ''}:${collapsed}`}
+  >
+    <span class="nav-thumb" aria-hidden="true"></span>
     {#if rootMode}
       <p class="nav-label">Administration</p>
       {#each ROOT_SECTIONS as section (section)}
@@ -202,6 +385,8 @@
     flex-direction: column;
     gap: 3px;
     height: 100%;
+    /* The travelling thumb is positioned against this. */
+    position: relative;
   }
 
   .nav-label {
@@ -220,6 +405,9 @@
   a {
     align-items: center;
     border-radius: var(--radius-control);
+    /* Above the thumb, which is painted behind every row. */
+    isolation: isolate;
+    z-index: 1;
     color: var(--sidebar-text-secondary);
     display: flex;
     font-size: var(--font-size-control);
@@ -243,25 +431,51 @@
 
   a:active {
     background: var(--sidebar-item-pressed);
-    transform: translateY(1px);
   }
 
   /* Selected item is a raised thumb, the same language as the app's segmented
-     controls: the accent lives in the text and icon, not a bar or a tint. */
+     controls: the accent lives in the text and icon, not a bar or a tint. The ground is drawn by
+     .nav-thumb, which slides between rows, so the link itself only carries its ink. */
   a.active {
-    background: var(--sidebar-thumb);
-    box-shadow: var(--sidebar-thumb-shadow);
     color: var(--sidebar-item-active-text);
     font-weight: 700;
   }
 
-  a.active:hover {
-    background: color-mix(in srgb, var(--sidebar-item-active-text) 6%, var(--sidebar-thumb));
-    color: var(--sidebar-item-active-text);
+  .nav-thumb {
+    background: var(--sidebar-thumb);
+    border-radius: var(--radius-control);
+    box-shadow: var(--sidebar-thumb-shadow);
+    height: var(--nav-thumb-height, 0);
+    inset-inline: 0;
+    pointer-events: none;
+    position: absolute;
+    top: var(--nav-thumb-top, 0);
+    transition:
+      height 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color var(--duration-fast) var(--ease-standard);
+    z-index: 0;
   }
 
+  /* Until the first measurement lands there is nothing to travel from. */
+  .view-links:not(.thumb-ready) .nav-thumb {
+    transition: none;
+  }
+
+  .view-links:has(a.active:hover) .nav-thumb {
+    background: color-mix(in srgb, var(--sidebar-item-active-text) 2.5%, var(--sidebar-thumb));
+  }
+
+  .view-links:has(a.active:active) .nav-thumb {
+    background: color-mix(in srgb, var(--sidebar-item-active-text) 5%, var(--sidebar-thumb));
+  }
+
+  /* The selected row's own states stay under the selection they sit on. At 6% and 12% the press
+     measured 6.14 dE00 against a 3.74 fill in the light panel - the acknowledgement was louder than
+     the state. Same pair as the segmented control's thumb, for the same reasons. */
+  a.active:hover,
   a.active:active {
-    background: color-mix(in srgb, var(--sidebar-item-active-text) 12%, var(--sidebar-thumb));
+    background: transparent;
+    color: var(--sidebar-item-active-text);
   }
 
   .admin-zone {
@@ -322,7 +536,10 @@
     display: block;
     font-size: var(--font-size-meta);
     font-weight: 500;
-    left: calc(100% + var(--space-2));
+    /* Clear of the sidebar rather than of the row. The row stops one padding inside the sidebar,
+       so reaching the same air on the outside is that padding, the border, and one more. The
+       collapsed rail pads by --space-2, which is the padding this has to match. */
+    left: calc(100% + var(--space-2) * 2 + 1px);
     opacity: 0;
     padding: var(--space-2) var(--space-3);
     pointer-events: none;
