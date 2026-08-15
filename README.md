@@ -175,7 +175,7 @@ Create `.github/CODEOWNERS` in your repository:
 * @username1 @username2
 ```
 
-Currently only global owners (`*` pattern) are supported. Path-specific owners will be added in Phase 2.
+Only the global `*` pattern is read. Path-specific owners are not implemented, so a line naming a path is ignored.
 
 ### Bot configuration
 
@@ -356,13 +356,15 @@ Point the GitHub App's webhook at `https://your-host/webhook`, subscribe it to *
 | `GITHUB_APP_ID`                | -                       | optional                            | Numeric App JWT fallback when no client ID is set                            |
 | `SMYKLOT_PANEL_PUBLIC_ORIGIN`  | `--panel-public-origin` | disabled                            | Browser-visible scheme and host; setting it enables the panel                |
 | `SMYKLOT_PANEL_BASE_PATH`      | `--panel-base-path`     | `/panel`                            | Public path subtree for the panel                                            |
-| `SMYKLOT_PANEL_STATE_PATH`     | `--panel-state-path`    | `/var/lib/smyklot/panel.sqlite3`    | Writable SQLite database path                                                |
+| `SMYKLOT_DATABASE_URL`         | `--database-url`        | `/var/lib/smyklot/panel.sqlite3`    | Where service state lives: a `postgres://` URL, or a path for SQLite         |
 | `SMYKLOT_PANEL_SUPER_ROOT_ID`  | `--panel-super-root-id` | required when panel is enabled      | Numeric GitHub user ID assigned as the singleton Super Root                  |
 | `SMYKLOT_PANEL_SESSION_TTL`    | `--panel-session-ttl`   | `12h`                               | Signed-in panel session lifetime                                             |
 | `SMYKLOT_PANEL_CLIENT_ID`      | -                       | required when panel is enabled      | Client ID of the OAuth App that signs panel users in                         |
 | `SMYKLOT_PANEL_CLIENT_SECRET`  | -                       | required when panel is enabled      | Client secret of that OAuth App                                              |
 
 The webhook secret, private key and OAuth client secret have no flag on purpose - a flag would put them in the process table. An explicit flag beats the environment for everything else.
+
+`SMYKLOT_STATE_PATH` and `SMYKLOT_PANEL_STATE_PATH`, with their flags, still work and still mean a SQLite file. They are deprecated in favour of `SMYKLOT_DATABASE_URL`, which says the same thing and can also name a server. Setting more than one is an error rather than a guess.
 
 ### Administration panel
 
@@ -376,7 +378,13 @@ Register the OAuth App under the same account or organization that owns the GitH
 
 The panel synchronizes every installation and repository visible to the App every five minutes. Personal-installation ownership follows the immutable GitHub user ID. Organization ownership follows organization members with the admin role and requires read-only **Members** organization permission on the GitHub App. Existing installations must approve that added permission before Owner synchronization succeeds. Regular access fails closed when an Owner snapshot is unavailable or more than 15 minutes old; Root diagnostics retain the installation record. New installations default to **Off**, so the service only handles repositories an administrator enables deliberately. Account settings act as defaults, and the effective order is process configuration → account panel settings → `.github/smyklot.yaml` → repository panel settings. A repository may explicitly bypass an invalid file; that exception is visible and audited.
 
-SQLite runs without CGO behind application-level storage interfaces, so the HTTP service and configuration resolver do not depend on SQL or a driver. The v1 deployment must use one service replica and a writable persistent volume for `SMYKLOT_PANEL_STATE_PATH`. Finished delivery history is retained for 30 days; audit history is not pruned.
+State lives in SQLite or PostgreSQL, chosen by `SMYKLOT_DATABASE_URL`: a `postgres://` or `postgresql://` URL picks PostgreSQL, and a bare path or `sqlite://` URL picks SQLite. Both drivers are pure Go, so the image still builds with `CGO_ENABLED=0`. Nothing above the storage package knows which one is running, and a linter enforces that.
+
+The two engines are not a lowest common denominator. PostgreSQL stores timestamps as `timestamptz`, booleans as `boolean` and configuration patches as indexed `jsonb`; SQLite keeps the text and integer spellings it has always used. What they share is one set of queries, so a change lands in both at once, and one conformance suite, so parity is proven rather than assumed.
+
+SQLite is still the smaller-deployment default and needs a writable volume. PostgreSQL needs none, which is what makes a read-only root filesystem workable. Either way the service runs one replica: deliveries are de-duplicated in memory and the reaction sweep has no leader election.
+
+Moving between them keeps the data - `smyklot store migrate --from <old> --to <new>` copies every row and verifies the counts. Finished delivery history is retained for 30 days; audit history is not pruned.
 
 Run `mise run panel:dev:mock` to inspect every panel state with deterministic local data. The mock server uses the same HTTP response types and server-sent event shape as production.
 
@@ -473,20 +481,16 @@ The Action reads the file on its very next run, since a workflow is a fresh proc
 
 ### Permission system
 
-#### Phase 1 (current)
+Supported today:
 
-- Only global owners (`* @username`) are supported
-- Global owners can approve/merge any PR
-- Reaction-based approvals/merges with tracking
-- Self-approval prevention (configurable, disabled by default)
-- Fail-closed CODEOWNERS parsing (returns error if file is corrupted)
+- Global owners (`* @username`), who can approve or merge any PR
+- Team ownership (`@org/team-name`), resolved through the GitHub API
+- Reaction-based approvals and merges, with removal tracking
+- Self-approval prevention, configurable and off by default
+- Fail-closed CODEOWNERS parsing - a corrupted file gives nobody permission
 
-#### Phase 2 (planned)
-
-- Path-specific ownership patterns
-- Scoped permissions based on changed files
-- Team support (`@org/team-name`)
-- Required approvals count
+Not implemented: path-specific ownership patterns, approval scoped to the files
+a PR changes, and a required-approvals count.
 
 ### Security
 
@@ -530,7 +534,6 @@ Smyklot implements defense-in-depth security practices.
 
 - Go 1.25+
 - [mise](https://mise.jdx.dev/) for tool management
-- [Task](https://taskfile.dev/) for task automation
 
 ### Setup
 
@@ -543,10 +546,10 @@ cd smyklot
 mise install
 
 # Download dependencies
-go mod download
+mise run deps
 
 # Run tests
-task test
+mise run test
 ```
 
 ### Project structure
@@ -565,21 +568,20 @@ smyklot/
 │   └── webhook/             # Delivery parsing and de-duplication
 ├── .github/workflows/       # GitHub Actions workflows
 ├── .goreleaser.yml          # GoReleaser config for releases
-├── .mise.toml               # Tool versions
+├── .mise.toml               # Tool versions and native tasks
 ├── Dockerfile               # Docker image for GitHub Actions
-├── Taskfile.yaml            # Task automation
 └── go.mod                   # Go module definition
 ```
 
 ### Available tasks
 
 ```bash
-task             # Show available tasks
-task test        # Run all tests with coverage
-task test:unit   # Run unit tests only
-task lint        # Run all linters
-task build       # Build binaries
-task clean       # Clean build artifacts
+mise tasks ls            # Show available tasks
+mise run test            # Run all tests with coverage
+mise run test:unit       # Run unit tests only
+mise run lint            # Run all linters
+mise run build           # Build binaries
+mise run clean           # Clean repository-local artifacts
 ```
 
 ### Testing
@@ -588,7 +590,7 @@ All tests use Ginkgo/Gomega BDD framework:
 
 ```bash
 # Run all tests
-task test
+mise run test
 
 # Run specific package
 ginkgo -r pkg/commands/
@@ -611,70 +613,10 @@ Current test coverage: 130+ tests passing
 2. Create a feature branch (`git checkout -b feat/amazing-feature`)
 3. Write tests first (TDD)
 4. Implement the feature
-5. Ensure all checks pass: `task lint && task test`
+5. Ensure all checks pass: `mise run lint && mise run test`
 6. Commit with conventional commits (`feat:`, `fix:`, `docs:`, etc.)
 7. Push to your fork
 8. Open a pull request
-
-## Roadmap
-
-### Phase 1: GitHub Actions bot
-
-- [x] Command parser (slash, mention, bare)
-- [x] Multi-command support
-- [x] Merge method commands (merge, squash, rebase)
-- [x] Merge method fallback (merge → squash → rebase)
-- [x] Cleanup command (remove all bot reactions, approvals, comments)
-- [x] Approval deduplication (prevent duplicate approvals)
-- [x] Reaction-based approvals/merges/cleanup (👍, 🚀, ❤️)
-- [x] Reaction removal tracking
-- [x] Comment edit/delete handling
-- [x] CODEOWNERS parser (global owners)
-- [x] Permission checker
-- [x] GitHub API client
-- [x] Feedback system (emoji + comments)
-- [x] Configuration system (Viper)
-- [x] GitHub Actions workflows
-- [x] Docker-based GitHub Action
-- [x] Documentation
-
-### Phase 2: Enhanced permissions (planned)
-
-- [ ] Path-specific ownership patterns
-- [ ] Scoped approval requirements based on changed files
-- [ ] Team support in CODEOWNERS (`@org/team-name`)
-- [x] Self-approval prevention (configurable)
-- [ ] Required approvals count
-
-### Phase 3: Kubernetes deployment (future)
-
-#### Prerequisites (security hardening)
-
-- [x] GraphQL injection prevention
-- [x] HTTP client timeout and connection pooling
-- [x] Rate limiting and retry logic
-- [x] Input validation
-- [x] Fail-closed CODEOWNERS parsing
-
-#### Remaining work
-
-- [ ] Refactor global mutable state to request-scoped parameters
-- [ ] Add context.Context propagation throughout
-- [x] Implement HTTP webhook server
-- [ ] Add concurrency tests with `-race` flag
-- [x] Implement comprehensive audit logging
-- [ ] Kubernetes deployment (Helm chart)
-- [x] Prometheus metrics
-- [ ] Migration strategy
-
-Estimated effort: 18-30 days
-
-### Phase 4: Discord integration (future)
-
-- [ ] Discord bot
-- [ ] Unified command system
-- [ ] Cross-platform notifications
-- [ ] Status synchronization
 
 ## License
 

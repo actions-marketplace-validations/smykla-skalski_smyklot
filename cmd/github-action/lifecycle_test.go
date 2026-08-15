@@ -50,6 +50,7 @@ var _ = Describe("Service lifecycle [Unit]", func() {
 		var err error
 
 		srv, err = newServer(&serveConfig{
+			database:      GinkgoT().TempDir() + "/state.sqlite3",
 			listenAddress: address,
 			adminAddress:  adminAddress,
 			webhookPath:   defaultWebhookPath,

@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/smykla-skalski/smyklot/internal/storage/open"
 	"github.com/smykla-skalski/smyklot/pkg/config"
 	"github.com/smykla-skalski/smyklot/pkg/logging"
 )
@@ -27,9 +28,11 @@ const (
 	flagPollInterval     = "poll-interval"
 	flagLogFormat        = "log-format"
 	flagLogLevel         = "log-level"
+	flagDatabase         = "database-url"
+	flagState            = "state-path"
 	flagPanelOrigin      = "panel-public-origin"
 	flagPanelBase        = "panel-base-path"
-	flagPanelState       = "panel-state-path"
+	flagPanelState       = "panel-state-path" // Deprecated compatibility alias.
 	flagPanelSuperRootID = "panel-super-root-id"
 	flagPanelTTL         = "panel-session-ttl"
 
@@ -39,9 +42,11 @@ const (
 	descPollInterval     = "How often to sweep reactions and pending-CI PRs (0 disables)"
 	descLogFormat        = "Log format: json or text"
 	descLogLevel         = "Log level: debug, info, warn or error"
+	descDatabase         = "Database to store service state in: a postgres:// URL or a file path"
+	descState            = "Deprecated alias for --database-url"
 	descPanelOrigin      = "Public origin for the panel (empty disables it)"
 	descPanelBase        = "Path subtree that serves the panel"
-	descPanelState       = "Path to the panel SQLite database"
+	descPanelState       = "Deprecated alias for --database-url"
 	descPanelSuperRootID = "Numeric GitHub user ID assigned as the panel Super Root"
 	descPanelTTL         = "How long a signed-in panel session remains valid"
 
@@ -52,9 +57,11 @@ const (
 	envPollInterval     = "SMYKLOT_POLL_INTERVAL"
 	envLogFormat        = "SMYKLOT_LOG_FORMAT"
 	envLogLevel         = "SMYKLOT_LOG_LEVEL"
+	envDatabase         = "SMYKLOT_DATABASE_URL"
+	envState            = "SMYKLOT_STATE_PATH"
 	envPanelOrigin      = "SMYKLOT_PANEL_PUBLIC_ORIGIN"
 	envPanelBase        = "SMYKLOT_PANEL_BASE_PATH"
-	envPanelState       = "SMYKLOT_PANEL_STATE_PATH"
+	envPanelState       = "SMYKLOT_PANEL_STATE_PATH" // Deprecated compatibility alias.
 	envPanelSuperRootID = "SMYKLOT_PANEL_SUPER_ROOT_ID"
 	envPanelTTL         = "SMYKLOT_PANEL_SESSION_TTL"
 	envGitHubAuthURL    = "SMYKLOT_GITHUB_AUTHORIZE_URL"
@@ -81,7 +88,7 @@ const (
 
 	defaultLogLevel       = "info"
 	defaultPanelBase      = "/panel"
-	defaultPanelState     = "/var/lib/smyklot/panel.sqlite3"
+	defaultState          = "/var/lib/smyklot/panel.sqlite3"
 	defaultPanelTTL       = 12 * time.Hour
 	defaultGitHubAPIURL   = "https://api.github.com"
 	defaultGitHubAuthURL  = "https://github.com/login/oauth/authorize"
@@ -106,6 +113,9 @@ var (
 
 	// ErrInvalidPollInterval is returned when the poll interval is unparseable
 	ErrInvalidPollInterval = errors.New("invalid poll interval")
+
+	// ErrStateConfig is returned when mandatory durable state cannot be configured.
+	ErrStateConfig = errors.New("invalid service state configuration")
 
 	// ErrAddressConflict is returned when the admin listener would bind the
 	// same address as the webhook listener, which would publish everything the
@@ -152,9 +162,13 @@ func init() {
 	serveCmd.Flags().Duration(flagPollInterval, defaultPollInterval, descPollInterval)
 	serveCmd.Flags().String(flagLogFormat, defaultLogFormat, descLogFormat)
 	serveCmd.Flags().String(flagLogLevel, defaultLogLevel, descLogLevel)
+	serveCmd.Flags().String(flagDatabase, defaultState, descDatabase)
+	serveCmd.Flags().String(flagState, "", descState)
+	_ = serveCmd.Flags().MarkDeprecated(flagState, "use --database-url")
 	serveCmd.Flags().String(flagPanelOrigin, "", descPanelOrigin)
 	serveCmd.Flags().String(flagPanelBase, defaultPanelBase, descPanelBase)
-	serveCmd.Flags().String(flagPanelState, defaultPanelState, descPanelState)
+	serveCmd.Flags().String(flagPanelState, "", descPanelState)
+	_ = serveCmd.Flags().MarkDeprecated(flagPanelState, "use --database-url")
 	serveCmd.Flags().Int64(flagPanelSuperRootID, 0, descPanelSuperRootID)
 	serveCmd.Flags().Duration(flagPanelTTL, defaultPanelTTL, descPanelTTL)
 
@@ -195,13 +209,17 @@ type serveConfig struct {
 	// .github/smyklot.yaml is layered over
 	botConfig *config.Config
 
+	// database is mandatory even when the panel is disabled. It owns webhook
+	// delivery identity and pending-CI state as well as optional panel data.
+	// Which engine it names is the storage layer's business, not this one's.
+	database string
+
 	panel *panelServeConfig
 }
 
 type panelServeConfig struct {
 	publicOrigin string
 	basePath     string
-	statePath    string
 	superRootID  int64
 	clientID     string
 	clientSecret string
@@ -270,6 +288,9 @@ func loadServeConfig(cmd *cobra.Command) (*serveConfig, error) {
 	if err := applyServeFlags(cmd, cfg); err != nil {
 		return nil, err
 	}
+	if err := applyDatabase(cmd, cfg); err != nil {
+		return nil, err
+	}
 	if err := applyPanelFlags(cmd, cfg); err != nil {
 		return nil, err
 	}
@@ -287,10 +308,6 @@ func applyPanelFlags(cmd *cobra.Command, cfg *serveConfig) error {
 		return nil
 	}
 	basePath, err := cmd.Flags().GetString(flagPanelBase)
-	if err != nil {
-		return err
-	}
-	statePath, err := cmd.Flags().GetString(flagPanelState)
 	if err != nil {
 		return err
 	}
@@ -316,7 +333,6 @@ func applyPanelFlags(cmd *cobra.Command, cfg *serveConfig) error {
 	cfg.panel = &panelServeConfig{
 		publicOrigin: origin,
 		basePath:     normalizePanelBasePath(flagOrEnv(cmd, flagPanelBase, basePath, envPanelBase)),
-		statePath:    flagOrEnv(cmd, flagPanelState, statePath, envPanelState),
 		superRootID:  superRootID,
 		clientID:     strings.TrimSpace(os.Getenv(envPanelClientID)),
 		clientSecret: os.Getenv(envPanelClientSecret),
@@ -330,12 +346,59 @@ func applyPanelFlags(cmd *cobra.Command, cfg *serveConfig) error {
 			ErrPanelConfig, envPanelClientID, envPanelClientSecret,
 		)
 	}
-	if strings.TrimSpace(cfg.panel.statePath) == "" ||
-		cfg.panel.superRootID <= 0 || ttl <= 0 {
+	if cfg.panel.superRootID <= 0 || ttl <= 0 {
 		return ErrPanelConfig
 	}
 	if cfg.panel.basePath == cfg.webhookPath || cfg.panel.basePath == healthPath {
 		return fmt.Errorf("%w: panel base path conflicts with a public service route", ErrPanelConfig)
+	}
+
+	return nil
+}
+
+// applyDatabase resolves where service state lives.
+//
+// The newest spelling wins, then its environment variable, then each older
+// spelling in turn, so a deployment that was configured before a second engine
+// existed keeps working untouched. Every older spelling named a file path,
+// which still selects SQLite.
+func applyDatabase(cmd *cobra.Command, cfg *serveConfig) error {
+	database, err := cmd.Flags().GetString(flagDatabase)
+	if err != nil {
+		return err
+	}
+	statePath, err := cmd.Flags().GetString(flagState)
+	if err != nil {
+		return err
+	}
+	legacyPath, err := cmd.Flags().GetString(flagPanelState)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case cmd.Flags().Changed(flagDatabase):
+		cfg.database = database
+	case strings.TrimSpace(os.Getenv(envDatabase)) != "":
+		cfg.database = os.Getenv(envDatabase)
+	case cmd.Flags().Changed(flagState):
+		cfg.database = statePath
+	case strings.TrimSpace(os.Getenv(envState)) != "":
+		cfg.database = os.Getenv(envState)
+	case cmd.Flags().Changed(flagPanelState):
+		cfg.database = legacyPath
+	case strings.TrimSpace(os.Getenv(envPanelState)) != "":
+		cfg.database = os.Getenv(envPanelState)
+	default:
+		cfg.database = database
+	}
+	if strings.TrimSpace(cfg.database) == "" {
+		return fmt.Errorf("%w: database must not be empty", ErrStateConfig)
+	}
+	// Failing here rather than at connect time means a typo is reported with
+	// the rest of the configuration instead of after the listener is up.
+	if _, _, err := open.Resolve(cfg.database); err != nil {
+		return fmt.Errorf("%w: %w", ErrStateConfig, err)
 	}
 
 	return nil

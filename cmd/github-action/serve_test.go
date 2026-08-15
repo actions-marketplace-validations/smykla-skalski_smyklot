@@ -23,6 +23,8 @@ var serveEnv = []string{
 	envPollInterval,
 	envLogFormat,
 	envLogLevel,
+	envDatabase,
+	envState,
 	envPanelOrigin,
 	envPanelBase,
 	envPanelState,
@@ -64,9 +66,11 @@ func loadServe(env map[string]string, args ...string) (*serveConfig, error) {
 	cmd.Flags().Duration(flagPollInterval, defaultPollInterval, descPollInterval)
 	cmd.Flags().String(flagLogFormat, defaultLogFormat, descLogFormat)
 	cmd.Flags().String(flagLogLevel, defaultLogLevel, descLogLevel)
+	cmd.Flags().String(flagDatabase, defaultState, descDatabase)
+	cmd.Flags().String(flagState, "", descState)
 	cmd.Flags().String(flagPanelOrigin, "", descPanelOrigin)
 	cmd.Flags().String(flagPanelBase, defaultPanelBase, descPanelBase)
-	cmd.Flags().String(flagPanelState, defaultPanelState, descPanelState)
+	cmd.Flags().String(flagPanelState, "", descPanelState)
 	cmd.Flags().Int64(flagPanelSuperRootID, 0, descPanelSuperRootID)
 	cmd.Flags().Duration(flagPanelTTL, defaultPanelTTL, descPanelTTL)
 
@@ -93,6 +97,7 @@ var _ = Describe("Serve configuration [Unit]", func() {
 		Expect(cfg.webhookPath).To(Equal(defaultWebhookPath))
 		Expect(cfg.pollInterval).To(Equal(defaultPollInterval))
 		Expect(cfg.botUsername).To(Equal(defaultBotUsername))
+		Expect(cfg.database).To(Equal(defaultState))
 	})
 
 	// Everything an operator reads belongs off the port GitHub talks to
@@ -272,7 +277,6 @@ var _ = Describe("Serve configuration [Unit]", func() {
 			Expect(cfg.panel).To(Equal(&panelServeConfig{
 				publicOrigin: "https://smyklot.example",
 				basePath:     defaultPanelBase,
-				statePath:    defaultPanelState,
 				superRootID:  42,
 				clientID:     "Ov23li.panel",
 				clientSecret: "oauth-secret",
@@ -315,7 +319,7 @@ var _ = Describe("Serve configuration [Unit]", func() {
 			env := map[string]string{
 				envPanelOrigin:       "https://old.example",
 				envPanelBase:         "/old",
-				envPanelState:        "/tmp/old.sqlite3",
+				envState:             "/tmp/old.sqlite3",
 				envPanelSuperRootID:  "42",
 				envPanelTTL:          "24h",
 				envPanelClientID:     "Ov23li.panel",
@@ -325,7 +329,7 @@ var _ = Describe("Serve configuration [Unit]", func() {
 			cfg, err := loadServe(env,
 				"--panel-public-origin", "https://new.example",
 				"--panel-base-path", "/admin",
-				"--panel-state-path", "/tmp/new.sqlite3",
+				"--state-path", "/tmp/new.sqlite3",
 				"--panel-super-root-id", "84",
 				"--panel-session-ttl", "2h",
 			)
@@ -333,9 +337,30 @@ var _ = Describe("Serve configuration [Unit]", func() {
 
 			Expect(cfg.panel.publicOrigin).To(Equal("https://new.example"))
 			Expect(cfg.panel.basePath).To(Equal("/admin"))
-			Expect(cfg.panel.statePath).To(Equal("/tmp/new.sqlite3"))
+			Expect(cfg.database).To(Equal("/tmp/new.sqlite3"))
 			Expect(cfg.panel.superRootID).To(Equal(int64(84)))
 			Expect(cfg.panel.sessionTTL).To(Equal(2 * time.Hour))
+		})
+
+		It("should accept the old panel state path for one compatibility release", func() {
+			cfg, err := loadServe(map[string]string{envPanelState: "/tmp/legacy.sqlite3"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.database).To(Equal("/tmp/legacy.sqlite3"))
+		})
+
+		It("should accept a database URL and prefer it over every older spelling", func() {
+			cfg, err := loadServe(map[string]string{
+				envDatabase:   "postgres://smyklot@db.internal:5432/smyklot",
+				envState:      "/tmp/ignored.sqlite3",
+				envPanelState: "/tmp/also-ignored.sqlite3",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.database).To(Equal("postgres://smyklot@db.internal:5432/smyklot"))
+		})
+
+		It("should reject a database it has no engine for", func() {
+			_, err := loadServe(map[string]string{envDatabase: "mysql://smyklot@db.internal/smyklot"})
+			Expect(err).To(MatchError(ErrStateConfig))
 		})
 
 		DescribeTable("should reject incomplete enabled panel configuration",

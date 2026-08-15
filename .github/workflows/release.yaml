@@ -45,8 +45,23 @@ jobs:
     needs: check
     name: Test
     runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
+
+    # A release ships both engines, so a release must have tested both. Same
+    # server, and the same proof that the suite did not skip, as test.yaml.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: smyklot
+          POSTGRES_PASSWORD: smyklot
+          POSTGRES_DB: smyklot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smyklot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout
@@ -58,7 +73,12 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: task test
+        run: mise run test
+
+      - name: Run tests against PostgreSQL
+        env:
+          SMYKLOT_TEST_POSTGRES_DSN: postgres://smyklot:smyklot@localhost:5432/smyklot?sslmode=disable
+        run: mise run test:storage:postgres
 
   # Run golangci-lint
   golangci-lint:
@@ -73,15 +93,13 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          version: v2.12.2
 
   # Run markdownlint
   markdownlint:
     needs: check
     name: Markdown Lint
     runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
 
     steps:
       - name: Checkout
@@ -93,15 +111,13 @@ jobs:
           cache: true
 
       - name: Run markdownlint
-        run: task lint:markdown
+        run: mise run lint:markdown
 
   # Verify go.mod
   go-mod-verify:
     needs: check
     name: Go Mod Verify
     runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
 
     steps:
       - name: Checkout
@@ -113,7 +129,7 @@ jobs:
           cache: true
 
       - name: Verify go.mod
-        run: task lint:mod
+        run: mise run lint:mod
 
   # The panel ships inside the Go binary, so its independent TypeScript,
   # Svelte and production-build gates must pass before semantic-release can
@@ -122,8 +138,6 @@ jobs:
     needs: check
     name: Panel Frontend
     runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
 
     steps:
       - name: Checkout
