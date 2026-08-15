@@ -48,8 +48,12 @@
     align?: 'start' | 'end';
     compact?: boolean;
     variant?: 'default' | 'navigation';
-    /** Which family of surfaces to draw on. Sidebar popovers carry their own. */
-    surface?: 'panel' | 'sidebar';
+    /**
+     * Which family of surfaces to draw on. Sidebar popovers carry their own, and
+     * `night` is for a control standing on the invitation page's sky rather than
+     * on any of the themed surfaces.
+     */
+    surface?: 'panel' | 'sidebar' | 'night';
     onSelect: (value: string) => void;
   } = $props();
 
@@ -116,6 +120,7 @@
     compact && 'compact',
     variant === 'navigation' && 'navigation',
     surface === 'sidebar' && 'on-sidebar',
+    surface === 'night' && 'on-night',
   ]}
   class:selected-accent={selectedTone === 'accent'}
   class:selected-on={selectedTone === 'on'}
@@ -165,6 +170,7 @@
     --seg-border: var(--rule);
     --seg-shadow: var(--segment-shadow);
     --seg-muted: var(--text-muted);
+    --seg-text: var(--text);
     --selected-bg: var(--segment-thumb);
     --selected-text: var(--text-primary);
     background: var(--seg-track);
@@ -194,6 +200,24 @@
     --selected-text: var(--sidebar-menu-text);
   }
 
+  /* Standing on the invitation page's sky, which is night in both themes, so this
+     one is the same control in light mode as in dark. It is glass rather than a
+     surface: the track is white over whatever is behind it, so the stars carry on
+     under the control instead of stopping at its edge. */
+  fieldset.on-night {
+    --seg-track: var(--night-seg-track);
+    --seg-hover: var(--night-seg-hover);
+    --seg-pressed: var(--night-seg-pressed);
+    --seg-border: var(--night-seg-border);
+    --seg-shadow: var(--night-seg-shadow);
+    --seg-muted: var(--night-seg-muted);
+    --seg-text: var(--night-seg-text);
+    --selected-bg: var(--night-seg-thumb);
+    --selected-text: var(--night-seg-text);
+
+    backdrop-filter: blur(6px);
+  }
+
   fieldset.selected-accent {
     --selected-text: var(--brand-action-text);
   }
@@ -211,8 +235,12 @@
     justify-self: end;
   }
 
+  /* Same fallback as the base rule rather than the token outright: `compact` wins
+     on specificity, so naming the token here would make it override the height a
+     caller had already set and leave `--local-control-height` silently ignored on
+     every compact control. */
   fieldset.compact {
-    height: var(--control-height-compact);
+    height: var(--local-control-height, var(--control-height-compact));
   }
 
   fieldset.compact .segment-label {
@@ -271,14 +299,105 @@
     opacity: 1;
   }
 
-  label:has(input:checked) + label:hover::before {
-    border-radius: 0 calc(var(--r-ctl) - 2px) calc(var(--r-ctl) - 2px) 0;
-    inset-inline-start: calc(-1 * var(--r-ctl));
+  /* Hovering the option next to the selected one squares the corner on its own
+     side of the join, so the fill runs flat up to the thumb's edge instead of
+     curving away from it and leaving a notch. The thumb keeps its own rounding:
+     the hover wraps around the outside of that curve rather than cutting it off,
+     which is what makes the two read as one lit stretch of the control.
+
+     What fills the crescent outside the curve is `.selection-indicator::after`,
+     drawn on the thumb rather than by the hover. The hover used to reach a radius'
+     worth of fill in *under* the thumb to cover it, which works only while the
+     thumb is opaque - on the night surface it is glass, and the fill tucked behind
+     it read straight through as a bright band across the selected option. Painting
+     only the crescent puts nothing underneath at all, so it holds however
+     see-through the thumb is. */
+  label:has(input:checked) + label:hover:not(:has(input:disabled))::before {
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
   }
 
-  label:hover:has(+ label input:checked)::before {
-    border-radius: calc(var(--r-ctl) - 2px) 0 0 calc(var(--r-ctl) - 2px);
-    inset-inline-end: calc(-1 * var(--r-ctl));
+  label:hover:not(:has(input:disabled)):has(+ label input:checked)::before {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
+  }
+
+  /* The crescent itself: a strip one thumb-radius wide, reaching over the thumb's
+     corner square from the hovered option's own edge. It is two tiles, each a disc
+     of that radius punched out of the fill - transparent where the thumb is, lit
+     where it is not - and each disc is centred on the arc the thumb's corner is
+     drawn with, so the two curves are the same curve and meet without a seam.
+
+     It rides the hovered label rather than the thumb because a rule that had to
+     ask "is the thumb next to something hovered" would need `:has()` inside
+     `:has()`, which is invalid and drops the rule silently. From here one level
+     is enough. It also sits *over* the thumb, which is safe precisely because the
+     part covering the thumb is the transparent part. */
+  label::after {
+    --thumb-radius: calc(var(--r-ctl) - 2px);
+    --crescent-fill: var(--seg-hover);
+
+    background-repeat: no-repeat;
+    background-size: var(--thumb-radius) var(--thumb-radius);
+    bottom: 0;
+    content: '';
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    transition: opacity 120ms ease-out;
+    width: var(--thumb-radius);
+    z-index: 2;
+  }
+
+  label:has(input:checked) + label:hover:not(:has(input:disabled))::after {
+    background-image:
+      radial-gradient(
+        circle var(--thumb-radius) at 0 100%,
+        transparent 0 var(--thumb-radius),
+        var(--crescent-fill) var(--thumb-radius)
+      ),
+      radial-gradient(
+        circle var(--thumb-radius) at 0 0,
+        transparent 0 var(--thumb-radius),
+        var(--crescent-fill) var(--thumb-radius)
+      );
+    background-position:
+      0 0,
+      0 100%;
+    opacity: 1;
+    right: 100%;
+  }
+
+  label:hover:not(:has(input:disabled)):has(+ label input:checked)::after {
+    background-image:
+      radial-gradient(
+        circle var(--thumb-radius) at 100% 100%,
+        transparent 0 var(--thumb-radius),
+        var(--crescent-fill) var(--thumb-radius)
+      ),
+      radial-gradient(
+        circle var(--thumb-radius) at 100% 0,
+        transparent 0 var(--thumb-radius),
+        var(--crescent-fill) var(--thumb-radius)
+      );
+    background-position:
+      0 0,
+      0 100%;
+    left: 100%;
+    opacity: 1;
+  }
+
+  /* The crescent follows the fill it belongs to down the same ramp. */
+  label:has(input:checked) + label:active:not(:has(input:disabled))::after,
+  label:active:not(:has(input:disabled)):has(+ label input:checked)::after {
+    --crescent-fill: var(--seg-pressed);
+  }
+
+  /* An offer on the table already squares the thumb's shared corner, so there is
+     no crescent left to fill. */
+  fieldset.previewing label::after {
+    opacity: 0;
   }
 
   input {
@@ -372,7 +491,7 @@
   }
 
   label:hover input:not(:checked):not(:disabled) ~ .segment-label {
-    color: var(--text);
+    color: var(--seg-text);
   }
 
   label:active input:not(:disabled) ~ .segment-label {

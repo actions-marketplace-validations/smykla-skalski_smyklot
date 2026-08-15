@@ -16,6 +16,7 @@
   import HistoryPanel from './HistoryPanel.svelte';
   import Modal from './Modal.svelte';
   import RepositoryList from './RepositoryList.svelte';
+  import ResultProblem from './ResultProblem.svelte';
   import TargetSettings from './TargetSettings.svelte';
   import UserManagement from './UserManagement.svelte';
 
@@ -76,13 +77,15 @@
   async function load(version = refreshVersion): Promise<void> {
     const current = ++loadSequence;
     loading = true;
-    failure = null;
     try {
       const currentTarget = await api.fetchRootTargetSettings(installation.id);
       const currentElevation = await loadElevation();
       if (current !== loadSequence || version !== refreshVersion) return;
       target = currentTarget;
       elevation = currentElevation;
+      // Cleared here rather than up front: a retry keeps the failure on screen
+      // until there is something to put in its place.
+      failure = null;
       repositoryVersion += 1;
     } catch (error) {
       if (current !== loadSequence || version !== refreshVersion) return;
@@ -311,13 +314,34 @@
     <p class="access-hint">Fresh Owners are required before elevated access can start</p>
   {/if}
 
-  {#if loading}
+  <!-- A refresh that failed over a loaded view has not made the view wrong, so
+       the failure is a line above it and the panel stays where it is. -->
+  {#if failure !== null && target !== null}
+    <ResultProblem
+      title="Could not refresh this installation"
+      problem={failure}
+      busy={loading}
+      onRetry={() => void load(refreshVersion)}
+      overContent
+    />
+  {/if}
+
+  <!-- Only while there is nothing to read yet. A refresh over a loaded view
+       leaves it standing, or the whole panel blinks out on every event. -->
+  {#if loading && target === null && failure === null}
     <div class="root-loading" role="status">Reading installation diagnostics…</div>
-  {:else if failure !== null}
+  {:else if failure !== null && target === null}
     <div class="root-loading problem" role="alert">
       <strong>Could not load this installation</strong>
       <p>{failure}</p>
-      <button class="btn" type="button" onclick={() => void load(refreshVersion)}>Try again</button>
+      <button
+        class="btn"
+        type="button"
+        onclick={() => void load(refreshVersion)}
+        disabled={loading}
+      >
+        {loading ? 'Trying again…' : 'Try again'}
+      </button>
     </div>
   {:else if target !== null && view === 'settings'}
     <TargetSettings {target} readOnly={!canWrite} onUpdate={updateTarget} />

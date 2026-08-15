@@ -1,5 +1,4 @@
 <script lang="ts">
-  import haloUrl from '../assets/smyklot-halo.svg';
   import type { PanelApi } from '../lib/api';
   import { fuzzyCandidates } from '../lib/fuzzy';
   import { handleLabel, readHandle } from '../lib/identity';
@@ -7,17 +6,11 @@
   import type { PanelView, RootSection } from '../lib/routes';
   import type { PanelTarget, PanelViewer } from '../lib/types';
   import Avatar from './Avatar.svelte';
+  import BrandMark from './BrandMark.svelte';
   import Icon from './Icon.svelte';
   import NotificationInbox from './NotificationInbox.svelte';
-  import SegmentedControl from './SegmentedControl.svelte';
+  import ThemeSwitch from './ThemeSwitch.svelte';
   import ViewTabs from './ViewTabs.svelte';
-
-  /* Icon-only, so each option's label is its accessible name rather than visible text. */
-  const THEME_OPTIONS = [
-    { value: 'system', label: 'System theme', icon: 'system' },
-    { value: 'light', label: 'Light theme', icon: 'sun' },
-    { value: 'dark', label: 'Dark theme', icon: 'moon' },
-  ] as const;
 
   const {
     viewer,
@@ -228,13 +221,7 @@
   ]}
 >
   <div class="brand-row">
-    <h1 class="mark">
-      <img class="mark-icon" src={haloUrl} alt="" width="34" height="34" decoding="async" />
-      <span class="mark-copy">
-        <span class="mark-name">Smyklot</span>
-        <span class="mark-part">{rootMode ? 'ROOT MODE' : 'PANEL'}</span>
-      </span>
-    </h1>
+    <BrandMark part={rootMode ? 'ROOT MODE' : 'PANEL'} heading />
 
     {#if showNavigation}
       <button
@@ -412,15 +399,7 @@
         <div class="theme-row">
           <span class="theme-icon" aria-hidden="true"><Icon name="sun-moon" size={15} /></span>
           <span class="theme-label">Theme</span>
-          <SegmentedControl
-            name="panel-theme"
-            label="Theme"
-            options={THEME_OPTIONS}
-            value={theme}
-            surface="sidebar"
-            compact
-            onSelect={(selection) => onSelectTheme(selection as ThemeDisplay)}
-          />
+          <ThemeSwitch name="panel-theme" {theme} surface="sidebar" onSelect={onSelectTheme} />
         </div>
         <hr class="menu-divider" />
         <button class="account-action" type="button" onclick={signOut}>
@@ -463,41 +442,9 @@
     position: relative;
   }
 
-  .mark {
-    align-items: center;
-    display: flex;
-    gap: 0.625rem;
-    margin: 0;
-    min-width: 0;
-  }
-
-  .mark-icon {
-    flex: none;
-    object-fit: contain;
-  }
-
-  .mark-copy {
-    display: grid;
-    gap: 0.3rem;
-    min-width: 0;
-  }
-
-  .mark-name {
-    color: var(--sidebar-text);
-    font: 700 0.8125rem / 1 var(--sans);
-    letter-spacing: 0.11em;
-    text-box: trim-both cap alphabetic;
-    text-transform: uppercase;
-  }
-
-  .mark-part {
-    color: var(--sidebar-text-muted);
-    font: 700 0.65625rem / 1 var(--sans);
-    letter-spacing: 0.12em;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .panel-sidebar.root-mode .mark-part {
+  /* The mark itself is `BrandMark`, shared with the invitation page so the two
+     cannot drift. What stays here is only what the rail does to it. */
+  .panel-sidebar.root-mode :global(.mark-part) {
     color: var(--sidebar-root-accent);
   }
 
@@ -1104,8 +1051,8 @@
   }
 
   /* Collapsed, the trigger sits ON the mark rather than under it. The halo in
-     `smyklot-halo.svg` is drawn in a 1254 box as a circle of r=556 stroked at
-     84, so at the mark's 34px it is 32.43px across with a 2.28px ring - the
+     `smyklot-halo.svg` is drawn in a 1340 box as a circle of r=556 stroked at
+     84, so at the mark's 36px it is 32.13px across with a 2.26px ring - the
      overlay is that circle exactly, so its own ring lands on the halo's rather
      than inside it and the interior covers the robot edge to edge. It waits for
      a hover like the expanded one does, so the mark is what the sidebar shows
@@ -1125,7 +1072,7 @@
   }
 
   .collapsed .sidebar-collapse-trigger::before {
-    border: 2.28px solid var(--sidebar-text-muted);
+    border: 2.26px solid var(--sidebar-text-muted);
     border-radius: 50%;
     /* The halo's outer edge is antialiased and lands on a fraction of a pixel,
        so an exactly-sized disc leaves a coloured hairline around it. A ring of
@@ -1133,12 +1080,12 @@
     box-shadow: 0 0 0 1.5px var(--sidebar-bg);
     box-sizing: border-box;
     content: '';
-    height: 32.43px;
+    height: 32.13px;
     left: 50%;
     position: absolute;
     top: 50%;
     translate: -50% -50%;
-    width: 32.43px;
+    width: 32.13px;
   }
 
   .collapsed .sidebar-collapse-trigger > :global(svg) {
@@ -1172,20 +1119,20 @@
   /* The mark shrinks with the disc that covers it. They are concentric, so scaling only the disc
      let the halo underneath show past its own edge - a lit crescent at the bottom left, where the
      halo's stroke is thickest. Pressed, the logo and the ring over it are one object. */
-  .collapsed .brand-row:has(.sidebar-collapse-trigger:active) .mark-icon,
+  .collapsed .brand-row:has(.sidebar-collapse-trigger:active) :global(.mark-icon),
   .collapsed .sidebar-collapse-trigger:active {
     transform: scale(var(--press-scale-disc));
   }
 
-  .collapsed .mark-icon {
+  .collapsed :global(.mark-icon) {
     transition: transform var(--duration-press) var(--ease-standard);
   }
 
-  .collapsed .mark {
+  .collapsed :global(.mark) {
     justify-content: center;
   }
 
-  .collapsed .mark-copy,
+  .collapsed :global(.mark-copy),
   .collapsed .target-trigger-copy,
   .collapsed .menu-chevron,
   .collapsed .who-text {
@@ -1241,7 +1188,7 @@
       padding: 0 var(--space-4);
     }
 
-    .collapsed .mark-copy {
+    .collapsed :global(.mark-copy) {
       display: grid;
     }
 
@@ -1325,7 +1272,7 @@
   }
 
   @media (max-width: 30rem) {
-    .mark-part,
+    .panel-sidebar :global(.mark-part),
     .mobile-navigation-trigger > span:last-child {
       display: none;
     }
