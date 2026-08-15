@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { PanelApiError } from '../lib/api';
   import { formatDateTime, formatRelative, formatTimestamp, formatUntil } from '../lib/format';
   import type { FilterSection } from '../lib/filter-menu';
   import type {
@@ -43,6 +44,7 @@
     reissue,
     revoke,
     canManage,
+    actorLogin,
     navigation,
   }: {
     fetchPage: (request: InvitationPageRequest) => Promise<Page<PanelInvitation>>;
@@ -51,6 +53,8 @@
     reissue: (invitationId: string, expiresInDays: InvitationDays) => Promise<PanelInvitation>;
     revoke: (invitationId: string) => Promise<PanelInvitation>;
     canManage: boolean;
+    /** The signed-in login, so naming yourself is answered before the press. */
+    actorLogin: string;
     navigation?: Snippet;
   } = $props();
 
@@ -72,8 +76,25 @@
   let expiresInDays = $state<InvitationDays>(7);
   let creating = $state(false);
   let createProblem = $state<string | null>(null);
+  let copyProblem = $state<string | null>(null);
   let generatedLink = $state('');
   let generatedFor = $state('');
+
+  /**
+   * The login the server said had declined, which turns the dialog into a question.
+   *
+   * Declining is an answer, so asking again is a decision made on purpose rather than by pressing
+   * the same button twice. The gate itself is the server's: it knows the whole history.
+   */
+  let declinedLogin = $state<string | null>(null);
+  const createStage = $derived(
+    generatedLink !== '' ? 'link' : declinedLogin !== null ? 'confirm' : 'form',
+  );
+
+  /** The one standing the panel knows for certain, and can therefore answer before the press. */
+  const namingSelf = $derived(
+    login.trim() !== '' && login.trim().toLowerCase() === actorLogin.trim().toLowerCase(),
+  );
 
   let actionInvitation = $state<PanelInvitation | null>(null);
   let pendingAction = $state<InvitationAction | null>(null);
@@ -201,34 +222,63 @@
     generatedLink = '';
     generatedFor = '';
     createProblem = null;
+    copyProblem = null;
+    declinedLogin = null;
     createOpen = true;
   }
 
   function closeCreate(): void {
     if (creating) return;
     createOpen = false;
+    // Cleared at both ends. Every opener establishes this state too, but leaving it behind here
+    // means a third entry point inherits a message about a link that is no longer on screen.
+    createProblem = null;
+    copyProblem = null;
+    declinedLogin = null;
   }
 
   async function submitCreate(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (creating || login.trim() === '') return;
+    await sendInvitation(false);
+  }
+
+  async function sendInvitation(acknowledged: boolean): Promise<void> {
+    if (creating || login.trim() === '' || namingSelf) return;
     creating = true;
     createProblem = null;
     try {
-      const invitation = await create({ login: login.trim(), expires_in_days: expiresInDays });
+      const invitation = await create({
+        login: login.trim(),
+        expires_in_days: expiresInDays,
+        ...(acknowledged ? { acknowledge_declined: true } : {}),
+      });
+      declinedLogin = null;
       generatedLink = invitation.invite_url ?? '';
       generatedFor = invitation.account.login;
       page = null;
       await loadPage(undefined, false);
     } catch (error) {
-      createProblem = error instanceof Error ? error.message : String(error);
+      if (error instanceof PanelApiError && error.code === 'invitation_declined') {
+        declinedLogin = login.trim();
+      } else {
+        createProblem = error instanceof Error ? error.message : String(error);
+      }
     } finally {
       creating = false;
     }
   }
 
   async function copyLink(): Promise<void> {
-    if (generatedLink !== '') await navigator.clipboard.writeText(generatedLink);
+    if (generatedLink === '') return;
+    try {
+      await navigator.clipboard.writeText(generatedLink);
+      copyProblem = null;
+    } catch {
+      // A clipboard that refuses used to reject into nothing at all, so the press looked like it
+      // had worked and the link was not where you went looking for it. The message says what to do
+      // instead, next to the field it is about.
+      copyProblem = 'Copy it from the field above, the clipboard was not available';
+    }
   }
 
   function actionItems(invitation: PanelInvitation): ActionMenuItem[] {
@@ -279,6 +329,10 @@
         generatedLink = updated.invite_url ?? '';
         generatedFor = updated.account.login;
         login = updated.account.login;
+        // This door bypasses openCreate, so it clears the same fields itself.
+        createProblem = null;
+        copyProblem = null;
+        declinedLogin = null;
         createOpen = true;
       } else {
         await revoke(actionInvitation.id);
@@ -464,14 +518,29 @@
 <Modal
   id="root-invitation-create"
   open={createOpen}
-  title={generatedLink === '' ? 'Invite a Root user' : `Invitation ready for @${generatedFor}`}
-  description={generatedLink === ''
-    ? 'Only Super Root can grant application-wide administration'
-    : 'Share this single-use link with the named GitHub user'}
+  title={createStage === 'link'
+    ? `Invitation ready for @${generatedFor}`
+    : createStage === 'confirm'
+      ? 'Invite again?'
+      : 'Invite a Root user'}
+  description={createStage === 'link'
+    ? 'Share this single-use link with the named GitHub user'
+    : createStage === 'confirm'
+      ? `@${declinedLogin} turned down the last Root invitation`
+      : 'Only Super Root can grant application-wide administration'}
   returnFocus={createTrigger}
   onClose={closeCreate}
 >
-  {#if generatedLink === ''}
+  {#if createStage === 'confirm'}
+    <div class="root-warning">
+      <Icon name="warning" size={19} />
+      <span
+        >Declining was an answer. A new link reaches the same GitHub identity, and asking twice is
+        visible to them and in the audit record</span
+      >
+    </div>
+    {#if createProblem !== null}<p class="form-error" role="alert">{createProblem}</p>{/if}
+  {:else if createStage === 'form'}
     <form id="root-invitation-form" class="invitation-form" onsubmit={submitCreate}>
       <label>
         <span>GitHub login</span>
@@ -482,6 +551,9 @@
           required
           data-modal-focus
         />
+        {#if namingSelf}
+          <small class="field-refusal">You cannot invite yourself</small>
+        {/if}
       </label>
       <label>
         <span>Expires after</span>
@@ -510,22 +582,37 @@
       <span>Invitation link</span>
       <input class="mono" readonly value={generatedLink} data-modal-focus />
     </label>
+    {#if copyProblem !== null}<p class="form-error" role="alert">{copyProblem}</p>{/if}
   {/if}
 
   {#snippet footer()}
-    <button class="btn btn-ghost" type="button" onclick={closeCreate}>
-      {generatedLink === '' ? 'Cancel' : 'Done'}
-    </button>
-    {#if generatedLink === ''}
+    {#if createStage === 'confirm'}
+      <button class="btn btn-ghost" type="button" onclick={() => (declinedLogin = null)}>
+        Back
+      </button>
+      <button
+        class="btn btn-signal"
+        type="button"
+        disabled={creating}
+        onclick={() => void sendInvitation(true)}
+      >
+        {creating ? 'Creating…' : 'Invite again'}
+      </button>
+    {:else}
+      <button class="btn btn-ghost" type="button" onclick={closeCreate}>
+        {createStage === 'form' ? 'Cancel' : 'Done'}
+      </button>
+    {/if}
+    {#if createStage === 'form'}
       <button
         class="btn btn-signal"
         type="submit"
         form="root-invitation-form"
-        disabled={creating || login.trim() === ''}
+        disabled={creating || login.trim() === '' || namingSelf}
       >
         {creating ? 'Creating…' : 'Create invitation'}
       </button>
-    {:else}
+    {:else if createStage === 'link'}
       <button class="btn btn-signal" type="button" onclick={() => void copyLink()}>Copy link</button
       >
     {/if}
@@ -815,6 +902,16 @@
   .invitation-form label > span,
   .link-field > span {
     font-weight: 650;
+  }
+
+  /* Sits under the field that caused it rather than beside the disabled button, so the reason and
+     the thing to change are in the same place. */
+  .field-refusal {
+    color: var(--stop);
+    font-size: var(--font-size-compact);
+    font-weight: 500;
+    /* The label's own grid gap already spaces it; this closes it back up to a helper's distance. */
+    margin-top: calc(var(--space-2) * -1 + 0.25rem);
   }
 
   .invitation-form input,
