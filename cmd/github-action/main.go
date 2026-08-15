@@ -307,6 +307,16 @@ func executeComment(
 	rc *RuntimeConfig,
 	bc *config.Config,
 ) error {
+	return executeCommentWithEnvironment(ctx, client, rc, bc, commandEnvironment{})
+}
+
+func executeCommentWithEnvironment(
+	ctx context.Context,
+	client *github.Client,
+	rc *RuntimeConfig,
+	bc *config.Config,
+	environment commandEnvironment,
+) error {
 	// Parse the command from the comment
 	//
 	// A parse error still yields the commands the comment asked for, which the
@@ -347,12 +357,13 @@ func executeComment(
 	}
 
 	// Clean up any previous error reactions (in case comment was edited)
-	_ = client.RemoveReaction(
+	_ = client.RemoveReactionByUser(
 		ctx,
 		rc.RepoOwner,
 		rc.RepoName,
 		commentIDNum,
 		github.ReactionError,
+		rc.BotUsername,
 	)
 
 	// Fetch CODEOWNERS content from GitHub API
@@ -381,7 +392,9 @@ func executeComment(
 	// Handle reaction-based approvals/merges if enabled
 	// Only process reactions if no command was found in the comment
 	if !bc.DisableReactions && !parsedCmd.IsValid {
-		if err := handleReactions(ctx, client, rc, bc, checker, prNum, commentIDNum); err != nil {
+		if err := handleReactions(
+			ctx, client, rc, bc, checker, prNum, commentIDNum, environment,
+		); err != nil {
 			return err
 		}
 		// Reactions have been processed, exit early
@@ -424,18 +437,23 @@ func executeComment(
 		case commands.CommandApprove:
 			fb, err = executeApprove(ctx, client, rc, bc, prNum)
 		case commands.CommandMerge:
-			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodMerge, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly)
+			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodMerge, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly, environment)
 		case commands.CommandSquash:
-			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodSquash, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly)
+			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodSquash, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly, environment)
 		case commands.CommandRebase:
-			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodRebase, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly)
+			fb, err = executeMerge(ctx, client, rc, bc, prNum, commentIDNum, github.MergeMethodRebase, parsedCmd.WaitForCI, parsedCmd.RequiredChecksOnly, environment)
 		case commands.CommandUnapprove:
 			fb, err = executeUnapprove(ctx, client, rc, bc, prNum)
 		case commands.CommandCleanup:
-			// Cleanup is special - it deletes the comment, so handle immediately
-			fb, err = executeCleanup(ctx, client, rc, bc, prNum, commentIDNum)
+			fb, _, err = executeCoordinatedCleanup(
+				ctx, client, rc, bc, prNum, commentIDNum,
+				"cleanup command", environment,
+			)
 			if err != nil {
 				return err
+			}
+			if fb == nil {
+				return nil
 			}
 			// If cleanup failed, post error feedback before returning
 			if fb.Type == feedback.Error {
@@ -452,6 +470,9 @@ func executeComment(
 
 		if err != nil {
 			return err
+		}
+		if fb == nil {
+			continue
 		}
 
 		// For new comments, filter out "already approved" warnings
@@ -629,12 +650,13 @@ func postFeedback(
 	}
 
 	// Remove eyes reaction after the operation completes
-	_ = client.RemoveReaction(
+	_ = client.RemoveReactionByUser(
 		ctx,
 		rc.RepoOwner,
 		rc.RepoName,
 		commentID,
 		github.ReactionEyes,
+		rc.BotUsername,
 	)
 
 	// Add final status reaction
@@ -810,6 +832,7 @@ func executeMerge(
 	method github.MergeMethod,
 	waitForCI bool,
 	requiredChecksOnly bool,
+	environment commandEnvironment,
 ) (*feedback.Feedback, error) {
 	// Get PR info to check if it's mergeable and get base branch
 	info, err := client.GetPRInfo(ctx, rc.RepoOwner, rc.RepoName, prNum)
@@ -819,7 +842,10 @@ func executeMerge(
 
 	// Handle "after CI" modifier - defer merge until CI passes
 	if waitForCI {
-		return executePendingCIMerge(ctx, client, rc, bc, prNum, commentID, method, info, requiredChecksOnly)
+		return executePendingCIMerge(
+			ctx, client, rc, bc, prNum, commentID, method, info,
+			requiredChecksOnly, environment,
+		)
 	}
 
 	// Check if PR is mergeable
@@ -955,82 +981,102 @@ func executePendingCIMerge(
 	method github.MergeMethod,
 	info *github.PRInfo,
 	requiredChecksOnly bool,
+	environment commandEnvironment,
 ) (*feedback.Feedback, error) {
 	// Get PR head SHA for CI status check
 	headRef, err := client.GetPRHeadRef(ctx, rc.RepoOwner, rc.RepoName, prNum)
 	if err != nil {
 		return feedback.NewMergeFailed("failed to get PR head ref: " + err.Error()), nil
 	}
-
-	// Get required checks list if filtering by required checks only
-	var requiredChecks []github.RequiredCheck
-	if requiredChecksOnly && info.BaseBranch == "" {
-		return feedback.NewMergeFailed("cannot resolve the base branch for required checks"), nil
-	}
-	if requiredChecksOnly {
-		requiredChecks, err = client.GetRequiredStatusChecks(ctx, rc.RepoOwner, rc.RepoName, info.BaseBranch)
-		if err != nil {
-			return feedback.NewMergeFailed("failed to get required checks: " + err.Error()), nil
+	if environment.pendingCI == nil {
+		serviceOwned, ownershipErr := pendingCIServiceOwned(
+			ctx, client, rc.RepoOwner, rc.RepoName, prNum,
+		)
+		if ownershipErr != nil {
+			return feedback.NewMergeFailed(ownershipErr.Error()), nil
 		}
-		if len(requiredChecks) == 0 {
-			return feedback.NewMergeFailed("the base branch has no required status checks"), nil
+		if serviceOwned {
+			return feedback.NewMergeFailed(
+				"the service is still handing off this pending CI request; retry after its ownership label is removed",
+			), nil
 		}
 	}
 
-	// Check current CI status
-	checkStatus, err := client.GetCheckStatus(ctx, rc.RepoOwner, rc.RepoName, headRef, requiredChecks)
-	if err != nil {
-		return feedback.NewMergeFailed("failed to get CI status: " + err.Error()), nil
-	}
-
-	// If CI is already passing, merge immediately (fallback to regular merge flow)
-	if checkStatus.AllPassing {
-		return executeImmediateMerge(ctx, client, rc, bc, prNum, method, info, headRef)
-	}
-
-	// CI is pending - approve the PR and set up waiting state
-
-	// Prevent self-approval unless explicitly allowed
-	if !bc.AllowSelfApproval && info.Author == rc.CommentAuthor {
-		return feedback.NewUnauthorized(
-			rc.CommentAuthor,
-			[]string{selfApprovalNotAllowed},
-		), nil
-	}
-
-	// Check if bot already approved the PR
-	botAlreadyApproved := isBotAlreadyApproved(info, rc.BotUsername)
-
-	// Check if user already approved the PR
-	userAlreadyApproved := false
-	for _, approver := range info.ApprovedBy {
-		if approver == rc.CommentAuthor {
-			userAlreadyApproved = true
-
-			break
-		}
-	}
-
-	// Approve the PR if neither bot nor user has already approved
-	if !botAlreadyApproved && !userAlreadyApproved {
-		if err := client.ApprovePR(ctx, rc.RepoOwner, rc.RepoName, prNum); err != nil {
-			return feedback.NewApprovalFailed(err.Error()), nil
-		}
-	}
-
-	// Add hourglass reaction to indicate waiting state
-	_ = client.AddReaction(
-		ctx,
-		rc.RepoOwner,
-		rc.RepoName,
-		commentID,
-		github.ReactionPendingCI,
+	// The Action has no durable reconciler, so it evaluates immediately and
+	// leaves a label for its scheduled poll. The service always records the
+	// request and lets its reconciler enforce the green quiet period.
+	requiredChecks, err := pendingCIRequiredChecks(
+		ctx, client, rc.RepoOwner, rc.RepoName, info.BaseBranch, requiredChecksOnly,
 	)
+	if err != nil {
+		return feedback.NewMergeFailed(err.Error()), nil
+	}
+
+	if environment.pendingCI == nil {
+		checkStatus, err := client.GetCheckStatus(
+			ctx, rc.RepoOwner, rc.RepoName, headRef, requiredChecks,
+		)
+		if err != nil {
+			return feedback.NewMergeFailed("failed to get CI status: " + err.Error()), nil
+		}
+		if checkStatus.AllPassing {
+			return executeImmediateMerge(ctx, client, rc, bc, prNum, method, info, headRef)
+		}
+	}
+
+	if failure := pendingCIApprovalAllowed(rc, bc, info); failure != nil {
+		return failure, nil
+	}
 
 	// Add pending-ci label with merge method and required flag
 	label := getPendingCILabel(method, requiredChecksOnly)
-	if err := client.AddLabel(ctx, rc.RepoOwner, rc.RepoName, prNum, label); err != nil {
-		return feedback.NewMergeFailed("failed to record the pending CI request: " + err.Error()), nil
+	if environment.pendingCI == nil {
+		if failure := approvePendingCI(
+			ctx, client, rc, prNum, pendingCIApprovalRequired(rc, info),
+		); failure != nil {
+			return failure, nil
+		}
+		_ = client.AddReaction(
+			ctx, rc.RepoOwner, rc.RepoName, commentID, github.ReactionPendingCI,
+		)
+		if err := client.AddLabel(ctx, rc.RepoOwner, rc.RepoName, prNum, label); err != nil {
+			return feedback.NewMergeFailed("failed to record the pending CI request: " + err.Error()), nil
+		}
+	} else {
+		failures, coordinationErr := activatePendingCI(
+			ctx, client, environment.pendingCI, environment.pendingCIActivation,
+			pendingCIActivationRequest{
+				runtime: rc, owner: rc.RepoOwner, repository: rc.RepoName,
+				pullRequest: prNum, commentID: commentID, headSHA: headRef,
+				baseBranch: info.BaseBranch, method: method,
+				requiredChecksOnly: requiredChecksOnly, label: label,
+			},
+		)
+		if coordinationErr != nil {
+			return nil, coordinationErr
+		}
+		if failures.approval != nil {
+			return feedback.NewApprovalFailed(failures.approval.Error()), nil
+		}
+		if failures.label != nil {
+			return feedback.NewMergeFailed(
+				"failed to record the pending CI request: " + failures.label.Error(),
+			), nil
+		}
+		if failures.command != nil {
+			return nil, failures.command
+		}
+		if failures.stale {
+			return nil, nil
+		}
+		if failures.stoodDown {
+			return nil, nil
+		}
+		if failures.ambiguous {
+			return feedback.NewMergeFailed(
+				"GitHub reported multiple after-CI commands with the same timestamp; reissue the command to choose the intended merge method",
+			), nil
+		}
 	}
 
 	// Return pending feedback
@@ -1208,12 +1254,13 @@ func executeCleanup(ctx context.Context, client *github.Client, rc *RuntimeConfi
 		// Remove all bot's reactions
 		for _, reaction := range reactions {
 			if reaction.User == botUsername {
-				_ = client.RemoveReaction(
+				_ = client.RemoveReactionByUser(
 					ctx,
 					rc.RepoOwner,
 					rc.RepoName,
 					commentID,
 					reaction.Type,
+					botUsername,
 				)
 			}
 		}
@@ -1263,12 +1310,13 @@ func postCombinedFeedback(ctx context.Context, client *github.Client, rc *Runtim
 	}
 
 	// Remove eyes reaction before adding final status reaction
-	_ = client.RemoveReaction(
+	_ = client.RemoveReactionByUser(
 		ctx,
 		rc.RepoOwner,
 		rc.RepoName,
 		commentID,
 		github.ReactionEyes,
+		rc.BotUsername,
 	)
 
 	// Add reaction
@@ -1363,6 +1411,7 @@ func handleReactions(
 	bc *config.Config,
 	checker *permissions.Checker,
 	prNum, commentID int,
+	environment commandEnvironment,
 ) error {
 	// Fetch reactions - use PR reactions if commentID equals prNum (PR description),
 	// otherwise get comment reactions
@@ -1475,7 +1524,9 @@ func handleReactions(
 
 		// Handle cleanup reaction
 		if reaction.Type == github.ReactionCleanup {
-			if err := handleReactionCleanup(ctx, client, rc, bc, prNum, commentID); err != nil {
+			if err := handleReactionCleanup(
+				ctx, client, rc, bc, prNum, commentID, environment,
+			); err != nil {
 				return err
 			}
 		}
@@ -1780,11 +1831,17 @@ func handleReactionCleanup(
 	rc *RuntimeConfig,
 	bc *config.Config,
 	prNum, commentID int,
+	environment commandEnvironment,
 ) error {
-	// Execute cleanup
-	fb, err := executeCleanup(ctx, client, rc, bc, prNum, commentID)
+	fb, accepted, err := executeCoordinatedCleanup(
+		ctx, client, rc, bc, prNum, commentID,
+		"cleanup reaction", environment,
+	)
 	if err != nil {
 		return err
+	}
+	if !accepted {
+		return nil
 	}
 
 	// If cleanup failed, post error feedback
@@ -1803,6 +1860,34 @@ func handleReactionCleanup(
 	)
 
 	return nil
+}
+
+func executeCoordinatedCleanup(
+	ctx context.Context,
+	client *github.Client,
+	rc *RuntimeConfig,
+	bc *config.Config,
+	prNum, commentID int,
+	reason string,
+	environment commandEnvironment,
+) (*feedback.Feedback, bool, error) {
+	var result *feedback.Feedback
+	operation := func() error {
+		var err error
+		result, err = executeCleanup(ctx, client, rc, bc, prNum, commentID)
+
+		return err
+	}
+	if environment.pendingCI == nil {
+		err := operation()
+
+		return result, true, err
+	}
+	accepted, err := environment.pendingCI.cancelAndRun(
+		ctx, prNum, reason, operation,
+	)
+
+	return result, accepted, err
 }
 
 // postNotMergeable posts feedback when PR is not mergeable.

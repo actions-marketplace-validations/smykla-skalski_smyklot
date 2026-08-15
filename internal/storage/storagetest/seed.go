@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
 	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/config"
 )
@@ -50,6 +51,9 @@ func SeededTables() []string {
 		"app_audit_events",
 		"security_notifications",
 		"deliveries",
+		"pending_ci_requests",
+		"pending_ci_intents",
+		"pending_ci_source_revisions",
 		"user_invitations",
 		"runtime_settings",
 		"user_preferences",
@@ -87,6 +91,7 @@ func (s *seeder) run() error {
 		{"runtime settings", s.seedRuntimeSettings},
 		{"preferences", s.seedPreferences},
 		{"delivery", s.seedDelivery},
+		{"pending CI", s.seedPendingCI},
 	}
 
 	for _, step := range steps {
@@ -283,6 +288,7 @@ func (s *seeder) seedDelivery() error {
 		TargetID:           s.target.TargetID,
 		RepositoryFullName: "smykla-skalski/smyklot",
 		Event:              "issue_comment",
+		Payload:            []byte(`{"action":"created"}`),
 		ClaimedAt:          s.now.Add(7 * time.Minute),
 	})
 	if err != nil {
@@ -298,6 +304,7 @@ func (s *seeder) seedDelivery() error {
 		TargetID:           s.target.TargetID,
 		RepositoryFullName: "smykla-skalski/klaudiush",
 		Event:              "issue_comment",
+		Payload:            []byte(`{"action":"edited"}`),
 		ClaimedAt:          s.now.Add(9 * time.Minute),
 	})
 	if err != nil {
@@ -311,6 +318,44 @@ func (s *seeder) seedDelivery() error {
 		Retryable: true,
 		FailedAt:  s.now.Add(10 * time.Minute),
 	})
+}
+
+// seedPendingCI fills pending_ci_requests with one terminal exact-head request.
+func (s *seeder) seedPendingCI() error {
+	requestedAt := s.now.Add(11 * time.Minute)
+	claim, err := s.store.ClaimSourceRevision(s.ctx, pendingci.SourceRevisionRequest{
+		RepositoryID: "repo-1", PullRequest: 198, CommentID: 101,
+		Revision: requestedAt.Format(time.RFC3339Nano), Sequence: 1,
+		SourceOrder: 1,
+		EventKey:    "seed:pending-ci:source", ObservedAt: requestedAt,
+	})
+	if err != nil {
+		return err
+	}
+	if !claim.Accepted {
+		return fmt.Errorf("claim seeded pending CI source revision")
+	}
+
+	armed, err := s.store.Arm(s.ctx, pendingci.ArmRequest{
+		TargetID: s.target.TargetID, InstallationID: 77,
+		RepositoryID: "repo-1", RepositoryFullName: "smykla-skalski/smyklot",
+		PullRequest: 198, HeadSHA: "seed-head", BaseBranch: "main",
+		MergeMethod: pendingci.MergeMethodSquash, RequiredChecksOnly: true,
+		Requester: "seed-owner", SourceCommentID: 101,
+		SourceRevision: requestedAt.Format(time.RFC3339Nano),
+		SourceSequence: 1, SourceOrder: claim.SourceOrder,
+		Label: "smyklot:pending:ci:squash:required", RequestedAt: requestedAt,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.store.Finish(s.ctx, pendingci.FinishRequest{
+		ID: armed.Request.ID, ExpectedRevision: armed.Request.Revision,
+		Lifecycle: pendingci.LifecycleMerged, Reason: "seeded terminal request",
+		FinishedAt: requestedAt.Add(time.Minute),
+	})
+
+	return err
 }
 
 // derive makes a second account from the first, so the seeded people differ in

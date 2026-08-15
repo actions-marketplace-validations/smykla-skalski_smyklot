@@ -5,6 +5,8 @@ package storage
 import (
 	"context"
 	"time"
+
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
 )
 
 // AuthStore persists short-lived authentication records and panel identities.
@@ -74,6 +76,8 @@ type ConfigStore interface {
 type DeliveryStore interface {
 	ClaimDelivery(context.Context, DeliveryClaim) (DeliveryClaimResult, error)
 	AbandonDelivery(context.Context, int64) error
+	LeaseDelivery(context.Context, time.Time, time.Time) (DeliveryLeaseResult, error)
+	RetryDelivery(context.Context, DeliveryRetryChange) error
 	CompleteDelivery(context.Context, int64, time.Time) error
 	FailDelivery(context.Context, DeliveryFailureChange) error
 	RecoverRunningDeliveries(context.Context, time.Time) error
@@ -117,6 +121,7 @@ type Store interface {
 	AuditReader
 	SecurityStore
 	PreferenceStore
+	pendingci.Store
 
 	Ping(context.Context) error
 	Close() error

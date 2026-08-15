@@ -101,6 +101,18 @@ type PRInfo struct {
 	BaseBranch string
 }
 
+// PullRequestState is the live state needed by background reconciliation.
+// Unlike PRInfo it deliberately omits reviews and avoids that extra API call.
+type PullRequestState struct {
+	Number     int
+	Open       bool
+	Merged     bool
+	Draft      bool
+	HeadSHA    string
+	BaseBranch string
+	Labels     []string
+}
+
 // ReactionType represents the type of emoji reaction
 type ReactionType string
 
@@ -148,6 +160,10 @@ const (
 
 	// LabelReactionCleanup indicates cleanup was triggered via ❤️ reaction
 	LabelReactionCleanup = "smyklot:reaction-cleanup"
+
+	// LabelPendingCIServiceOwner prevents the legacy Action poller from
+	// adopting a request whose exact authorized head lives in the service.
+	LabelPendingCIServiceOwner = "smyklot:pending:ci:service"
 
 	// LabelPendingCIMerge indicates PR is waiting for CI before merge
 	LabelPendingCIMerge = "smyklot:pending:ci"

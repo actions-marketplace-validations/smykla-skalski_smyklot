@@ -56,7 +56,12 @@ func (s *server) initPanel() error {
 		AppCredentialPresent:     len(s.cfg.appPrivateKey) > 0,
 		OAuthCredentialPresent:   s.cfg.panel.clientSecret != "",
 		Assets:                   assets,
-	}, adminpanel.Dependencies{Store: s.store, Catalog: s, Users: s, Runtime: s})
+	}, adminpanel.Dependencies{
+		Store: s.store, Catalog: s, Users: s, Runtime: s,
+		PendingCI: newPendingCIControl(
+			s.store, s.pendingCICoordinator, s.pendingCI.Wake,
+		),
+	})
 	if err != nil {
 		return fmt.Errorf("initialize panel: %w", err)
 	}

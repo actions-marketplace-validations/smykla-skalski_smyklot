@@ -338,7 +338,7 @@ Smyklot can run as a long-running process instead of a per-comment workflow. One
 smyklot serve
 ```
 
-Point the GitHub App's webhook at `https://your-host/webhook`, subscribe it to **Issue comment** events, and set the same secret the process reads.
+Point the GitHub App's webhook at `https://your-host/webhook` and set the same secret the process reads. Subscribe the App to **Issue comment**, **Check run**, **Check suite**, **Status**, and **Pull request** events. The App needs read access to **Checks**, **Commit statuses**, and **Administration** in addition to its existing command permissions. Administration access lets Smyklot read the branch's required status checks. Existing installations must approve the new permissions before CI reconciliation can read live results.
 
 ### Service configuration
 
@@ -630,8 +630,7 @@ Built with:
 - [Gomega](https://github.com/onsi/gomega) - Matcher library
 - [Viper](https://github.com/spf13/viper) - Configuration management
 - [Cobra](https://github.com/spf13/cobra) - CLI framework
-- [mise](https://mise.jdx.dev/) - Tool version manager
-- [Task](https://taskfile.dev/) - Task runner
+- [mise](https://mise.jdx.dev/) - Tool version and task runner
 - [GoReleaser](https://goreleaser.com/) - Release automation
 
 ---

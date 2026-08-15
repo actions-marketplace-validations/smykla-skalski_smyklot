@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	adminpanel "github.com/smykla-skalski/smyklot/internal/panel"
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
 	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/config"
 	"github.com/smykla-skalski/smyklot/pkg/github"
@@ -106,14 +108,17 @@ type server struct {
 	store  storage.Store
 	panel  *adminpanel.Server
 
-	logger   *slog.Logger
-	logLevel *slog.LevelVar
-	redactor *logging.Redactor
+	deliveryStore deliveryState
+	logger        *slog.Logger
+	logLevel      *slog.LevelVar
+	redactor      *logging.Redactor
 
 	runtimeMu           sync.RWMutex
 	runtimeBotConfig    *config.Config
 	runtimePollInterval time.Duration
 	pollIntervalChanged chan struct{}
+	migrationRetryDelay time.Duration
+	sweepMu             sync.Mutex
 
 	registry *prometheus.Registry
 	metrics  *metrics.Metrics
@@ -130,19 +135,15 @@ type server struct {
 	configs *repoCache[repositoryConfigFile]
 	owners  *repoCache[string]
 
-	deduper *webhook.Deduper
+	deliveries           *deliveryDispatcher
+	jobs                 chan job
+	pendingCI            *pendingCIScheduler
+	pendingCICoordinator pendingCIExclusive
+	pendingCIHandoff     *pendingCIHandoff
 
-	jobs chan job
-
-	// queueMu guards jobs against being closed while a handler is mid-send.
-	//
-	// http.Server.Shutdown leaves a handler that is still running alone once
-	// its deadline passes, so a handler can reach the send after Run has moved
-	// on to closing the queue. A send on a closed channel panics rather than
-	// taking the select's default branch, which would eat the delivery and
-	// strand its claim. Senders hold this for read, the close takes it for
-	// write, so the two cannot overlap
-	queueMu     sync.RWMutex
+	// queueMu makes worker shutdown idempotent. The dispatcher is stopped before
+	// jobs is closed, so it can never send to a closed channel.
+	queueMu     sync.Mutex
 	queueClosed bool
 
 	// catalogMu orders complete GitHub catalog snapshots and the per-installation
@@ -165,10 +166,17 @@ type server struct {
 
 // job is one delivery waiting to be executed.
 type job struct {
-	event      *webhook.IssueCommentEvent
-	key        string
-	deliveryID string
-	claimID    int64
+	eventName    string
+	action       string
+	metadata     webhook.Metadata
+	pullRequest  int
+	comment      *webhook.IssueCommentEvent
+	notification *webhook.PendingCINotification
+	key          string
+	deliveryID   string
+	claimID      int64
+	attempt      int
+	payload      []byte
 
 	// logger already carries this delivery's identifiers, so every line the
 	// work produces can be traced back to the delivery that caused it
@@ -210,13 +218,13 @@ func newServer(cfg *serveConfig) (*server, error) {
 		runtimeBotConfig:    &resolvedConfig.Values,
 		runtimePollInterval: cfg.pollInterval,
 		pollIntervalChanged: make(chan struct{}, 1),
+		migrationRetryDelay: pendingCIRetryDelay,
 		registry:            registry,
 		metrics:             metrics.New(registry),
 		configs:             newRepoCache(repoConfigTTL, fetchRepositoryConfig),
 		owners:              newRepoCache(codeownersTTL, fetchCodeowners),
 		readiness:           newReadiness(),
 		failures:            newFailureLog(maxRecordedFailures),
-		deduper:             webhook.NewDeduper(webhook.DefaultTTL, webhook.DefaultMaxEntries, nil),
 		jobs:                make(chan job, queueDepth),
 		jobCtx:              context.Background(),
 		deliveryRetryCtx:    deliveryRetryCtx,
@@ -228,6 +236,25 @@ func newServer(cfg *serveConfig) (*server, error) {
 	if err := srv.initStorage(context.Background()); err != nil {
 		cancelDeliveryRetry()
 		return nil, err
+	}
+	srv.deliveryStore = srv.store
+	srv.deliveries = newDeliveryDispatcher(srv.deliveryStore, srv.jobs, srv.deliveryJob, srv.logger)
+	pendingCICoordinator := newPendingCICoordinator()
+	srv.pendingCICoordinator = pendingCICoordinator
+	pendingCIBackend := &githubPendingCIBackend{
+		server: srv, current: srv.store,
+		source: githubPendingCISourceValidator{server: srv},
+	}
+	pendingCIReconciler := newPendingCIReconciler(
+		srv.store,
+		pendingCIBackend,
+		pendingCIBackend,
+		pendingCICoordinator,
+		defaultPendingCITiming(),
+	)
+	srv.pendingCI = newPendingCIScheduler(srv.store, pendingCIReconciler, srv.logger)
+	srv.pendingCIHandoff = &pendingCIHandoff{
+		store: srv.store, coordinator: pendingCICoordinator, wake: srv.pendingCI.Wake,
 	}
 	if err := srv.initPanel(); err != nil {
 		_ = srv.store.Close()
@@ -380,7 +407,7 @@ func (s *server) serveUntilDone(ctx context.Context, listeners ...*http.Server) 
 func (s *server) startBackground(ctx context.Context) <-chan struct{} {
 	var running sync.WaitGroup
 
-	running.Add(2)
+	running.Add(3)
 
 	go func() {
 		defer running.Done()
@@ -392,6 +419,12 @@ func (s *server) startBackground(ctx context.Context) <-chan struct{} {
 		defer running.Done()
 
 		s.probeLoop(ctx)
+	}()
+
+	go func() {
+		defer running.Done()
+
+		s.pendingCI.Run(ctx)
 	}()
 
 	running.Add(1)
@@ -429,9 +462,7 @@ func (s *server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A command only ever arrives on a comment. Subscribing to more events than
-	// that is the operator's business, but nothing else has anything to execute
-	if eventName != webhook.EventIssueComment {
+	if eventName != webhook.EventIssueComment && !webhook.SupportsPendingCI(eventName) {
 		s.ignore(w, event, http.StatusNoContent)
 
 		return
@@ -449,33 +480,28 @@ func (s *server) handleDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	e, err := webhook.ParseIssueComment(body)
+	j, actionable, err := s.decodeWebhookJob(eventName, body)
 	if err != nil {
 		s.reject(ctx, w, event, "malformed payload", err)
 
 		return
 	}
 
-	if !e.Actionable() {
+	if !actionable {
 		s.ignore(w, event, http.StatusNoContent)
 
 		return
 	}
 
 	ctx = logging.With(ctx,
-		"repo", e.Repository.FullName, "pr", e.Issue.Number, "action", e.Action)
-
-	if err := validateCommentInput(runtimeConfigFor(e, s.cfg)); err != nil {
-		s.reject(ctx, w, event, "unusable payload", err)
-
-		return
-	}
-	s.dispatch(ctx, w, job{
-		event:      e,
-		key:        e.IdempotencyKey(),
-		deliveryID: deliveryID,
-		logger:     logging.From(ctx),
-	})
+		"repo", j.metadata.RepositoryFullName,
+		"pr", j.pullRequest,
+		"action", j.action,
+	)
+	j.deliveryID = deliveryID
+	j.payload = body
+	j.logger = logging.From(ctx)
+	s.dispatch(ctx, w, j)
 }
 
 // ignore answers a delivery that carried nothing to execute.
@@ -495,84 +521,46 @@ func (s *server) reject(ctx context.Context, w http.ResponseWriter, event, messa
 func (s *server) dispatch(ctx context.Context, w http.ResponseWriter, j job) {
 	// Claiming before queueing is what makes a redelivery harmless: the second
 	// copy never reaches a worker
+	j.key = deliveryClaimKey(j.eventName, j.deliveryID, j.key)
 	claim, err := s.beginDelivery(ctx, &j)
 	if err != nil {
-		s.count(webhook.EventIssueComment, metrics.OutcomeRefused)
+		s.count(j.eventName, metrics.OutcomeRefused)
 		logging.From(ctx).Error("delivery claim failed", "error", err)
 		http.Error(w, "not accepted", http.StatusServiceUnavailable)
 
 		return
 	}
 	if claim == storage.DeliveryClaimInProgress {
-		s.count(webhook.EventIssueComment, metrics.OutcomeRefused)
+		s.count(j.eventName, metrics.OutcomeDuplicate)
 		logging.From(ctx).Info("delivery is still being processed")
-		http.Error(w, "not accepted", http.StatusServiceUnavailable)
+		w.WriteHeader(http.StatusAccepted)
 
 		return
 	}
 	if claim == storage.DeliveryClaimRetained {
-		s.count(webhook.EventIssueComment, metrics.OutcomeDuplicate)
+		s.count(j.eventName, metrics.OutcomeDuplicate)
 		logging.From(ctx).Info("delivery already handled")
 		w.WriteHeader(http.StatusOK)
 
 		return
 	}
 
-	if s.enqueue(j) {
-		s.count(webhook.EventIssueComment, metrics.OutcomeAccepted)
-		w.WriteHeader(http.StatusAccepted)
-
-		return
-	}
-
-	// Releasing the claim keeps the delivery retryable rather than dropping it
-	// silently: GitHub records the refusal and a redelivery gets a fresh try
-	finalize := func(finalizationCtx context.Context) error {
-		return s.abandonDelivery(finalizationCtx, j)
-	}
-	finalizationCtx, cancelFinalization := deliveryFinalizationContext(ctx)
-	releaseErr := finalize(finalizationCtx)
-	cancelFinalization()
-	if releaseErr != nil {
-		logging.From(ctx).Error("delivery claim could not be released", "error", releaseErr)
-		s.retryDeliveryFinalization(j, "abandonment", finalize)
-	}
-	s.count(webhook.EventIssueComment, metrics.OutcomeRefused)
-	logging.From(ctx).Error("delivery not accepted, queue is full")
-	http.Error(w, "not accepted", http.StatusServiceUnavailable)
-}
-
-// enqueue offers a delivery to the workers, reporting whether they took it.
-//
-// Refuses rather than blocks when the queue is full, and refuses rather than
-// panics when the queue has already been closed for shutdown.
-func (s *server) enqueue(j job) bool {
-	s.queueMu.RLock()
-	defer s.queueMu.RUnlock()
-
-	if s.queueClosed {
-		return false
-	}
-
-	select {
-	case s.jobs <- j:
-		return true
-
-	default:
-		return false
-	}
+	s.deliveries.Wake()
+	s.count(j.eventName, metrics.OutcomeAccepted)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // closeQueue stops the workers once every in-flight send has finished.
 func (s *server) closeQueue() {
 	s.queueMu.Lock()
-	defer s.queueMu.Unlock()
-
 	if s.queueClosed {
+		s.queueMu.Unlock()
 		return
 	}
 
 	s.queueClosed = true
+	s.queueMu.Unlock()
+	s.deliveries.Stop()
 	close(s.jobs)
 }
 
@@ -588,17 +576,46 @@ func (s *server) execute(j job) {
 	started := time.Now()
 	executed := true
 	var err error
-	if s.panel != nil {
-		executed, err = s.repositoryEnabled(ctx, j.event)
-	}
-	if err == nil && executed {
-		err = s.handleIssueComment(ctx, j.event)
+	if j.comment != nil {
+		if s.panel != nil {
+			executed, err = s.repositoryEnabled(ctx, j.comment)
+		}
+		if err == nil && executed {
+			err = s.handleIssueComment(ctx, j.comment, j.key, j.claimID)
+		}
+	} else if j.notification != nil {
+		err = s.handlePendingCIWebhook(ctx, j.notification)
+	} else {
+		err = errors.New("delivery job has no executable event")
 	}
 	elapsed := time.Since(started)
 
-	s.metrics.DeliveryDuration.WithLabelValues(j.event.Action).Observe(elapsed.Seconds())
+	s.metrics.DeliveryDuration.WithLabelValues(j.action).Observe(elapsed.Seconds())
 
 	if err != nil {
+		if retryableDelivery(err, j.attempt) {
+			finalize := func(finalizationCtx context.Context) error {
+				return s.retryDelivery(finalizationCtx, j, err)
+			}
+			finalizationCtx, cancelFinalization := deliveryFinalizationContext(ctx)
+			finishErr := finalize(finalizationCtx)
+			cancelFinalization()
+			if finishErr != nil {
+				logging.From(ctx).Error("delivery retry could not be persisted", "error", finishErr)
+				s.retryDeliveryFinalization(j, "retry", finalize)
+			}
+			s.metrics.Deliveries.WithLabelValues(j.action, metrics.ResultFailure).Inc()
+			logging.From(ctx).Warn(
+				"delivery execution will be retried",
+				"error", err,
+				"duration", elapsed.String(),
+				"attempt", j.attempt,
+				"max_attempts", maxDeliveryAttempts,
+			)
+
+			return
+		}
+
 		finalize := func(finalizationCtx context.Context) error {
 			return s.failDelivery(finalizationCtx, j, err)
 		}
@@ -609,7 +626,7 @@ func (s *server) execute(j job) {
 			logging.From(ctx).Error("delivery failure could not be persisted", "error", finishErr)
 			s.retryDeliveryFinalization(j, "failure", finalize)
 		}
-		s.metrics.Deliveries.WithLabelValues(j.event.Action, metrics.ResultFailure).Inc()
+		s.metrics.Deliveries.WithLabelValues(j.action, metrics.ResultFailure).Inc()
 		s.recordFailure(j, err)
 		logging.From(ctx).Error("delivery failed", "error", err, "duration", elapsed.String())
 
@@ -626,7 +643,7 @@ func (s *server) execute(j job) {
 		logging.From(ctx).Error("delivery completion could not be persisted", "error", finishErr)
 		s.retryDeliveryFinalization(j, "success", finalize)
 	}
-	s.metrics.Deliveries.WithLabelValues(j.event.Action, metrics.ResultSuccess).Inc()
+	s.metrics.Deliveries.WithLabelValues(j.action, metrics.ResultSuccess).Inc()
 	if executed {
 		logging.From(ctx).Info("delivery executed", "duration", elapsed.String())
 	} else {
@@ -640,9 +657,9 @@ func (s *server) recordFailure(j job, cause error) {
 	s.failures.Record(deliveryFailure{
 		Time:        time.Now(),
 		DeliveryID:  j.deliveryID,
-		Repository:  j.event.Repository.FullName,
-		PullRequest: j.event.Issue.Number,
-		Action:      j.event.Action,
+		Repository:  j.metadata.RepositoryFullName,
+		PullRequest: j.pullRequest,
+		Action:      j.action,
 		Reason:      s.redactor.Error(cause),
 	})
 }
@@ -651,7 +668,12 @@ func (s *server) recordFailure(j job, cause error) {
 //
 // Everything past executeComment is the Action's own code, so a comment gets
 // the same permission check and the same feedback whichever entry point saw it.
-func (s *server) handleIssueComment(ctx context.Context, event *webhook.IssueCommentEvent) error {
+func (s *server) handleIssueComment(
+	ctx context.Context,
+	event *webhook.IssueCommentEvent,
+	eventKey string,
+	sourceOrder int64,
+) error {
 	token, err := s.tokens.InstallationToken(event.Installation.ID)
 	if err != nil {
 		return NewGitHubError(ErrGitHubAppAuth, err)
@@ -660,6 +682,37 @@ func (s *server) handleIssueComment(ctx context.Context, event *webhook.IssueCom
 	client, err := github.NewClient(token, s.cfg.apiBaseURL)
 	if err != nil {
 		return NewGitHubError(ErrGitHubClient, err)
+	}
+	current, err := issueCommentIsCurrent(ctx, client, event)
+	if err != nil {
+		return err
+	}
+	if !current {
+		logging.From(ctx).Info("ignored stale issue comment delivery")
+
+		return nil
+	}
+
+	source := pendingci.SourceRevisionRequest{
+		RepositoryID: repositoryStorageID(event.Repository.ID),
+		PullRequest:  event.Issue.Number, CommentID: event.Comment.ID,
+		Revision: event.Comment.UpdatedAt, Sequence: event.SourceSequence(),
+		SourceOrder: sourceOrder, EventKey: eventKey, ObservedAt: time.Now().UTC(),
+	}
+	claim, err := claimPendingCISource(
+		ctx, s.store, s.pendingCICoordinator, source,
+		pendingCISourceCancellation(event, source.RepositoryID),
+	)
+	if err != nil {
+		return fmt.Errorf("claim issue comment revision: %w", err)
+	}
+	if !claim.Source.Accepted {
+		logging.From(ctx).Info("ignored stale issue comment revision")
+
+		return nil
+	}
+	if claim.Cancelled != nil {
+		s.pendingCI.Wake()
 	}
 
 	rc := runtimeConfigFor(event, s.cfg)
@@ -687,7 +740,9 @@ func (s *server) handleIssueComment(ctx context.Context, event *webhook.IssueCom
 		return nil
 	}
 
-	return executeComment(ctx, client, rc, bc)
+	return executeCommentWithEnvironment(
+		ctx, client, rc, bc, s.commandEnvironment(client, event, claim.Source.SourceOrder),
+	)
 }
 
 // eventLabel reduces an event name to a value safe to use as a metric label.
@@ -696,7 +751,8 @@ func (s *server) handleIssueComment(ctx context.Context, event *webhook.IssueCom
 // let any caller that can reach the port mint a new time series per request.
 func eventLabel(name string) string {
 	switch name {
-	case webhook.EventIssueComment, webhook.EventPing:
+	case webhook.EventIssueComment, webhook.EventCheckRun, webhook.EventCheckSuite,
+		webhook.EventStatus, webhook.EventPullRequest, webhook.EventPing:
 		return name
 
 	default:

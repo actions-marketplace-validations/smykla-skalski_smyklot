@@ -6,6 +6,7 @@
 package webhook
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -28,6 +29,10 @@ const (
 const (
 	// EventIssueComment is the only event that carries a command
 	EventIssueComment = "issue_comment"
+	EventCheckRun     = "check_run"
+	EventCheckSuite   = "check_suite"
+	EventStatus       = "status"
+	EventPullRequest  = "pull_request"
 
 	// EventPing is what GitHub sends when a webhook is first configured
 	EventPing = "ping"
@@ -129,19 +134,36 @@ func (e *IssueCommentEvent) Actionable() bool {
 	return e.Comment.User.Type != userTypeBot
 }
 
-// IdempotencyKey identifies the event a delivery carries, not the delivery.
+// ContentKey identifies the event content when no delivery GUID is available.
 //
-// GitHub does not document whether X-GitHub-Delivery survives a redelivery, so
-// keying on it would be a guess. Deriving the key from the comment itself holds
-// either way: a redelivery repeats the same comment at the same revision and is
-// skipped, while a genuine edit moves updated_at and is executed.
-func (e *IssueCommentEvent) IdempotencyKey() string {
+// The service normally uses X-GitHub-Delivery, which GitHub guarantees remains
+// stable across redelivery. This fallback cannot distinguish content that
+// cycles within GitHub's second-granularity updated_at timestamp.
+func (e *IssueCommentEvent) ContentKey() string {
+	bodyDigest := sha256.Sum256([]byte(e.Comment.Body))
+
 	return fmt.Sprintf(
-		"%s:%s:%s:%d:%s",
+		"%s:%s:%s:%d:%s:%x",
 		EventIssueComment,
 		e.Action,
 		e.Repository.FullName,
 		e.Comment.ID,
 		e.Comment.UpdatedAt,
+		bodyDigest,
 	)
+}
+
+// SourceSequence orders actions that GitHub reports with the same comment
+// timestamp. An edit supersedes creation; deletion supersedes both.
+func (e *IssueCommentEvent) SourceSequence() int {
+	switch e.Action {
+	case ActionCreated:
+		return 1
+	case ActionEdited:
+		return 2
+	case ActionDeleted:
+		return 3
+	default:
+		return 0
+	}
 }

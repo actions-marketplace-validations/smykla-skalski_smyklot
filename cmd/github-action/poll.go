@@ -113,7 +113,10 @@ func runPoll(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Poll and process all open PRs
-	return pollAllPRs(ctx, client, checker, bc, repoOwner, repoName, rc.BotUsername)
+	return pollAllPRs(
+		ctx, client, checker, bc, repoOwner, repoName, rc.BotUsername,
+		commandEnvironment{}, true,
+	)
 }
 
 // loadPollBotConfig loads bot configuration from JSON config and Viper
@@ -250,6 +253,8 @@ func pollAllPRs(
 	bc *config.Config,
 	repoOwner, repoName string,
 	botUsername string,
+	environment commandEnvironment,
+	includePendingCI bool,
 ) error {
 	// Named once, here, so every line below carries the repository without
 	// each of them having to say so
@@ -263,6 +268,22 @@ func pollAllPRs(
 		return NewGitHubError(ErrGetPRs, err)
 	}
 
+	return processAllPRs(
+		ctx, client, checker, bc, repoOwner, repoName, botUsername, prs,
+		environment, includePendingCI,
+	)
+}
+
+func processAllPRs(
+	ctx context.Context,
+	client *github.Client,
+	checker *permissions.Checker,
+	bc *config.Config,
+	repoOwner, repoName, botUsername string,
+	prs []map[string]interface{},
+	environment commandEnvironment,
+	includePendingCI bool,
+) error {
 	if len(prs) == 0 {
 		logging.From(ctx).Info("no open PRs")
 
@@ -273,14 +294,20 @@ func pollAllPRs(
 
 	// Process reactions on each PR
 	for _, pr := range prs {
-		if err := processPR(ctx, client, checker, bc, repoOwner, repoName, pr); err != nil {
+		if err := processPR(
+			ctx, client, checker, bc, repoOwner, repoName, pr, environment,
+		); err != nil {
 			logging.From(ctx).Warn("failed to process PR reactions", "error", err)
 		}
 	}
 
-	// Process pending-ci PRs (waiting for CI to pass before merge)
-	if err := processPendingCIPRs(ctx, client, bc, repoOwner, repoName, prs, botUsername); err != nil {
-		logging.From(ctx).Warn("failed to process pending-CI PRs", "error", err)
+	// Only the legacy Action sweep discovers pending work from labels. The
+	// service's fallback is the durable scheduler, so terminal requests can
+	// never be resurrected by a stale label.
+	if includePendingCI {
+		if err := processPendingCIPRs(ctx, client, bc, repoOwner, repoName, prs, botUsername); err != nil {
+			logging.From(ctx).Warn("failed to process pending-CI PRs", "error", err)
+		}
 	}
 
 	logging.From(ctx).Info("polling complete")
@@ -296,6 +323,7 @@ func processPR(
 	bc *config.Config,
 	repoOwner, repoName string,
 	pr map[string]interface{},
+	environment commandEnvironment,
 ) error {
 	prNumberFloat, ok := pr["number"].(float64)
 	if !ok {
@@ -332,7 +360,9 @@ func processPR(
 
 	// Process reactions if not disabled
 	if !bc.DisableReactions {
-		if err := handleReactions(ctx, client, rc, bc, checker, prNumber, prNumber); err != nil {
+		if err := handleReactions(
+			ctx, client, rc, bc, checker, prNumber, prNumber, environment,
+		); err != nil {
 			return fmt.Errorf("failed to process reactions on PR #%d: %w", prNumber, err)
 		}
 	}
@@ -388,34 +418,61 @@ func filterPendingCIPRs(prs []map[string]interface{}) []pendingCIPR {
 	var result []pendingCIPR
 
 	for _, pr := range prs {
-		labels, ok := pr["labels"].([]interface{})
+		if pullRequestHasLabel(pr, github.LabelPendingCIServiceOwner) {
+			continue
+		}
+		labels := pendingCILabels(pr)
+		if len(labels) > 0 {
+			result = append(result, labels[0])
+		}
+	}
+
+	return result
+}
+
+func pullRequestHasLabel(pr map[string]interface{}, wanted string) bool {
+	labels, ok := pr["labels"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, item := range labels {
+		label, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
-
-		for _, l := range labels {
-			labelMap, ok := l.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			labelName, ok := labelMap["name"].(string)
-			if !ok {
-				continue
-			}
-
-			method, requiredOnly, label := parsePendingCILabel(labelName)
-			if label != "" {
-				result = append(result, pendingCIPR{
-					prData:       pr,
-					method:       method,
-					label:        label,
-					requiredOnly: requiredOnly,
-				})
-
-				break // Only one pending-ci label per PR
-			}
+		if name, _ := label["name"].(string); name == wanted {
+			return true
 		}
+	}
+
+	return false
+}
+
+// pendingCILabels returns every pending-CI label on one pull request. Action
+// polling intentionally consumes only the first; upgrade cleanup needs all of
+// them so no stale method label survives the cutover.
+func pendingCILabels(pr map[string]interface{}) []pendingCIPR {
+	labels, ok := pr["labels"].([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]pendingCIPR, 0, len(labels))
+	for _, item := range labels {
+		labelMap, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		labelName, ok := labelMap["name"].(string)
+		if !ok {
+			continue
+		}
+		method, requiredOnly, label := parsePendingCILabel(labelName)
+		if label == "" {
+			continue
+		}
+		result = append(result, pendingCIPR{
+			prData: pr, method: method, label: label, requiredOnly: requiredOnly,
+		})
 	}
 
 	return result
@@ -539,6 +596,17 @@ func handlePendingCIPassed(
 	headRef string,
 ) error {
 	logging.From(ctx).Info("CI passed, merging")
+	actionOwned, err := pendingCIActionOwns(
+		ctx, client, repoOwner, repoName, prNumber, pr.label, headRef,
+	)
+	if err != nil {
+		return err
+	}
+	if !actionOwned {
+		logging.From(ctx).Info("pending CI ownership changed; Action stands down")
+
+		return nil
+	}
 
 	if err := mergePendingPRAtHead(ctx, client, repoOwner, repoName, prNumber, pr.method, headRef); err != nil {
 		if mergeHeadChanged(err) {

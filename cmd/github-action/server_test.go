@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,8 +17,11 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/smykla-skalski/smyklot/internal/githubtest"
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
+	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/internal/storage/storagetest"
 	"github.com/smykla-skalski/smyklot/pkg/config"
+	"github.com/smykla-skalski/smyklot/pkg/github"
 	"github.com/smykla-skalski/smyklot/pkg/webhook"
 )
 
@@ -25,6 +31,7 @@ const (
 	prCommentsPath   = "/issues/42/comments"
 	deliveryOne      = "delivery-1"
 	deliveryTwo      = "delivery-2"
+	deliveryThree    = "delivery-3"
 	eventuallyWindow = 2 * time.Second
 )
 
@@ -52,9 +59,141 @@ func commandDelivery(body string) []byte {
 	return githubtest.Command(body)
 }
 
+func checkRunDelivery() []byte {
+	return []byte(`{
+  "action": "completed",
+  "check_run": {
+    "id": 501,
+    "head_sha": "pending-head",
+    "status": "completed",
+    "conclusion": "success",
+    "updated_at": "2026-08-15T12:00:00Z",
+    "pull_requests": [{"number": 42}]
+  },
+  "repository": {
+    "id": 123456,
+    "name": "smyklot",
+    "full_name": "smykla-skalski/smyklot",
+    "owner": {"login": "smykla-skalski"}
+  },
+  "installation": {"id": 987}
+}`)
+}
+
+func pendingLabelRemovedDelivery() []byte {
+	return pendingLabelRemovedDeliveryFor("smyklot:pending:ci:squash")
+}
+
+func pendingLabelRemovedDeliveryFor(label string) []byte {
+	return fmt.Appendf(nil, `{
+	  "action": "unlabeled",
+	  "number": 42,
+	  "pull_request": {
+	    "merged": false,
+	    "updated_at": "2026-08-15T12:01:00Z",
+	    "head": {"sha": "pending-head"}
+	  },
+	  "label": {"name": %q},
+	  "repository": {
+	    "id": 123456,
+	    "name": "smyklot",
+	    "full_name": "smykla-skalski/smyklot",
+	    "owner": {"login": "smykla-skalski"}
+	  },
+	  "installation": {"id": 987}
+	}`, label)
+}
+
+func pendingClosedDelivery() []byte {
+	return []byte(`{
+  "action": "closed",
+  "number": 42,
+  "pull_request": {
+    "merged": false,
+    "updated_at": "2026-08-15T12:01:00Z",
+    "head": {"sha": "pending-head"}
+  },
+  "repository": {
+    "id": 123456,
+    "name": "smyklot",
+    "full_name": "smykla-skalski/smyklot",
+    "owner": {"login": "smykla-skalski"}
+  },
+  "installation": {"id": 987}
+}`)
+}
+
+func armWebhookTestRequest(srv *server) pendingci.Request {
+	return armWebhookTestRequestWithLabel(srv, "smyklot:pending:ci:squash")
+}
+
+func armWebhookTestRequestWithLabel(srv *server, label string) pendingci.Request {
+	GinkgoHelper()
+	requestedAt := time.Now().UTC().Add(-time.Minute)
+	result, err := srv.store.Arm(GinkgoT().Context(), pendingci.ArmRequest{
+		TargetID:           installationStorageID(987),
+		InstallationID:     987,
+		RepositoryID:       repositoryStorageID(githubtest.DefaultRepoID),
+		RepositoryFullName: "smykla-skalski/smyklot",
+		PullRequest:        42,
+		HeadSHA:            "pending-head",
+		BaseBranch:         "main",
+		MergeMethod:        pendingci.MergeMethodSquash,
+		RequiredChecksOnly: false,
+		Requester:          "someone",
+		SourceCommentID:    555,
+		SourceRevision:     requestedAt.Format(time.RFC3339Nano),
+		SourceSequence:     1,
+		SourceOrder:        1,
+		Label:              label,
+		RequestedAt:        requestedAt,
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	return result.Request
+}
+
+func seedPendingCISource(stub *githubStub, request pendingci.Request, body string) {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	stub.issueComments[request.SourceCommentID] = issueCommentRecord{
+		exists: true, body: body, updatedAt: request.SourceRevision,
+		author: request.Requester, authorType: githubtest.DefaultAuthorTypeVal,
+	}
+}
+
+func startPendingCITestScheduler(srv *server) {
+	GinkgoHelper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		srv.pendingCI.Run(ctx)
+	}()
+	DeferCleanup(func() {
+		cancel()
+		<-stopped
+	})
+}
+
 // postDelivery sends a delivery to a running service, signing it unless the
 // spec supplied a signature of its own
 func postDelivery(
+	service *httptest.Server,
+	stub *githubStub,
+	event, deliveryID string,
+	body []byte,
+	signature *string,
+) *http.Response {
+	GinkgoHelper()
+	if event == webhook.EventIssueComment {
+		stub.observeIssueComment(body)
+	}
+
+	return postDeliveryWithoutCommentUpdate(service, event, deliveryID, body, signature)
+}
+
+func postDeliveryWithoutCommentUpdate(
 	service *httptest.Server,
 	event, deliveryID string,
 	body []byte,
@@ -98,11 +237,16 @@ func postDelivery(
 //
 // So this redelivers the way GitHub does, and says what went wrong when even
 // that does not get the delivery taken.
-func deliverAccepted(service *httptest.Server, event, deliveryID string, body []byte) {
+func deliverAccepted(
+	service *httptest.Server,
+	stub *githubStub,
+	event, deliveryID string,
+	body []byte,
+) {
 	GinkgoHelper()
 
 	Eventually(func() int {
-		return postDelivery(service, event, deliveryID, body, nil).StatusCode
+		return postDelivery(service, stub, event, deliveryID, body, nil).StatusCode
 	}, eventuallyWindow).Should(
 		Equal(http.StatusAccepted),
 		"the service never accepted delivery %s", deliveryID,
@@ -154,7 +298,7 @@ var _ = Describe("Webhook service [Unit]", func() {
 	post := func(event, deliveryID string, body []byte, signature *string) *http.Response {
 		GinkgoHelper()
 
-		return postDelivery(service, event, deliveryID, body, signature)
+		return postDelivery(service, stub, event, deliveryID, body, signature)
 	}
 
 	BeforeEach(func() {
@@ -207,12 +351,78 @@ var _ = Describe("Webhook service [Unit]", func() {
 				return stub.countCalls(http.MethodPost, approveReviews)
 			}, eventuallyWindow).Should(Equal(1))
 
-			Expect(post(webhook.EventIssueComment, deliveryTwo, payload, nil).StatusCode).
-				To(Equal(http.StatusOK))
+			Eventually(func() int {
+				return post(webhook.EventIssueComment, deliveryOne, payload, nil).StatusCode
+			}, eventuallyWindow).Should(Equal(http.StatusOK))
 
 			Consistently(func() int {
 				return stub.countCalls(http.MethodPost, approveReviews)
 			}, 200*time.Millisecond).Should(Equal(1))
+		})
+
+		It("should execute a same-second edit whose content cycles back", func() {
+			updatedAt := "2026-08-08T10:05:00Z"
+			post(
+				webhook.EventIssueComment, deliveryOne,
+				delivery("edited", "/approve", "User", updatedAt, true), nil,
+			)
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, approveReviews)
+			}, eventuallyWindow).Should(Equal(1))
+
+			post(
+				webhook.EventIssueComment, deliveryTwo,
+				delivery("edited", "/help", "User", updatedAt, true), nil,
+			)
+			post(
+				webhook.EventIssueComment, deliveryThree,
+				delivery("edited", "/approve", "User", updatedAt, true), nil,
+			)
+
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, approveReviews)
+			}, eventuallyWindow).Should(Equal(2))
+		})
+
+		It("should ignore an out-of-order same-second edit", func() {
+			updatedAt := "2026-08-08T10:05:00Z"
+			squash := delivery(
+				"edited", "/squash after ci", "User", updatedAt, true,
+			)
+			staleMerge := delivery(
+				"edited", "/merge after ci", "User", updatedAt, true,
+			)
+			stub.observeIssueComment(squash)
+			response := postDeliveryWithoutCommentUpdate(
+				service, webhook.EventIssueComment, deliveryOne, squash, nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+
+			Eventually(func() string {
+				request, err := srv.store.GetArmed(
+					GinkgoT().Context(), repositoryStorageID(githubtest.DefaultRepoID),
+					githubtest.DefaultPRNumber,
+				)
+				if err != nil {
+					return ""
+				}
+
+				return string(request.MergeMethod)
+			}, eventuallyWindow).Should(Equal(string(pendingci.MergeMethodSquash)))
+
+			response = postDeliveryWithoutCommentUpdate(
+				service, webhook.EventIssueComment, deliveryTwo, staleMerge, nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func() int {
+				return stub.countCalls(http.MethodGet, "/issues/comments/555")
+			}, eventuallyWindow).Should(BeNumerically(">=", 2))
+			request, err := srv.store.GetArmed(
+				GinkgoT().Context(), repositoryStorageID(githubtest.DefaultRepoID),
+				githubtest.DefaultPRNumber,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(request.MergeMethod).To(Equal(pendingci.MergeMethodSquash))
 		})
 
 		// An edit is a new instruction, not a repeat of the old one
@@ -233,6 +443,297 @@ var _ = Describe("Webhook service [Unit]", func() {
 			Eventually(func() int {
 				return stub.countCalls(http.MethodPost, approveReviews)
 			}, eventuallyWindow).Should(Equal(2))
+		})
+
+		It("should not resurrect a command from an older comment revision", func() {
+			post(
+				webhook.EventIssueComment,
+				deliveryOne,
+				delivery("edited", "not a command", "User", "2026-08-08T10:05:00Z", true),
+				nil,
+			)
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, "/app/installations/987/access_tokens")
+			}, eventuallyWindow).Should(Equal(1))
+
+			post(
+				webhook.EventIssueComment,
+				deliveryTwo,
+				delivery("created", "/squash after ci", "User", "2026-08-08T10:00:00Z", true),
+				nil,
+			)
+			Consistently(func() int {
+				return stub.countCalls(http.MethodPost, "/app/installations/987/access_tokens")
+			}, 300*time.Millisecond).Should(Equal(1))
+			_, err := srv.store.GetArmed(
+				GinkgoT().Context(), repositoryStorageID(githubtest.DefaultRepoID),
+				githubtest.DefaultPRNumber,
+			)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+		})
+
+		It("should execute an accepted command after a service restart", func() {
+			statePath := GinkgoT().TempDir() + "/restart.sqlite3"
+			endpoint = httptest.NewServer(stub)
+			DeferCleanup(endpoint.Close)
+			serviceConfig := func() *serveConfig {
+				return &serveConfig{
+					database: statePath, listenAddress: "127.0.0.1:0",
+					webhookPath: defaultWebhookPath, webhookSecret: []byte(testSecret),
+					apiBaseURL: endpoint.URL, botUsername: defaultBotUsername,
+					appClientID: "Iv1.test", appPrivateKey: githubtest.AppPrivateKey(),
+					botConfig: config.Default(), logWriter: io.Discard,
+				}
+			}
+
+			first, err := newServer(serviceConfig())
+			Expect(err).NotTo(HaveOccurred())
+			public := httptest.NewServer(first.handler())
+			response := postDelivery(
+				public, stub, webhook.EventIssueComment, deliveryOne,
+				commandDelivery("/approve"), nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			public.Close()
+			Expect(first.Close()).To(Succeed())
+
+			second, err := newServer(serviceConfig())
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(second.Close)
+			workers := second.startWorkers()
+			DeferCleanup(func() {
+				second.closeQueue()
+				workers.Wait()
+			})
+
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, approveReviews)
+			}, eventuallyWindow).Should(Equal(1))
+		})
+	})
+
+	Describe("pending CI events", func() {
+		BeforeEach(func() {
+			stub.prHead = "pending-head"
+			start(config.Default())
+		})
+
+		It("durably accepts a check event and releases a matching request lease", func() {
+			armed := armWebhookTestRequest(srv)
+			lease, err := srv.store.LeaseDue(
+				GinkgoT().Context(),
+				time.Now().UTC(),
+				time.Now().UTC().Add(time.Minute),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lease.Request.ID).To(Equal(armed.ID))
+
+			response := post(webhook.EventCheckRun, "check-delivery", checkRunDelivery(), nil)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+
+			Eventually(func(g Gomega) {
+				updated, readErr := srv.store.GetArmed(
+					GinkgoT().Context(),
+					armed.RepositoryID,
+					armed.PullRequest,
+				)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(updated.LastEventKey).To(ContainSubstring("check_run"))
+				g.Expect(updated.LeaseExpiresAt).To(BeNil())
+			}).Within(eventuallyWindow).Should(Succeed())
+		})
+
+		It("cancels an armed request when its pending label is removed", func() {
+			armed := armWebhookTestRequest(srv)
+			response := post(
+				webhook.EventPullRequest,
+				"unlabeled-delivery",
+				pendingLabelRemovedDelivery(),
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func(g Gomega) {
+				request, err := srv.store.GetArmed(
+					GinkgoT().Context(), armed.RepositoryID, armed.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(request.LastEventKey).To(ContainSubstring("pull_request"))
+			}).Within(eventuallyWindow).Should(Succeed())
+			startPendingCITestScheduler(srv)
+
+			Eventually(func() bool {
+				_, err := srv.store.GetArmed(
+					GinkgoT().Context(),
+					armed.RepositoryID,
+					armed.PullRequest,
+				)
+
+				return errors.Is(err, storage.ErrNotFound)
+			}).Within(eventuallyWindow).Should(BeTrue())
+		})
+
+		It("restores service ownership when its marker is removed", func() {
+			armed := armWebhookTestRequest(srv)
+			response := post(
+				webhook.EventPullRequest,
+				"owner-unlabeled-delivery",
+				pendingLabelRemovedDeliveryFor(github.LabelPendingCIServiceOwner),
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, "/issues/42/labels")
+			}, eventuallyWindow).Should(Equal(1))
+			Eventually(func(g Gomega) {
+				request, err := srv.store.GetArmed(
+					GinkgoT().Context(), armed.RepositoryID, armed.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(request.LastEventKey).To(ContainSubstring("pull_request"))
+			}).Within(eventuallyWindow).Should(Succeed())
+		})
+
+		It("restores service ownership when the marker webhook was missed", func() {
+			armed := armWebhookTestRequest(srv)
+			seedPendingCISource(stub, armed, "/squash after ci")
+			stub.prLabels = `[{"name":"smyklot:pending:ci:squash"}]`
+			startPendingCITestScheduler(srv)
+
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, "/issues/42/labels")
+			}, eventuallyWindow).Should(Equal(1))
+			updated, err := srv.store.GetArmed(
+				GinkgoT().Context(), armed.RepositoryID, armed.PullRequest,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.ID).To(Equal(armed.ID))
+		})
+
+		It("cancels a command edit when its webhook was missed", func() {
+			armed := armWebhookTestRequest(srv)
+			stub.prLabels = `[
+				{"name":"smyklot:pending:ci:squash"},
+				{"name":"smyklot:pending:ci:service"}
+			]`
+			seedPendingCISource(stub, armed, "do not merge")
+			startPendingCITestScheduler(srv)
+
+			Eventually(func() bool {
+				_, err := srv.store.GetArmed(
+					GinkgoT().Context(), armed.RepositoryID, armed.PullRequest,
+				)
+
+				return errors.Is(err, storage.ErrNotFound)
+			}, eventuallyWindow).Should(BeTrue())
+		})
+
+		It("restores terminal cleanup ownership on a marker webhook", func() {
+			armed := armWebhookTestRequest(srv)
+			_, err := srv.store.Finish(GinkgoT().Context(), pendingci.FinishRequest{
+				ID: armed.ID, ExpectedRevision: armed.Revision,
+				Lifecycle: pendingci.LifecycleCancelled,
+				Reason:    "test terminal cleanup", FinishedAt: time.Now().UTC(),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			response := post(
+				webhook.EventPullRequest,
+				"terminal-owner-unlabeled-delivery",
+				pendingLabelRemovedDeliveryFor(github.LabelPendingCIServiceOwner),
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func() int {
+				return stub.countCalls(http.MethodPost, "/issues/42/labels")
+			}, eventuallyWindow).Should(Equal(1))
+		})
+
+		It("repairs ownership before terminal cleanup when its webhook was missed", func() {
+			armed := armWebhookTestRequest(srv)
+			terminal, err := srv.store.Finish(
+				GinkgoT().Context(), pendingci.FinishRequest{
+					ID: armed.ID, ExpectedRevision: armed.Revision,
+					Lifecycle: pendingci.LifecycleCancelled,
+					Reason:    "test terminal cleanup", FinishedAt: time.Now().UTC(),
+				},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			stub.prLabels = `[{"name":"smyklot:pending:ci:squash"}]`
+			startPendingCITestScheduler(srv)
+
+			Eventually(func(g Gomega) {
+				cleaned, readErr := srv.store.Get(GinkgoT().Context(), terminal.ID)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(cleaned.CleanupPending).To(BeFalse())
+			}).Within(eventuallyWindow).Should(Succeed())
+			Expect(stub.countCalls(http.MethodPost, "/issues/42/labels")).To(Equal(1))
+			Expect(stub.countCalls(
+				http.MethodDelete,
+				"/issues/42/labels/smyklot:pending:ci:squash",
+			)).To(Equal(1))
+		})
+
+		It("treats a superseded label event as a hint about live state", func() {
+			armWebhookTestRequest(srv)
+			current := armWebhookTestRequestWithLabel(srv, "smyklot:pending:ci")
+			seedPendingCISource(stub, current, "/squash after ci")
+			stub.prLabels = `[{"name":"smyklot:pending:ci"}]`
+
+			response := post(
+				webhook.EventPullRequest,
+				"stale-unlabeled-delivery",
+				pendingLabelRemovedDelivery(),
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func(g Gomega) {
+				armed, err := srv.store.GetArmed(
+					GinkgoT().Context(), current.RepositoryID, current.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(armed.LastEventKey).To(ContainSubstring("pull_request"))
+			}).Within(eventuallyWindow).Should(Succeed())
+			startPendingCITestScheduler(srv)
+
+			Eventually(func(g Gomega) {
+				armed, err := srv.store.GetArmed(
+					GinkgoT().Context(), current.RepositoryID, current.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(armed.ID).To(Equal(current.ID))
+				g.Expect(armed.LastObservedState).To(Equal("no_checks"))
+			}).Within(eventuallyWindow).Should(Succeed())
+		})
+
+		It("treats a delayed close event as a hint about live state", func() {
+			current := armWebhookTestRequest(srv)
+			seedPendingCISource(stub, current, "/squash after ci")
+			stub.prLabels = `[{"name":"smyklot:pending:ci:squash"}]`
+
+			response := post(
+				webhook.EventPullRequest,
+				"stale-closed-delivery",
+				pendingClosedDelivery(),
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+			Eventually(func(g Gomega) {
+				armed, err := srv.store.GetArmed(
+					GinkgoT().Context(), current.RepositoryID, current.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(armed.LastEventKey).To(ContainSubstring("pull_request"))
+			}).Within(eventuallyWindow).Should(Succeed())
+			startPendingCITestScheduler(srv)
+
+			Eventually(func(g Gomega) {
+				armed, err := srv.store.GetArmed(
+					GinkgoT().Context(), current.RepositoryID, current.PullRequest,
+				)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(armed.ID).To(Equal(current.ID))
+				g.Expect(armed.LastObservedState).To(Equal("no_checks"))
+			}).Within(eventuallyWindow).Should(Succeed())
 		})
 	})
 
@@ -461,28 +962,27 @@ var _ = Describe("Webhook service [Unit]", func() {
 		})
 	})
 
-	// http.Server.Shutdown leaves a handler that is still running alone once its
-	// deadline passes, so a delivery can reach the queue after Run has closed
-	// it. A bare send would panic there, and the panic would skip the claim
-	// release, losing the command and blocking its redelivery for an hour
+	// http.Server.Shutdown can leave a verified handler running after workers
+	// stop. Durable acceptance must remain safe and leave the command for the
+	// next dispatcher rather than sending to a closed in-memory queue.
 	Describe("a delivery that arrives during shutdown", func() {
 		BeforeEach(func() {
 			start(config.Default())
 		})
 
-		It("should refuse it rather than panic, and leave it retryable", func() {
+		It("should persist it rather than panic or lose it", func() {
 			srv.closeQueue()
 
 			resp := post(webhook.EventIssueComment, deliveryOne, commandDelivery("/approve"), nil)
-			Expect(resp.StatusCode).To(Equal(http.StatusServiceUnavailable))
+			Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
 
 			Consistently(stub.total, 200*time.Millisecond).Should(BeZero())
-
-			// The claim was released, so GitHub redelivering after the restart
-			// gets a fresh attempt rather than "already handled"
-			Expect(srv.deduper.Begin(
-				"issue_comment:created:smykla-skalski/smyklot:555:2026-08-08T10:00:00Z",
-			)).To(BeTrue())
+			lease, err := srv.deliveryStore.LeaseDelivery(
+				GinkgoT().Context(), time.Now().UTC(), time.Now().UTC().Add(jobTimeout),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(lease.Work).NotTo(BeNil())
+			Expect(lease.Work.DeliveryID).To(Equal(deliveryOne))
 		})
 
 		It("should be safe to close the queue more than once", func() {

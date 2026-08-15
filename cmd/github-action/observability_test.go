@@ -122,7 +122,7 @@ var _ = Describe("Service observability [Unit]", func() {
 	post := func(event, deliveryID string, body []byte, signature *string) *http.Response {
 		GinkgoHelper()
 
-		return postDelivery(service, event, deliveryID, body, signature)
+		return postDelivery(service, stub, event, deliveryID, body, signature)
 	}
 
 	// read fetches an admin route and returns its status and body
@@ -313,7 +313,7 @@ var _ = Describe("Service observability [Unit]", func() {
 			}, eventuallyWindow).Should(ContainSubstring(
 				`smyklot_deliveries_total{action="created",result="success"} 1`))
 
-			post(webhook.EventIssueComment, deliveryTwo, payload, nil)
+			post(webhook.EventIssueComment, deliveryOne, payload, nil)
 
 			_, body := read(metricsPath)
 			Expect(body).To(ContainSubstring(`outcome="duplicate"} 1`))

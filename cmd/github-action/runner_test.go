@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/smykla-skalski/smyklot/internal/githubtest"
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
+	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/config"
 	"github.com/smykla-skalski/smyklot/pkg/webhook"
 )
@@ -223,7 +226,7 @@ var _ = Describe("Choosing an entry point [Unit]", func() {
 			stub.repoConfig = "runner: action\n"
 			start()
 
-			deliverAccepted(service, webhook.EventIssueComment, deliveryOne,
+			deliverAccepted(service, stub, webhook.EventIssueComment, deliveryOne,
 				commandDelivery("/approve"))
 
 			// The delivery still has to be read and the config still has to be
@@ -241,12 +244,48 @@ var _ = Describe("Choosing an entry point [Unit]", func() {
 		It("should still approve in a repository that says nothing", func() {
 			start()
 
-			deliverAccepted(service, webhook.EventIssueComment, deliveryOne,
+			deliverAccepted(service, stub, webhook.EventIssueComment, deliveryOne,
 				commandDelivery("/approve"))
 
 			Eventually(func() int {
 				return stub.countCalls(http.MethodPost, approveReviews)
 			}, eventuallyWindow).Should(Equal(1))
+		})
+
+		It("persists an after-CI command and cancels it when its source is edited", func() {
+			start()
+
+			postDelivery(service, stub, webhook.EventIssueComment, deliveryOne,
+				commandDelivery("/squash after ci"), nil)
+
+			var armed pendingci.Request
+			Eventually(func() bool {
+				var err error
+				armed, err = srv.store.GetArmed(
+					context.Background(),
+					repositoryStorageID(githubtest.DefaultRepoID),
+					githubtest.DefaultPRNumber,
+				)
+
+				return err == nil
+			}, eventuallyWindow).Should(BeTrue())
+			Expect(armed.HeadSHA).To(Equal("command-head"))
+			Expect(armed.MergeMethod).To(Equal(pendingci.MergeMethodSquash))
+			Expect(armed.Label).To(Equal("smyklot:pending:ci:squash"))
+			Expect(stub.countCalls(http.MethodGet, "/check-runs")).To(BeZero())
+
+			edited := delivery("edited", "never mind", "User", "2026-08-15T12:01:00Z", true)
+			postDelivery(service, stub, webhook.EventIssueComment, deliveryTwo, edited, nil)
+
+			Eventually(func() bool {
+				_, err := srv.store.GetArmed(
+					context.Background(),
+					repositoryStorageID(githubtest.DefaultRepoID),
+					githubtest.DefaultPRNumber,
+				)
+
+				return errors.Is(err, storage.ErrNotFound)
+			}, eventuallyWindow).Should(BeTrue())
 		})
 
 		// The rollback the documentation promises. The Action reads the file on
@@ -258,7 +297,7 @@ var _ = Describe("Choosing an entry point [Unit]", func() {
 			configTTL = time.Millisecond
 			start()
 
-			deliverAccepted(service, webhook.EventIssueComment, deliveryOne,
+			deliverAccepted(service, stub, webhook.EventIssueComment, deliveryOne,
 				commandDelivery("/approve"))
 
 			Eventually(func() int {
@@ -271,9 +310,9 @@ var _ = Describe("Choosing an entry point [Unit]", func() {
 			// its revision rather than the delivery identifier. Sending the
 			// same comment again would be refused as a repeat and the spec
 			// would pass without the file ever being read a second time
-			edited := delivery("edited", "/approve", "User", "2026-01-01T00:00:01Z", true)
+			edited := delivery("edited", "/approve", "User", "2026-08-08T10:00:01Z", true)
 
-			deliverAccepted(service, webhook.EventIssueComment, deliveryTwo, edited)
+			deliverAccepted(service, stub, webhook.EventIssueComment, deliveryTwo, edited)
 
 			Eventually(func() int {
 				return stub.countCalls(http.MethodGet, "/contents/.github/smyklot.yaml")

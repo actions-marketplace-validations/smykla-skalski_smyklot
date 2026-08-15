@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smykla-skalski/smyklot/internal/pendingci"
 	"github.com/smykla-skalski/smyklot/internal/storage"
 )
 
@@ -33,15 +34,23 @@ type RuntimeController interface {
 	ApplyRuntimeSettings(RuntimeValues)
 }
 
+// PendingCIController applies operator transitions without exposing service
+// coordination or reconciliation policy to the panel.
+type PendingCIController interface {
+	CheckNow(context.Context, pendingci.CheckNowRequest) (pendingci.Request, error)
+	Cancel(context.Context, pendingci.FinishRequest) (pendingci.Request, error)
+}
+
 // Dependencies are the service capabilities used by panel handlers.
 type Dependencies struct {
-	Store   storage.Store
-	Catalog catalogSyncer
-	Users   userResolver
-	SignIn  signInProvider
-	Random  io.Reader
-	Now     func() time.Time
-	Runtime RuntimeController
+	Store     storage.Store
+	Catalog   catalogSyncer
+	Users     userResolver
+	SignIn    signInProvider
+	Random    io.Reader
+	Now       func() time.Time
+	Runtime   RuntimeController
+	PendingCI PendingCIController
 }
 
 // Server owns the panel routes and their authenticated runtime state.
@@ -59,6 +68,7 @@ type Server struct {
 	runtimeMu  sync.RWMutex
 	runtime    RuntimeValues
 	controller RuntimeController
+	pendingCI  PendingCIController
 	// prefsMu spans each preference commit and its fan-out so announce order
 	// matches commit order (see applyPrefsPatch).
 	prefsMu sync.Mutex
@@ -70,9 +80,9 @@ func New(cfg Config, deps Dependencies) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if deps.Store == nil || deps.Catalog == nil || deps.Users == nil {
+	if deps.Store == nil || deps.Catalog == nil || deps.Users == nil || deps.PendingCI == nil {
 		return nil, fmt.Errorf(
-			"%w: storage, catalog sync, and user lookup are required",
+			"%w: storage, catalog sync, user lookup, and pending CI control are required",
 			errInvalidConfig,
 		)
 	}
@@ -118,6 +128,7 @@ func New(cfg Config, deps Dependencies) (*Server, error) {
 		events:     newEventHub(),
 		runtime:    runtime,
 		controller: deps.Runtime,
+		pendingCI:  deps.PendingCI,
 	}, nil
 }
 
@@ -182,6 +193,8 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRootRoutes(mux *http.ServeMux, base string) {
 	mux.HandleFunc("GET "+base+"/api/v1/root/installations", s.getRootInstallations)
 	mux.HandleFunc("GET "+base+"/api/v1/root/overview", s.getRootOverview)
+	mux.HandleFunc("POST "+base+"/api/v1/root/pending-ci/{request}/check", s.postRootPendingCICheck)
+	mux.HandleFunc("DELETE "+base+"/api/v1/root/pending-ci/{request}", s.deleteRootPendingCI)
 	mux.HandleFunc("GET "+base+"/api/v1/root/settings", s.getRootRuntimeSettings)
 	mux.HandleFunc("PUT "+base+"/api/v1/root/settings", s.putRootRuntimeSettings)
 	mux.HandleFunc("GET "+base+"/api/v1/root/history/{history}", s.getRootHistory)
