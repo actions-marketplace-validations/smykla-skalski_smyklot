@@ -9,10 +9,12 @@
   } from '@tanstack/svelte-table';
   import type { ColumnFiltersState, SortingState, Updater } from '@tanstack/svelte-table';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { get } from 'svelte/store';
 
   import { PanelApiError } from '../lib/api';
+  import { dialogRoute } from '../lib/dialog-route.svelte';
   import { formatDateTime, formatRelative, formatTimestamp, formatUntil } from '../lib/format';
   import { monogram } from '../lib/identity';
   import type { FilterSection } from '../lib/filter-menu';
@@ -32,6 +34,7 @@
     InvitationSort,
     InvitationStatus,
     Page,
+    PanelAccount,
     PanelInvitation,
     InstallationRole,
     PanelUser,
@@ -48,6 +51,7 @@
   import FilterMenu from './FilterMenu.svelte';
   import Icon, { type IconName } from './Icon.svelte';
   import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
+  import LoginField from './LoginField.svelte';
   import Modal from './Modal.svelte';
   import PanelHeader from './PanelHeader.svelte';
   import ResultProblem from './ResultProblem.svelte';
@@ -60,6 +64,12 @@
   type SortDirection = 'ascending' | 'descending';
   type UserSortColumn = 'name' | 'role' | 'last_login';
   type InvitationSortColumn = 'name' | 'role' | 'expires';
+  /** Name the dialogs in the address, and are the `id` each dialog carries. */
+  const ADD_DIALOG = 'add-user';
+  const ACTION_DIALOG = 'user-action';
+  const INVITATION_DIALOG = 'invitation-action';
+  const HISTORY_DIALOG = 'decision-history';
+
   type UserAction = 'suspend' | 'restore' | 'remove_access';
   type TargetRole = Exclude<InstallationRole, 'owner'>;
   type GrantedTargetRole = Exclude<TargetRole, 'none'>;
@@ -148,6 +158,7 @@
     onSection,
     fetchTargetUsers,
     addTargetUser,
+    suggestUsers,
     updateTargetUser,
     fetchTargetInvitations,
     createTargetInvitation,
@@ -167,6 +178,8 @@
     onSection: (section: ManagementSection) => void;
     fetchTargetUsers: (targetId: string, request: PanelUserPageRequest) => Promise<Page<PanelUser>>;
     addTargetUser: (targetId: string, input: AddTargetUserInput) => Promise<PanelUser>;
+    /** Completes a login as it is typed; returns none when no roster is readable. */
+    suggestUsers: (targetId: string, query: string) => Promise<PanelAccount[]>;
     updateTargetUser: (
       targetId: string,
       accountId: string,
@@ -272,7 +285,6 @@
   });
   const invitationLimit = 20;
 
-  let addModalOpen = $state(false);
   let addButton = $state<HTMLButtonElement | null>(null);
   let addReturnFocus = $state<HTMLElement | null>(null);
   let login = $state('');
@@ -324,15 +336,11 @@
     generatedLink !== '' ? 'link' : declinedLogin !== null ? 'confirm' : 'form',
   );
 
-  let actionUser = $state<PanelUser | null>(null);
-  let pendingAction = $state<UserAction | null>(null);
   let actionTrigger = $state<HTMLElement | null>(null);
   let reason = $state('');
-  let pendingInvitation = $state<PanelInvitation | null>(null);
   let invitationActionTrigger = $state<HTMLElement | null>(null);
   let invitationBusy = $state<string | null>(null);
   let savingAccount = $state<string | null>(null);
-  let historyUser = $state<PanelUser | null>(null);
   let historyTrigger = $state<HTMLElement | null>(null);
   let userResults = $state<HTMLDivElement>();
   let invitationResults = $state<HTMLDivElement>();
@@ -347,6 +355,37 @@
 
   const users = $derived(userPage?.items ?? []);
   const invitations = $derived(invitationPage?.items ?? []);
+
+  /* Every dialog here is whatever the address names, so a reload keeps the reader
+     on what they were doing and a link to it can be sent to someone else.
+
+     People are named by login and invitations by id, and both are looked up in
+     the loaded page: an address naming somebody who is not there opens nothing,
+     which is the right answer for a link to a person whose access has since been
+     removed. */
+  const addModalOpen = $derived(dialogRoute.isOpen(ADD_DIALOG));
+  const actionUser = $derived(findUser(dialogRoute.param(ACTION_DIALOG, 'user')));
+  const pendingAction = $derived(
+    actionUser === null ? null : userAction(dialogRoute.param(ACTION_DIALOG, 'action')),
+  );
+  const pendingInvitation = $derived(
+    findInvitation(dialogRoute.param(INVITATION_DIALOG, 'invitation')),
+  );
+  const historyUser = $derived(findUser(dialogRoute.param(HISTORY_DIALOG, 'user')));
+
+  function findUser(login: string | undefined): PanelUser | null {
+    if (login === undefined) return null;
+    return users.find((user) => user.account.login === login) ?? null;
+  }
+
+  function findInvitation(id: string | undefined): PanelInvitation | null {
+    if (id === undefined) return null;
+    return invitations.find((invitation) => invitation.id === id) ?? null;
+  }
+
+  function userAction(value: string | undefined): UserAction | null {
+    return value === 'suspend' || value === 'restore' || value === 'remove_access' ? value : null;
+  }
   // Initial-load failures render inside the table region with a retry; the
   // toolbar line is for action failures and refresh failures over live data.
   const failure = $derived(
@@ -730,15 +769,13 @@
   }
 
   function beginAction(user: PanelUser, action: UserAction, trigger?: HTMLElement): void {
-    actionUser = user;
-    pendingAction = action;
     actionTrigger = trigger ?? null;
     reason = '';
+    dialogRoute.open(ACTION_DIALOG, { user: user.account.login, action });
   }
 
   function cancelAction(): void {
-    actionUser = null;
-    pendingAction = null;
+    if (dialogRoute.isOpen(ACTION_DIALOG)) dialogRoute.close();
     reason = '';
   }
 
@@ -787,7 +824,7 @@
       accessMethod = 'invite';
       addIntent = 'invite';
       addReturnFocus = trigger;
-      addModalOpen = true;
+      dialogRoute.open(ADD_DIALOG);
       // Whoever opens the dialog owns its whole state. This door bypasses openAddModal, so it
       // clears the same fields rather than trusting that the last close did.
       addFailure = null;
@@ -814,7 +851,7 @@
     try {
       await revokeInvitation(targetId, invitation.id);
       feedback = `Revoked invitation for @${invitation.account.login}`;
-      pendingInvitation = null;
+      closeInvitationAction();
       await reloadInvitations();
     } catch (error) {
       actionFailure = errorMessage(error);
@@ -869,16 +906,34 @@
     accessMethod = invitingFirst ? 'invite' : 'add';
     addIntent = accessMethod;
     addReturnFocus = addButton;
-    addModalOpen = true;
+    dialogRoute.open(ADD_DIALOG);
   }
 
   function closeAddModal(): void {
-    addModalOpen = false;
-    generatedLink = '';
-    addFailure = null;
-    declinedLogin = null;
-    login = '';
+    if (dialogRoute.isOpen(ADD_DIALOG)) dialogRoute.close();
   }
+
+  function closeInvitationAction(): void {
+    if (dialogRoute.isOpen(INVITATION_DIALOG)) dialogRoute.close();
+  }
+
+  /* The dialog's own fields are cleared when it goes away, not when Cancel is
+     pressed. Back closes it without ever reaching a handler, and a half-typed
+     login left behind would be waiting inside it the next time it opened. */
+  $effect(() => {
+    if (addModalOpen) return;
+    untrack(() => {
+      generatedLink = '';
+      addFailure = null;
+      declinedLogin = null;
+      login = '';
+    });
+  });
+
+  $effect(() => {
+    if (actionUser !== null) return;
+    untrack(() => (reason = ''));
+  });
 
   function selectSection(section: string): void {
     if (section === 'users' || section === 'invitations') onSection(section);
@@ -1010,10 +1065,25 @@
     return user.status === 'banned' || user.target_access?.suspended === true;
   }
 
+  /* Which row is being held down. `:active` on a `<tr>` matches but does not
+     repaint it - the row stayed on its hover colour with `matches(':active')`
+     already true - so the state is carried as a class the row can be styled by
+     like anything else. */
+  let pressedRow = $state<string | null>(null);
+
+  function holdRow(user: PanelUser): void {
+    if (!hasDecisionHistory(user)) return;
+    pressedRow = user.account.id;
+  }
+
+  function releaseRow(): void {
+    pressedRow = null;
+  }
+
   function openHistory(user: PanelUser, trigger: HTMLElement): void {
     if (!hasDecisionHistory(user)) return;
-    historyUser = user;
     historyTrigger = trigger;
+    dialogRoute.open(HISTORY_DIALOG, { user: user.account.login });
   }
 
   function clickHistoryRow(event: MouseEvent, user: PanelUser): void {
@@ -1033,7 +1103,7 @@
   }
 
   function closeHistory(): void {
-    historyUser = null;
+    if (dialogRoute.isOpen(HISTORY_DIALOG)) dialogRoute.close();
   }
 
   function scrollResultsToTop(results: HTMLDivElement | undefined): void {
@@ -1101,7 +1171,7 @@
       void reissue(invitation, trigger);
     } else if (action === 'revoke') {
       invitationActionTrigger = trigger;
-      pendingInvitation = invitation;
+      dialogRoute.open(INVITATION_DIALOG, { invitation: invitation.id, action: 'revoke' });
     }
   }
 
@@ -1443,16 +1513,23 @@
                   {/if}
                   {#each userRenderRows as virtualRow (virtualRow.key)}
                     {@const user = userAt(virtualRow.index)}
+                    <!-- The virtualiser's offset goes in a custom property rather
+                         than straight into `transform`, so the press can add a
+                         scale to the same property without overwriting the value
+                         that puts the row on screen. -->
                     <tr
                       class:virtual-row={virtualRow.virtual}
                       class:history-row={hasDecisionHistory(user)}
+                      class:pressing={pressedRow === user.account.id}
                       style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
-                      style:transform={virtualRow.virtual
-                        ? `translateY(${virtualRow.start}px)`
-                        : undefined}
+                      style:--row-y={virtualRow.virtual ? `${virtualRow.start}px` : '0px'}
                       tabindex={hasDecisionHistory(user) ? 0 : undefined}
                       onclick={(event) => clickHistoryRow(event, user)}
                       onkeydown={(event) => keyHistoryRow(event, user)}
+                      onpointerdown={() => holdRow(user)}
+                      onpointerup={releaseRow}
+                      onpointercancel={releaseRow}
+                      onpointerleave={releaseRow}
                     >
                       <th scope="row">
                         <span class="user-identity">
@@ -1497,11 +1574,6 @@
                         {/if}
                       </td>
                       <td class="row-actions" data-label="Actions">
-                        {#if hasDecisionHistory(user)}
-                          <span class="row-go" aria-hidden="true">
-                            <Icon name="chevron-right" size={14} />
-                          </span>
-                        {/if}
                         {#if user.manageable && !readOnly}
                           <ActionMenu
                             label={`Actions for @${user.account.login}`}
@@ -1516,6 +1588,16 @@
                             aria-hidden="true"
                           >
                             <Icon name="more" size={22} />
+                          </span>
+                        {/if}
+                        <!-- After the actions rather than before, and always
+                             drawn: it points out of the row, and it is what says
+                             this row opens something where its neighbours do
+                             not. Revealing it on hover only told a reader that
+                             after they had already guessed. -->
+                        {#if hasDecisionHistory(user)}
+                          <span class="row-go" aria-hidden="true">
+                            <Icon name="chevron-right" size={14} />
                           </span>
                         {/if}
                       </td>
@@ -1791,7 +1873,7 @@
 {/snippet}
 
 <Modal
-  id="add-user"
+  id={ADD_DIALOG}
   open={addModalOpen}
   title={addStage === 'confirm'
     ? 'Invite again?'
@@ -1857,24 +1939,19 @@
       </fieldset>
 
       <div class="identity-grid" class:with-expiry={accessMethod === 'invite'}>
-        <label class="form-field login-field">
-          <span>GitHub login</span>
-          <input
-            class="text-input"
-            autocomplete="off"
-            placeholder="octocat"
-            bind:value={login}
-            required
-            data-modal-focus
-          />
-          <small class="identity-help" class:refused={namingSelf}>
-            {namingSelf
-              ? selfRefusal
-              : accessMethod === 'invite'
-                ? 'The invitation only works for this GitHub identity'
-                : 'GitHub login identifies the account to add'}
-          </small>
-        </label>
+        <LoginField
+          id="add-user-login"
+          label="GitHub login"
+          bind:value={login}
+          refused={namingSelf}
+          focusOnOpen
+          help={namingSelf
+            ? selfRefusal
+            : accessMethod === 'invite'
+              ? 'The invitation only works for this GitHub identity'
+              : 'GitHub login identifies the account to add'}
+          suggest={(query) => suggestUsers(targetId, query)}
+        />
         <label class="form-field">
           <span>Role</span>
           <span class="select-wrap">
@@ -1977,7 +2054,7 @@
 </Modal>
 
 <Modal
-  id="user-action"
+  id={ACTION_DIALOG}
   open={actionUser !== null && pendingAction !== null}
   title={actionTitle()}
   description={actionDescription()}
@@ -2021,12 +2098,12 @@
 </Modal>
 
 <Modal
-  id="invitation-action"
+  id={INVITATION_DIALOG}
   open={pendingInvitation !== null}
   title={`Revoke invitation for @${pendingInvitation?.account.login ?? ''}`}
   description="The current link will stop working immediately and the audit record will remain"
   returnFocus={invitationActionTrigger}
-  onClose={() => (pendingInvitation = null)}
+  onClose={closeInvitationAction}
 >
   <div class="confirmation-note">
     <span class="warning-mark" aria-hidden="true">!</span>
@@ -2034,11 +2111,8 @@
   </div>
 
   {#snippet footer()}
-    <button
-      class="btn btn-ghost"
-      type="button"
-      data-modal-focus
-      onclick={() => (pendingInvitation = null)}>Cancel</button
+    <button class="btn btn-ghost" type="button" data-modal-focus onclick={closeInvitationAction}
+      >Cancel</button
     >
     <button
       class="btn btn-stop"
@@ -2329,6 +2403,28 @@
 
   .user-table tbody tr.history-row {
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-standard),
+      transform var(--duration-press) var(--ease-standard);
+  }
+
+  .user-table tbody tr.history-row:hover {
+    background: var(--table-row-hover);
+  }
+
+  /* A row that can be pressed acknowledges the press the way every other control
+     in the panel does: it steps its ground and gets slightly smaller. The scale
+     goes through the same property the virtualiser uses for the row's position,
+     which is why that position is a variable - written straight into `transform`
+     it would be overwritten here and the row would jump to the top of the list. */
+  .user-table tbody tr.history-row {
+    transform: translateY(var(--row-y, 0px));
+    transform-origin: center;
+  }
+
+  .user-table tbody tr.history-row.pressing {
+    background: var(--table-row-pressed);
+    transform: translateY(var(--row-y, 0px)) scale(var(--press-scale-surface));
   }
 
   .user-table tbody tr.history-row:focus-visible {
@@ -2359,8 +2455,10 @@
       display: block;
       flex: 1;
       min-height: 0;
+      /* No `overscroll-behavior` - see the note on the same rule in
+         RepositoryList: there is nothing behind this pane to chain into, so it
+         prevented nothing and only stood between a trackpad and the platform. */
       overflow-y: auto;
-      overscroll-behavior-y: contain;
       position: relative;
     }
 
@@ -2380,18 +2478,35 @@
         minmax(7.5rem, 0.8fr) 4.25rem;
     }
 
+    /* The last row keeps its separator - see the note on the same spot in
+       RepositoryList. Overscrolling pulls the rows off the table's bottom edge,
+       and a last row with no line of its own ends in nothing while it is held
+       there. */
+
+    /* In the flow, with a height of its own - see the same rule in
+       RepositoryList. A table is as tall as its contents now, and something
+       absolutely positioned contributes none, so the message disappeared and
+       left a bare header behind it. */
     .user-table tbody tr.empty-row {
       align-content: center;
       grid-template-columns: minmax(0, 1fr);
-      inset: 0;
-      position: absolute;
+      min-height: 12rem;
     }
 
     /* The grid rows above repaint the row ground at a higher specificity than the plain
          `:hover` rule outside this block, so the pointer state has to be restated here or it never
          reaches the screen. */
-    .user-table tbody tr:not(.virtual-spacer):hover {
+    /* Not the empty state - see the same rule in RepositoryList. */
+    .user-table tbody tr:not(.virtual-spacer, .empty-row):hover {
       background: var(--table-row-hover);
+    }
+
+    /* And the press with it, for the same reason and one more: the rule above is
+       later in the sheet than the one that paints a held row, and carries the same
+       specificity, so without this the row kept its hover colour under the pointer
+       while the scale went ahead - which reads as the press half working. */
+    .user-table tbody tr.history-row.pressing {
+      background: var(--table-row-pressed);
     }
 
     .user-table tbody tr:not(.virtual-spacer) {
@@ -2416,6 +2531,9 @@
       left: 0;
       position: absolute;
       top: 0;
+      /* The offset the virtualiser measured. It arrives as a variable so a press
+         can add a scale without losing it - see .history-row.pressing. */
+      transform: translateY(var(--row-y, 0px));
     }
 
     .user-table tbody .virtual-spacer {
@@ -2526,10 +2644,14 @@
     display: inline-block;
   }
 
+  /* Always there. It is the only thing that separates a row you can open from one
+     you cannot, so hiding it until hover answered the question only for people who
+     had already asked it. Quiet enough at rest that a column of them reads as a
+     margin rather than as a column of arrows, and it leans out on hover. */
   .row-go {
     color: var(--text-muted);
     display: inline-grid;
-    opacity: 0;
+    opacity: 0.55;
     place-items: center;
     transition:
       opacity var(--duration-fast) var(--ease-standard),

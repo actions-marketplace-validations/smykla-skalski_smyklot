@@ -280,6 +280,45 @@ func (s *Store) GetSession(
 	return session, nil
 }
 
+/*
+ExtendSession pushes a live session's expiry out.
+
+Written as a conditional update rather than a read and a write. Every request a
+panel makes goes through this, and several are in flight at once, so two of them
+renewing at the same moment must not be able to disagree about the answer. The
+`WHERE` clause also refuses to revive a session that expired or was revoked
+between the read and this write, which a plain `UPDATE ... SET expires_at` would
+happily do.
+
+The expiry only ever moves forward, so a request that was slow to arrive cannot
+pull it back in.
+*/
+func (s *Store) ExtendSession(
+	ctx context.Context,
+	tokenHash string,
+	expiresAt, now time.Time,
+) error {
+	/* Nothing changed means somebody got there first with the same or a later
+	   expiry, or the session is no longer live. Neither is this caller's problem
+	   - the next request reads the session and finds out - so the row count is
+	   not examined. */
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE sessions SET expires_at = ?
+WHERE token_hash = ?
+  AND expires_at > ?
+  AND expires_at < ?
+  AND revoked_at IS NULL`,
+		expiresAt,
+		tokenHash,
+		now,
+		expiresAt,
+	); err != nil {
+		return fmt.Errorf("extend session: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteSession removes one session and terminates its Root elevation atomically.
 func (s *Store) DeleteSession(
 	ctx context.Context,

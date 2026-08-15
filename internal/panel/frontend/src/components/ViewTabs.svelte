@@ -415,7 +415,7 @@
     gap: var(--space-3);
     line-height: 1;
     min-height: 2.375rem;
-    padding: 1px var(--space-3) 0;
+    padding: 0 var(--space-3);
     position: relative;
     text-decoration: none;
     transition:
@@ -497,6 +497,10 @@
     opacity: 0.45;
   }
 
+  /* The trimmed label puts the cap band on the row's centre, so centring the icon
+     on the row centres it on the cap band, in every row, with nothing that
+     depends on which letters the label happens to contain. This is where the
+     descender nudge was found out and where it was dropped first - see app.css. */
   .navigation-icon {
     align-items: center;
     display: inline-flex;
@@ -504,10 +508,16 @@
     justify-content: center;
   }
 
+  /* Trimmed to its glyph bounds, cap height to baseline, so the box the row
+     centres IS the letters. The panel's rule everywhere else, and the reason for
+     it is here in miniature: this used to be a 1.25rem box with the text centred
+     inside it, which centres a line box - ascender to descender - and leaves the
+     letters sitting low by whatever the descender is worth in this font. The row
+     then carried a compensating 1px of top padding, which is the shape of a fix
+     that works at one size, in one font, for one row. Trimmed, `align-items:
+     center` puts the letters and the icon on the same middle at any size. */
   .navigation-label {
-    align-items: center;
-    display: inline-flex;
-    height: 1.25rem;
+    text-box: trim-both cap alphabetic;
   }
 
   .navigation-tooltip {

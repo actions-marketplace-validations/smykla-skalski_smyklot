@@ -106,10 +106,13 @@ func (f fakeCatalog) SyncCatalog(ctx context.Context) ([]string, error) {
 }
 
 type panelHarness struct {
-	server    *Server
-	store     storage.Store
-	handler   http.Handler
-	now       time.Time
+	server  *Server
+	store   storage.Store
+	handler http.Handler
+	now     time.Time
+	// clock is what the server reads, so a test can move time forward. `now`
+	// stays the moment the fixtures were built and is what they are dated with.
+	clock     *time.Time
 	runtime   *fakeRuntimeController
 	pendingCI *fakePendingCIController
 }
@@ -121,6 +124,7 @@ func newPanelHarness(t *testing.T, login string) *panelHarness {
 func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarness {
 	t.Helper()
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	clock := &now
 	store, err := open.Store(t.Context(), storagetest.Connection(t, t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +164,7 @@ func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarn
 		SyncedAt: now,
 	}
 	assets := fstest.MapFS{
-		"index.html":    &fstest.MapFile{Data: []byte(`<!doctype html><meta name="smyklot-panel-base" content="/__smyklot_panel_base__"><meta name="smyklot-panel-version" content="__smyklot_panel_version__"><meta name="smyklot-panel-service" content="__smyklot_panel_service__"><link rel="icon" href="/__smyklot_panel_base__/smyklot-avatar.png?v=__smyklot_panel_version__">`)},
+		"index.html":    &fstest.MapFile{Data: []byte(`<!doctype html><meta name="smyklot-panel-base" content="/__smyklot_panel_base__"><meta name="smyklot-panel-version" content="__smyklot_panel_version__"><meta name="smyklot-panel-service" content="__smyklot_panel_service__"><meta name="smyklot-panel-error" content="__smyklot_panel_error__"><link rel="icon" href="/__smyklot_panel_base__/smyklot-avatar.png?v=__smyklot_panel_version__"><noscript>__smyklot_panel_noscript__</noscript>`)},
 		"assets/app.js": &fstest.MapFile{Data: []byte("export {}")},
 		"sw.js":         &fstest.MapFile{Data: []byte(`const BUILD_VERSION = '__smyklot_panel_version__';`)},
 	}
@@ -199,7 +203,7 @@ func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarn
 		Users:     fakeUserResolver{account: viewer},
 		SignIn:    fakeSignIn{account: viewer},
 		Random:    random,
-		Now:       func() time.Time { return now },
+		Now:       func() time.Time { return *clock },
 		Runtime:   runtime,
 		PendingCI: pendingCIController,
 	})
@@ -208,9 +212,15 @@ func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarn
 	}
 
 	return &panelHarness{
-		server: server, store: store, handler: server.Handler(), now: now, runtime: runtime,
-		pendingCI: pendingCIController,
+		server: server, store: store, handler: server.Handler(), now: now,
+		clock: clock, runtime: runtime, pendingCI: pendingCIController,
 	}
+}
+
+// advance moves the clock the server reads, leaving the moment the fixtures were
+// dated with alone.
+func (h *panelHarness) advance(d time.Duration) {
+	*h.clock = h.clock.Add(d)
 }
 
 func seedNonOwnedInstallation(

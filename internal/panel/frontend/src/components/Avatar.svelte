@@ -25,22 +25,31 @@
   // avatar carries micro, a 32px one carries meta. Scaling by a ratio landed
   // them between sizes, which reads as a slightly different weight in every
   // list. The map lives here so no call site picks its own.
+  // A 24px circle was the smallest the map knew about, and everything under it
+  // took the same 11px: two capitals at that size fill a 20px circle to its ring
+  // and read as letters escaping it. Nano is the step below.
   const monogramFont = $derived(
-    size < 32
-      ? 'var(--font-size-micro)'
-      : size < 40
-        ? 'var(--font-size-meta)'
-        : 'var(--font-size-title)',
+    size < 24
+      ? 'var(--font-size-nano)'
+      : size < 32
+        ? 'var(--font-size-micro)'
+        : size < 40
+          ? 'var(--font-size-meta)'
+          : 'var(--font-size-title)',
   );
 </script>
 
 <!-- Decorative: the name it belongs to is always beside it, so announcing the
      picture as well would read the same account twice. The referrer is withheld
-     because the avatar host has no business learning the panel's address. -->
+     because the avatar host has no business learning the panel's address.
+
+     Sized through `style:` rather than a `style` attribute. The panel serves
+     `style-src 'self'`, which drops a parsed style attribute outright, and the
+     directive is applied through the CSSOM instead - see the note in app.css. -->
 {#if source !== null}
   <img
     class="avatar"
-    style="--avatar-size: {size}px"
+    style:--avatar-size="{size}px"
     src={source}
     alt=""
     width={size}
@@ -53,7 +62,8 @@
 {:else}
   <span
     class="avatar avatar-fallback"
-    style="--avatar-size: {size}px; --avatar-font: {monogramFont}"
+    style:--avatar-size="{size}px"
+    style:--avatar-font={monogramFont}
     aria-hidden="true"
   >
     <!-- Trimmed to the caps so the initials centre on their own ink, not on a

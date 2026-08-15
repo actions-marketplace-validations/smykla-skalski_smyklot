@@ -16,6 +16,7 @@
   import { get } from 'svelte/store';
 
   import { BOOLEAN_FIELDS } from '../lib/config';
+  import { dialogRoute } from '../lib/dialog-route.svelte';
   import type { FilterSection } from '../lib/filter-menu';
   import { formatRelative, formatTimestamp } from '../lib/format';
   import {
@@ -60,11 +61,13 @@
   import SearchField from './SearchField.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
-  import { inkAlign } from '../lib/ink-align';
 
   type RepositoryEnablement = 'inherit' | 'enabled' | 'disabled';
   type RepositoryFailure = { message: string; source: RepositoryFailureSource };
   type RepositoryDetailSection = 'file' | 'behavior' | 'commands';
+
+  /** Names the dialog in the address, and is the `id` the dialog carries. */
+  const REPOSITORY_DIALOG = 'repository-settings';
 
   const REPOSITORY_VALUE_OPTIONS = [
     { value: 'enabled', label: 'Enabled' },
@@ -241,8 +244,6 @@
   let details = $state<Record<string, RepositoryDetail>>({});
   let failures = $state<Record<string, RepositoryFailure>>({});
   let pendingEnablement = $state<Record<string, RepositoryEnablement>>({});
-  let detailSections = $state<Record<string, RepositoryDetailSection>>({});
-  let activeRepository = $state<RepositorySummary | null>(null);
   let repositoryReturnFocus = $state<HTMLElement | null>(null);
   const visibleDetails = new SvelteSet<string>();
   const working = new SvelteSet<string>();
@@ -252,8 +253,42 @@
   let observedRefreshVersion: number | undefined;
   let repositoryResults = $state<HTMLDivElement>();
   let repositoryScroll = $state<HTMLTableSectionElement>();
+  /** Names learned from a repository read by name, so the id is known next time. */
+  let namedRepositories = $state<Record<string, string>>({});
 
   const repositories = $derived(page?.items ?? []);
+
+  /* The dialog is whatever the address names, not a click the component
+     remembers, so a reload lands back on the repository that was open.
+
+     It is named the way a person would name it - `api-gateway`, not an id - and
+     the detail read accepts either, so a repository further down a paginated list
+     still opens on a cold load without first finding it in the list. That
+     response carries the summary the header needs. Names are unique within an
+     installation and every read is scoped to one, so two organizations owning a
+     repository of the same name never meet. */
+  const activeRepositoryKey = $derived(dialogRoute.param(REPOSITORY_DIALOG, 'repository') ?? null);
+
+  /* The address carries a name; everything inside this component is keyed by id.
+     The name is resolved from the loaded page when it is there, and otherwise
+     from the detail that reading it by name returned. */
+  const activeRepositoryId = $derived.by(() => {
+    const key = activeRepositoryKey;
+    if (key === null) return null;
+
+    return (
+      repositories.find((repository) => repository.name === key)?.id ??
+      namedRepositories[key] ??
+      null
+    );
+  });
+  const activeRepository = $derived(
+    activeRepositoryId === null
+      ? null
+      : (repositories.find((repository) => repository.id === activeRepositoryId) ??
+          details[activeRepositoryId]?.repository ??
+          null),
+  );
   const settingSelection = $derived(
     settingFilter.mode === 'keys' ? settingFilter.keys : [settingFilter.mode],
   );
@@ -509,66 +544,91 @@
     });
   }
 
-  async function openRepository(
-    repository: RepositorySummary,
-    trigger: HTMLElement,
-  ): Promise<void> {
-    activeRepository = repository;
+  function openRepository(repository: RepositorySummary, trigger: HTMLElement): void {
     repositoryReturnFocus = trigger;
-    visibleDetails.clear();
-    visibleDetails.add(repository.id);
-    if (details[repository.id] === undefined) {
-      await refresh(repository.id);
-      if (activeRepository?.id !== repository.id) return;
-      await tick();
-      const section = detailSection(repository);
-      document
-        .querySelector<HTMLButtonElement>(`#repository-${repository.id}-${section}-tab`)
-        ?.focus();
-    }
+    dialogRoute.open(REPOSITORY_DIALOG, { repository: repository.name });
   }
 
   function closeRepository(): void {
-    if (activeRepository !== null) visibleDetails.delete(activeRepository.id);
-    activeRepository = null;
+    dialogRoute.close();
   }
 
+  /* Whatever the address names has to be on screen, however it got there: a click
+     on a row, the Back button, or a link opened cold in a new window. Watching the
+     address rather than acting inside the click handler is what makes the last of
+     those work, since no click happened. */
+  $effect(() => {
+    const key = activeRepositoryKey;
+    const repositoryId = activeRepositoryId;
+    if (key === null) {
+      untrack(() => visibleDetails.clear());
+      return;
+    }
+
+    untrack(() => {
+      /* Nothing in the loaded page matches the name, which is what a link opened
+         cold looks like. Reading it by name settles both the detail and the id
+         the rest of this component works in. */
+      if (repositoryId === null) {
+        void loadDetail(key)
+          .then((detail) => {
+            namedRepositories = { ...namedRepositories, [key]: detail.repository.id };
+          })
+          .catch(() => {
+            /* A name nothing answers to leaves the dialog shut over the list,
+               which is the truthful outcome for a link to a repository that is
+               gone or was never there. */
+          });
+        return;
+      }
+
+      visibleDetails.clear();
+      visibleDetails.add(repositoryId);
+      if (details[repositoryId] !== undefined) return;
+      void refresh(repositoryId).then(async () => {
+        if (activeRepositoryId !== repositoryId) return;
+        await tick();
+        /* The switch only exists once the detail is in, so this is the first
+           moment there is anything inside the dialog to land on. */
+        document
+          .querySelector<HTMLInputElement>(
+            `input[name="repository-${repositoryId}-section"]:checked`,
+          )
+          ?.focus();
+      });
+    });
+  });
+
+  /* The pane the dialog is showing rides the address too, so a link points at the
+     commands a colleague was asked to look at rather than at the file pane
+     everyone starts on. It replaces rather than pushes: flipping the switch is
+     part of reading one repository, not a second place to come back from. */
   function detailSection(repository: RepositorySummary): RepositoryDetailSection {
-    // The file tab leads: it orients the dialog around the repository's own
+    if (repository.id === activeRepositoryId) {
+      const requested = dialogRoute.param(REPOSITORY_DIALOG, 'section');
+      if (requested !== undefined && isDetailSection(requested)) return requested;
+    }
+    // The file section leads: it orients the dialog around the repository's own
     // configuration before overrides.
-    return detailSections[repository.id] ?? 'file';
+    return 'file';
   }
 
-  function selectDetailSection(repositoryId: string, section: RepositoryDetailSection): void {
-    detailSections = { ...detailSections, [repositoryId]: section };
+  function isDetailSection(value: string): value is RepositoryDetailSection {
+    return value === 'file' || value === 'behavior' || value === 'commands';
   }
 
-  function moveDetailSection(
-    event: KeyboardEvent,
-    repositoryId: string,
+  function selectDetailSection(
+    repository: RepositorySummary,
     section: RepositoryDetailSection,
   ): void {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const sections: readonly RepositoryDetailSection[] = ['file', 'behavior', 'commands'];
-    const current = sections.indexOf(section);
-    let next = current;
-    if (event.key === 'Home') next = 0;
-    if (event.key === 'End') next = sections.length - 1;
-    if (event.key === 'ArrowRight') {
-      next = (current + 1) % sections.length;
-    }
-    if (event.key === 'ArrowLeft') {
-      next = (current - 1 + sections.length) % sections.length;
-    }
-    const selected = sections[next];
-    if (selected === undefined) return;
-    selectDetailSection(repositoryId, selected);
-    queueMicrotask(() =>
-      document
-        .querySelector<HTMLButtonElement>(`#repository-${repositoryId}-${selected}-tab`)
-        ?.focus(),
-    );
+    dialogRoute.update(REPOSITORY_DIALOG, { repository: repository.name, section });
+  }
+
+  /* Names the pane for the reader, now that the switch above it is a control with
+     its own label rather than a strip of tabs the pane could point back at. */
+  function sectionLabel(section: RepositoryDetailSection): string {
+    if (section === 'file') return 'File';
+    return section === 'behavior' ? 'Behavior' : 'Commands';
   }
 
   /* The repository-file pane lists the behavior settings this repository
@@ -647,9 +707,16 @@
     }
   }
 
-  async function loadDetail(repositoryId: string): Promise<RepositoryDetail> {
-    const detail = await onLoad(repositoryId);
-    details = { ...details, [repositoryId]: detail };
+  /**
+   * Reads one repository, by id or by the name an address carries.
+   *
+   * Stored under the id the answer carries rather than under what was asked for,
+   * so everything else in this component - the failures, the pending refreshes,
+   * the open set - keeps one key whichever way the repository was reached.
+   */
+  async function loadDetail(repository: string): Promise<RepositoryDetail> {
+    const detail = await onLoad(repository);
+    details = { ...details, [detail.repository.id]: detail };
     return detail;
   }
 
@@ -909,9 +976,9 @@
                   >
                 </button>
               </th>
-              <th class="filterable-heading">
+              <th class="filterable-heading enablement-heading">
                 <div class="table-heading-layout">
-                  <span use:inkAlign class="heading-with-help">
+                  <span class="heading-with-help">
                     <span class="cap-trim">Enablement</span>
                     <HelpTip
                       id="repository-enablement-help"
@@ -935,12 +1002,18 @@
                   />
                 </div>
               </th>
+              <th class="action-heading">
+                <!-- The column has a heading for the row's action, said only to a
+                     screen reader: a word over a column of identical buttons is
+                     noise to anyone who can see them. -->
+                <span class="visually-hidden">Settings</span>
+              </th>
             </tr>
           </thead>
           <tbody bind:this={repositoryScroll} data-panel-scroll>
             {#if repositories.length === 0}
               <tr class="empty-row">
-                <td colspan="4">
+                <td colspan="5">
                   <TableEmptyState
                     title={hasFilters ? 'No repositories match' : 'No repositories installed'}
                     description={hasFilters
@@ -957,7 +1030,7 @@
                 class="virtual-spacer"
                 aria-hidden="true"
                 style:height={`${$repositoryVirtualizer.getTotalSize()}px`}
-                ><td colspan="4"></td></tr
+                ><td colspan="5"></td></tr
               >
             {/if}
             {#each repositoryRenderRows as virtualRow (virtualRow.key)}
@@ -971,22 +1044,19 @@
                   : undefined}
               >
                 <td>
-                  <button
-                    class="expand"
-                    aria-haspopup="dialog"
-                    aria-label={`Configure ${repository.full_name}`}
-                    onclick={(event) => void openRepository(repository, event.currentTarget)}
-                  >
-                    <span class="repo-copy">
-                      <strong>{repository.name}</strong>
-                      {#if repository.config_override_count > 0}
-                        <span class="override-chip">
-                          {repository.config_override_count}
-                          {repository.config_override_count === 1 ? 'override' : 'overrides'}
-                        </span>
-                      {/if}
-                    </span>
-                  </button>
+                  <!-- The name is a name. What opens the dialog is the button at
+                       the end of the row, where a reader looks for something to
+                       press, rather than a cell that gives no sign of being one
+                       until the pointer is already on it. -->
+                  <span class="repo-copy">
+                    <strong>{repository.name}</strong>
+                    {#if repository.config_override_count > 0}
+                      <span class="override-chip">
+                        {repository.config_override_count}
+                        {repository.config_override_count === 1 ? 'override' : 'overrides'}
+                      </span>
+                    {/if}
+                  </span>
                 </td>
                 <td data-label="File state">
                   <FileStatusIndicator
@@ -1023,11 +1093,21 @@
                     />
                   {/if}
                 </td>
+                <td class="row-action" data-label="Settings">
+                  <button
+                    class="btn btn-row btn-quiet configure"
+                    aria-haspopup="dialog"
+                    aria-label={`Configure ${repository.full_name}`}
+                    onclick={(event) => openRepository(repository, event.currentTarget)}
+                  >
+                    <span class="cap-trim">Configure</span>
+                  </button>
+                </td>
               </tr>
 
               {#if repositoryFailure !== undefined && activeRepository?.id !== repository.id}
                 <tr class="visually-hidden">
-                  <td colspan="4"><span role="alert">{repositoryFailure.message}</span></td>
+                  <td colspan="5"><span role="alert">{repositoryFailure.message}</span></td>
                 </tr>
               {/if}
             {/each}
@@ -1058,13 +1138,49 @@
   {@const repositoryFailure = failures[repository.id]}
   {@const activeSection = detailSection(repository)}
   <Modal
-    id="repository-settings"
+    id={REPOSITORY_DIALOG}
     open
     title={repository.name}
     description="Repository settings override workspace defaults and repository-file values"
     returnFocus={repositoryReturnFocus}
     onClose={closeRepository}
   >
+    <!-- Beside the title, where every other switch in the product sits, and the
+         product's own switch rather than a set of buttons dressed as one. -->
+    {#snippet headerExtra()}
+      {#if detail !== undefined}
+        <SegmentedControl
+          name="repository-{repository.id}-section"
+          label="Settings for {repository.name}"
+          compact
+          options={[
+            {
+              value: 'file',
+              label: 'File',
+              badge: detail.config_file_error === undefined ? undefined : 1,
+            },
+            {
+              value: 'behavior',
+              label: 'Behavior',
+              badge:
+                configSectionCount(detail, 'behavior') === 0
+                  ? undefined
+                  : configSectionCount(detail, 'behavior'),
+            },
+            {
+              value: 'commands',
+              label: 'Commands',
+              badge:
+                configSectionCount(detail, 'commands') === 0
+                  ? undefined
+                  : configSectionCount(detail, 'commands'),
+            },
+          ]}
+          value={detailSection(repository)}
+          onSelect={(next) => selectDetailSection(repository, next as RepositoryDetailSection)}
+        />
+      {/if}
+    {/snippet}
     {#if repositoryFailure !== undefined}
       <p class="form-error repository-modal-error" role="alert">{repositoryFailure.message}</p>
     {/if}
@@ -1073,70 +1189,13 @@
       {#if detail === undefined}
         <p class="detail-loading dim">Reading repository settings…</p>
       {:else}
-        {@const behaviorCount = configSectionCount(detail, 'behavior')}
-        {@const commandCount = configSectionCount(detail, 'commands')}
-        <div
-          class="repository-detail-navigation"
-          aria-label="Settings for {repository.name}"
-          role="tablist"
-          aria-orientation="horizontal"
-        >
-          <button
-            id="repository-{repository.id}-file-tab"
-            class:active={activeSection === 'file'}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === 'file'}
-            aria-controls="repository-{repository.id}-detail-panel"
-            tabindex={activeSection === 'file' ? 0 : -1}
-            data-modal-focus
-            onclick={() => selectDetailSection(repository.id, 'file')}
-            onkeydown={(event) => moveDetailSection(event, repository.id, 'file')}
-          >
-            <span>Repository file</span>
-            {#if detail.config_file_error !== undefined}
-              <span class="detail-count problem-count" aria-label="1 file error">1</span>
-            {/if}
-          </button>
-          <button
-            id="repository-{repository.id}-behavior-tab"
-            class:active={activeSection === 'behavior'}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === 'behavior'}
-            aria-controls="repository-{repository.id}-detail-panel"
-            tabindex={activeSection === 'behavior' ? 0 : -1}
-            onclick={() => selectDetailSection(repository.id, 'behavior')}
-            onkeydown={(event) => moveDetailSection(event, repository.id, 'behavior')}
-          >
-            <span>Behavior</span>
-            {#if behaviorCount > 0}
-              <span class="detail-count">{behaviorCount}</span>
-            {/if}
-          </button>
-          <button
-            id="repository-{repository.id}-commands-tab"
-            class:active={activeSection === 'commands'}
-            type="button"
-            role="tab"
-            aria-selected={activeSection === 'commands'}
-            aria-controls="repository-{repository.id}-detail-panel"
-            tabindex={activeSection === 'commands' ? 0 : -1}
-            onclick={() => selectDetailSection(repository.id, 'commands')}
-            onkeydown={(event) => moveDetailSection(event, repository.id, 'commands')}
-          >
-            <span>Commands</span>
-            {#if commandCount > 0}
-              <span class="detail-count">{commandCount}</span>
-            {/if}
-          </button>
-        </div>
-
+        <!-- Keyboard focus lets a reader scroll a pane taller than the dialog. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
           class="repository-detail-content"
           id="repository-{repository.id}-detail-panel"
-          role="tabpanel"
-          aria-labelledby="repository-{repository.id}-{activeSection}-tab"
+          role="group"
+          aria-label="{sectionLabel(activeSection)} settings for {repository.name}"
           tabindex="0"
         >
           {#if activeSection === 'file'}
@@ -1164,7 +1223,7 @@
                 </Chip>
               </div>
               <div class="override-row">
-                <span use:inkAlign class="o-label">
+                <span class="o-label">
                   <!-- Trimmed, so the words centre against the 18px help slot
                        on their caps rather than on a taller line box. -->
                   <span class="cap-trim">Bypass file</span>
@@ -1232,6 +1291,13 @@
 <style>
   .repository-panel {
     --local-control-height: var(--control-height-compact);
+
+    /* What the two control columns actually measure: the inheritance marker plus
+       the Enabled/Disabled switch, and the Configure button, each with the
+       cell's own left and right padding. */
+    --enablement-column: 13.25rem;
+    --action-column: 6.8125rem;
+
     background: transparent;
     border: 0;
     border-radius: 0;
@@ -1505,17 +1571,31 @@
       display: block;
       flex: 1;
       min-height: 0;
+      /* No `overscroll-behavior`. It was here to stop a scroll reaching the end
+         of this table from carrying on into the page, but the shell is exactly
+         one viewport tall and the panes around this one are clipped, so there is
+         nothing behind it to chain into - it prevented nothing and was the only
+         thing in the panel with an opinion about what happens at a scroll
+         boundary. The platform's own behaviour, including the elastic overscroll
+         a trackpad expects at the end of a list, is the default. */
       overflow-y: auto;
-      overscroll-behavior-y: contain;
       position: relative;
     }
 
     .repositories thead tr,
     .repositories tbody tr {
       display: grid;
-      /* The approved catalog's 2fr 1fr 1.4fr 1.6fr, as percentages of the 6fr
-         total so they hold at any table width. */
-      grid-template-columns: 33.333% 16.667% 23.333% 26.667%;
+      /* The two columns on the right hold controls of a known size, so they get
+         exactly that and no share of the table: a fraction left the switch and
+         the button against a gap that grew with the window. Everything else goes
+         to the three text columns, in the approved catalog's 2:1:1.4.
+
+         Fixed lengths rather than `max-content`: every row is its own grid, so a
+         content-sized track is measured per row and the header stopped agreeing
+         with the body about where a column began. The two numbers are the
+         controls' own widths plus the cell padding, and
+         tests/table-columns.test.ts holds them to that. */
+      grid-template-columns: 2fr 1fr 1.4fr var(--enablement-column) var(--action-column);
       width: 100%;
     }
 
@@ -1526,7 +1606,11 @@
     /* The grid rows above repaint the row ground at a higher specificity than the plain
          `:hover` rule outside this block, so the pointer state has to be restated here or it never
          reaches the screen. */
-    .repositories tbody tr:not(.virtual-spacer):hover {
+    /* Not the empty state: a row hover says "this row is a thing you can act on",
+       and a message explaining that there are no rows is not one. It also put the
+       message's text on the hover ground, which is not a pairing any contrast was
+       chosen for. */
+    .repositories tbody tr:not(.virtual-spacer, .empty-row):hover {
       background: var(--table-row-hover);
     }
 
@@ -1543,17 +1627,28 @@
       display: flex;
     }
 
+    /* The last row keeps its separator, on purpose, even though it lands on the
+       table's own bottom edge and the two hairlines read as one slightly thick
+       line. Overscrolling pulls the rows away from that edge, and a last row
+       with no line of its own ends in nothing while it is held there - an open
+       table with its contents hanging out of it. A doubled hairline at rest is
+       the smaller of the two faults. */
+
     .repositories tbody td:last-child {
       /* The enablement control sits at the column start, under the header
          label — same left alignment as every other column. */
       justify-content: flex-start;
     }
 
+    /* In the flow, with a height of its own. It used to be stretched across the
+       tbody with `inset: 0`, which worked while the table always filled the
+       pane; now that a table is as tall as its contents, the contents of an
+       empty one is this, and something absolutely positioned contributes no
+       height at all - the message vanished and left a bare header. */
     .repositories tbody tr.empty-row {
       align-content: center;
       grid-template-columns: minmax(0, 1fr);
-      inset: 0;
-      position: absolute;
+      min-height: 12rem;
     }
 
     .repositories tbody .virtual-row {
@@ -1579,34 +1674,44 @@
     background: var(--table-row-hover);
   }
 
-  .expand {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    border-radius: var(--radius-control);
-    color: var(--text-primary);
-    display: flex;
-    height: var(--control-height-compact);
-    margin: 0;
-    min-width: 0;
-    padding: 0;
-    text-align: left;
-    width: 100%;
+  /* The row's action, at the end of the row where a reader looks for one. */
+  .row-action {
+    justify-content: flex-end;
   }
 
-  .expand:hover {
-    background: var(--interactive-hover);
+  /* Quiet until it is wanted. One of these in every row, and drawn as a button
+     each time, they became a column of frames competing with the data they sit
+     beside. It carries its word only, and takes its edges when a pointer is on
+     it or a keyboard reaches it. */
+  .configure {
+    border-color: transparent;
   }
 
-  .expand:focus-visible {
-    background: transparent;
-    outline: 0;
+  .configure:hover:not(:disabled),
+  .configure:focus-visible {
+    background: var(--surface-control);
+    border-color: var(--control-border);
+    color: var(--text);
+  }
+
+  /* The word starts where the controls under it start. Every cell in this column
+     opens with an inheritance marker, so the label indents past one: aligned to
+     the cell's edge instead, it sat a chain's width to the left of everything it
+     names. */
+  .enablement-heading {
+    padding-inline-start: calc(var(--space-3) + var(--inherit-marker-offset));
   }
 
   /* Name and chip are siblings on one centred row, so the chip's box and the
      name's caps share a centre line rather than an inline baseline. */
+  /* Baselines, not box centres. The name and the badge are two runs of text on one
+     line, and two runs of text sit on a shared baseline - centring their boxes
+     instead lines up their middles, which for two different sizes (13px name,
+     12px badge, cap heights 9.69 and 8.76) puts the smaller one's baseline above
+     the larger one's and the badge reads as floating. Measured: 0.36px of baseline
+     drift centred, 0.00 here. */
   .repo-copy {
-    align-items: center;
+    align-items: baseline;
     display: flex;
     gap: var(--space-2);
     min-width: 0;
@@ -1674,73 +1779,6 @@
     padding: var(--space-4);
   }
 
-  /* The shared pill-nav pattern (same as the Root installation detail tabs) —
-     the app's one internal-tab treatment, replacing the old underline bar. */
-  .repository-detail-navigation {
-    background: color-mix(in srgb, var(--brand-action) 4%, var(--surface-inset));
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-control);
-    display: flex;
-    flex-direction: row;
-    gap: var(--space-1);
-    overflow-x: auto;
-    padding: var(--space-1);
-  }
-
-  .repository-detail-navigation button {
-    align-items: center;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    color: var(--text-secondary);
-    display: flex;
-    flex: 0 0 auto;
-    font-size: var(--font-size-meta);
-    font-weight: 650;
-    gap: 0.4rem;
-    justify-content: center;
-    line-height: 1;
-    padding: 0.4375rem var(--space-3);
-    text-align: left;
-    text-box: trim-both cap alphabetic;
-    white-space: nowrap;
-  }
-
-  .repository-detail-navigation button:hover,
-  .repository-detail-navigation button:focus-visible {
-    background: var(--interactive-hover);
-    color: var(--text-primary);
-  }
-
-  .repository-detail-navigation button.active {
-    background: var(--surface-base);
-    border-color: color-mix(in srgb, var(--brand-action) 30%, var(--border-subtle));
-    box-shadow: 0 1px 2px var(--shadow-color);
-    color: var(--brand-action-text);
-  }
-
-  /* Trimmed to the digits, so the badge is a 15px pill rather than an 18px
-     circle — and the tab row it sits in stands 31px like the mock instead of
-     34px. Untrimmed, the badge was the tallest thing in the row and set its
-     height on its own. */
-  .detail-count {
-    background: var(--brand-action-tint);
-    border-radius: 999px;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentcolor 30%, transparent);
-    color: var(--brand-action-text);
-    display: inline-block;
-    font: 700 0.625rem / 1 var(--mono);
-    font-variant-numeric: tabular-nums;
-    min-width: 1ch;
-    padding: 4px 6px;
-    text-align: center;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .problem-count {
-    color: var(--danger);
-  }
-
   /* The dialog is titled by the repository name — code, so it sets in mono.
      The Modal stamps its id on the h2 itself as `<modal id>-title`. */
   :global(#repository-settings-title) {
@@ -1766,13 +1804,24 @@
     padding: var(--space-3) var(--space-4);
   }
 
+  /* In a rounded plate of its own, like every other symbol that stands beside a
+     title inside a card - the installation prompt's `+`, the add dialog's
+     workspace mark. Bare, it was a 14px glyph floating in the card's padding
+     with nothing to sit in, and it read as an icon that had lost its button.
+
+     The plate is keyed to the glyph's own colour, so it carries the file's
+     state - valid, invalid, bypassed - rather than a fixed brand tint. */
   .file-card-icon {
+    align-items: center;
+    background: color-mix(in srgb, currentcolor 10%, transparent);
+    border: 1px solid color-mix(in srgb, currentcolor 24%, transparent);
+    border-radius: var(--radius-control);
     color: var(--dim);
-    display: grid;
+    display: inline-flex;
     flex: none;
-    height: 1.125rem;
-    place-items: center;
-    width: 1.125rem;
+    height: 2.25rem;
+    justify-content: center;
+    width: 2.25rem;
   }
 
   .file-card-icon.status-valid {

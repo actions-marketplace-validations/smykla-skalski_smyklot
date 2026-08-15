@@ -74,6 +74,33 @@ const VIEWER: PanelAccount = {
   avatar_url: null,
 };
 
+/**
+ * Stands in for the organization roster the service reads from GitHub.
+ *
+ * Deliberately holds names that overlap on different parts - a login starting
+ * with the query, a display name starting with it, and one that only contains it
+ * - so the ordering the panel applies is visible while working on it.
+ */
+const MOCK_ORGANIZATION_ROSTER: PanelAccount[] = [
+  { login: 'marta-w', display_name: 'Marta Wisniewska' },
+  { login: 'marek', display_name: 'Marek Kowalski' },
+  { login: 'kasia', display_name: 'Katarzyna Marcinkowska' },
+  { login: 'tomasz', display_name: 'Tomasz Nowak' },
+  { login: 'piotr-z', display_name: 'Piotr Zielinski' },
+  { login: 'agnieszka', display_name: 'Agnieszka Lewandowska' },
+  { login: 'jakub', display_name: 'Jakub Wojcik' },
+  { login: 'zofia', display_name: 'Zofia Kaminska' },
+  { login: 'michal', display_name: 'Michal Dabrowski' },
+  { login: 'ola', display_name: 'Aleksandra Mazur' },
+].map((person, index) => ({
+  id: `roster-${index + 1}`,
+  provider: 'github:https://api.github.com',
+  subject_id: `${9000 + index}`,
+  login: person.login,
+  display_name: person.display_name,
+  avatar_url: null,
+}));
+
 const OWNER_CAPABILITIES = {
   read: true,
   write: true,
@@ -116,6 +143,8 @@ interface MockInvitation extends PanelInvitation {
 interface MockState {
   signedIn: boolean;
   forceFailure: boolean;
+  /** `?scenario=empty`: an account with nothing installed, without losing the seed. */
+  hideTargets: boolean;
   targets: MockTarget[];
   users: PanelUser[];
   targetAccess: Map<string, Map<string, TargetUserAccess>>;
@@ -137,7 +166,15 @@ interface MockState {
   };
   streams: Set<Duplex>;
   prefs: { values: Record<string, unknown>; rev: number };
+  transformIndex: IndexTransform;
 }
+
+/** How a served `index.html` reaches its final form: Vite's own dev transform. */
+type IndexTransform = (url: string, html: string) => Promise<string> | string;
+
+const ERROR_SENTINEL = '__smyklot_panel_error__';
+const NOSCRIPT_SENTINEL = '__smyklot_panel_noscript__';
+const DEFAULT_NOSCRIPT = 'The Smyklot panel needs JavaScript to run.';
 
 function enabled(): boolean {
   return process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
@@ -152,6 +189,7 @@ function enabled(): boolean {
  * again. Only the preference document is kept: the rest of the mock is fixture data, and a fixture
  * that drifts across restarts is worse than one that resets.
  */
+const FRONTEND_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PREFERENCES_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '.mock-preferences.json');
 
 interface DevState {
@@ -470,6 +508,7 @@ function seed(): MockState {
   return {
     signedIn: true,
     forceFailure: false,
+    hideTargets: false,
     targets: [
       organization,
       personal,
@@ -507,6 +546,8 @@ function seed(): MockState {
     },
     streams: new Set(),
     prefs: loadPreferences(),
+    // Replaced by install() with the running server's own transform.
+    transformIndex: (_url, html) => html,
   };
 }
 
@@ -935,20 +976,35 @@ export function mockServer(): Plugin {
       return html
         .replaceAll('/__smyklot_panel_base__', '')
         .replaceAll('__smyklot_panel_version__', 'dev')
-        .replaceAll('__smyklot_panel_service__', 'local mock service');
+        .replaceAll('__smyklot_panel_service__', 'local mock service')
+        .replaceAll(ERROR_SENTINEL, '')
+        .replaceAll(NOSCRIPT_SENTINEL, DEFAULT_NOSCRIPT);
     },
     configureServer(server) {
-      if (enabled()) install(server.httpServer as DevHttpServer, server.middlewares);
+      if (enabled()) {
+        install(server.httpServer as DevHttpServer, server.middlewares, (url, html) =>
+          server.transformIndexHtml(url, html),
+        );
+      }
     },
     configurePreviewServer(server) {
-      if (enabled()) install(server.httpServer as DevHttpServer, server.middlewares);
+      // Preview serves the built bundle, which went through the hook above at
+      // build time, so there is nothing left to transform.
+      if (enabled()) {
+        install(server.httpServer as DevHttpServer, server.middlewares, (_url, html) => html);
+      }
     },
   };
 }
 
-function install(httpServer: DevHttpServer | undefined, middlewares: Connect.Server): void {
+function install(
+  httpServer: DevHttpServer | undefined,
+  middlewares: Connect.Server,
+  transform: IndexTransform,
+): void {
   if (httpServer === undefined) throw new Error('the mock dev server has no HTTP server');
   const state = seed();
+  state.transformIndex = transform;
   httpServer.on('upgrade', (request, socket) => handleUpgrade(state, request, socket));
   middlewares.use((req, res, next) => void handle(state, req, res, next));
 }
@@ -1143,6 +1199,24 @@ async function handle(
   }
 
   /**
+   * Every error page, on demand. Dev only, and it exists because almost none of them can be
+   * reached here otherwise: they come out of the GitHub sign-in round trip, and the mock has no
+   * GitHub to fail against. `/__error/403/forbidden` renders exactly what production would.
+   */
+  const preview = path.match(/^\/__error\/(?<status>\d{3})(?:\/(?<code>[a-z_]*))?$/u);
+  if (preview && method === 'GET') {
+    await respondError(
+      state,
+      req,
+      res,
+      Number(preview.groups?.status),
+      preview.groups?.code ?? '',
+      parsed.searchParams.get('message') ?? 'a mock error, for looking at',
+    );
+    return;
+  }
+
+  /**
    * A navigation to a path the panel does not own is a 404, as it is in production.
    *
    * Vite answers every navigation with index.html, so in dev an unknown path quietly rendered the
@@ -1155,7 +1229,7 @@ async function handle(
     const navigable =
       parsePanelRoute('/', path) !== null || parseInvitationToken('/', path) !== null;
     if (!navigable) {
-      respond(res, 404, { error: { code: 'not_found', message: 'panel route not found' } });
+      await respondError(state, req, res, 404, 'not_found', 'panel route not found');
       return;
     }
   }
@@ -1183,9 +1257,14 @@ async function handle(
     if (token !== null && (action === 'accept' || action === 'decline')) {
       const invitation = findInvitationByToken(state, token);
       if (invitation.status !== 'pending') {
-        respond(res, 409, {
-          error: { code: 'invitation_used', message: 'invitation is not pending' },
-        });
+        await respondError(
+          state,
+          req,
+          res,
+          409,
+          'invitation_used',
+          'this invitation is no longer pending',
+        );
         return;
       }
       invitation.status = action === 'accept' ? 'accepted' : 'declined';
@@ -1232,17 +1311,23 @@ async function handle(
     if (path === route('/api/v1/session') && method === 'GET') {
       respond(res, 200, {
         account: VIEWER,
-        system_role: 'super_root',
+        /* A Root with no installations keeps the panel shell, because the console
+           is still there to reach. `?scenario=empty` is for the other reader -
+           signed in, nothing installed, nothing else to do - so it hands back a
+           regular account. */
+        system_role: state.hideTargets ? 'none' : 'super_root',
         status: 'active',
-        target_count: state.targets.filter((target) => mockRootOwns(target)).length,
+        target_count: state.hideTargets
+          ? 0
+          : state.targets.filter((target) => mockRootOwns(target)).length,
       });
       return;
     }
     if (path === route('/api/v1/targets') && method === 'GET') {
       respond(res, 200, {
-        targets: state.targets
-          .filter((target) => mockRootOwns(target))
-          .map((target) => target.value),
+        targets: state.hideTargets
+          ? []
+          : state.targets.filter((target) => mockRootOwns(target)).map((target) => target.value),
       });
       return;
     }
@@ -1362,6 +1447,9 @@ async function handle(
     const notificationRead = path.match(/^\/api\/v1\/notifications\/(?<notification>[^/]+)\/read$/);
     const scopedUsers = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/users$/);
     const rootScopedUsers = path.match(/^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/users$/);
+    const userSuggestions = path.match(
+      /^\/api\/v1\/(?:targets|root\/installations)\/(?<target>[^/]+)\/user-suggestions$/,
+    );
     const rootUser = path.match(/^\/api\/v1\/root\/access\/users\/(?<account>[^/]+)$/);
     const rootInvitationReissue = path.match(
       /^\/api\/v1\/root\/access\/invitations\/(?<invitation>[^/]+)\/reissue$/,
@@ -1765,6 +1853,38 @@ async function handle(
       respond(res, 200, publicInvitationValue(current));
       return;
     }
+    if (userSuggestions && method === 'GET') {
+      const target = findTarget(state, userSuggestions.groups?.target ?? '');
+      const query = (parsed.searchParams.get('q') ?? '').trim().toLowerCase();
+      if (query.length < 2) {
+        respond(res, 200, { items: [] });
+        return;
+      }
+      /* Stands in for the organization roster the service reads from GitHub.
+         People already on the installation are dropped, the same as the service
+         does - they are not candidates for being added to it. */
+      const held = new Set(
+        targetUsers(state, target.value.id).map((user) => user.account.login.toLowerCase()),
+      );
+      /* Ranked the way the service ranks: a login that starts with what was
+         typed, then a display name that does, then anything containing it. */
+      const rank = (account: PanelAccount): number => {
+        const login = account.login.toLowerCase();
+        const name = account.display_name.toLowerCase();
+        if (login.startsWith(query)) return 0;
+        if (name.startsWith(query)) return 1;
+        if (login.includes(query) || name.includes(query)) return 2;
+        return -1;
+      };
+      const items = MOCK_ORGANIZATION_ROSTER.filter(
+        (account) => !held.has(account.login.toLowerCase()) && rank(account) !== -1,
+      )
+        .sort((left, right) => rank(left) - rank(right) || left.login.localeCompare(right.login))
+        .slice(0, 8);
+      respond(res, 200, { items });
+      return;
+    }
+
     if (installationUsers && method === 'GET') {
       const target = findTarget(state, installationUsers.groups?.target ?? '');
       respond(res, 200, userPage(targetUsers(state, target.value.id), parsed.searchParams));
@@ -1958,7 +2078,11 @@ async function handle(
 function applyScenario(state: MockState, scenario: string | null): void {
   state.forceFailure = scenario === 'error';
   state.signedIn = scenario !== 'signed-out';
-  if (scenario === 'empty') state.targets = [];
+  /* Kept apart from the live list rather than emptying it, because a scenario is
+     a way of looking at the mock and not a change to it. Emptying it stuck: every
+     later request in the same process saw an account with no installations, and
+     whatever was being looked at next quietly measured the wrong panel. */
+  state.hideTargets = scenario === 'empty';
 }
 
 function findTarget(state: MockState, encodedId: string): MockTarget {
@@ -2952,6 +3076,75 @@ function respond(res: ServerResponse, status: number, body: unknown): void {
   }
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(body));
+}
+
+/**
+ * The production answer to an error: the panel's own page for a browser that
+ * navigated here, and JSON for everything else.
+ *
+ * Mirrors `writePageError` in internal/panel/error_page.go, including how it
+ * decides which of the two the caller wants. Without it the mock hands a browser
+ * a JSON blob where production hands it a page, and the error pages could only be
+ * looked at by building the Go binary.
+ */
+async function respondError(
+  state: MockState,
+  req: IncomingMessage,
+  res: ServerResponse,
+  status: number,
+  code: string,
+  message: string,
+): Promise<void> {
+  if (!wantsDocument(req)) {
+    respond(res, status, { error: { code, message } });
+    return;
+  }
+  const page = await renderErrorDocument(state, req.url ?? '/', status, code, message);
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(page);
+}
+
+function wantsDocument(req: IncomingMessage): boolean {
+  const destination = req.headers['sec-fetch-dest'];
+  if (typeof destination === 'string' && destination !== '') return destination === 'document';
+
+  return (req.headers.accept ?? '')
+    .split(',')
+    .some((entry) => entry.split(';')[0]?.trim() === 'text/html');
+}
+
+async function renderErrorDocument(
+  state: MockState,
+  url: string,
+  status: number,
+  code: string,
+  message: string,
+): Promise<string> {
+  const source = readFileSync(resolve(FRONTEND_DIR, 'index.html'), 'utf8');
+  const transformed = await state.transformIndex(url, source);
+  const descriptor = escapeHtml(JSON.stringify({ status, code, message }));
+
+  return transformed
+    .replace(
+      /(<meta name="smyklot-panel-error" content=")[^"]*(")/u,
+      (_match, head: string, tail: string) => `${head}${descriptor}${tail}`,
+    )
+    .replace(
+      /(<noscript>)[^<]*(<\/noscript>)/u,
+      (_match, head: string, tail: string) =>
+        `${head}${escapeHtml(`${status} - ${message}`)}${tail}`,
+    );
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&#34;')
+    .replaceAll("'", '&#39;');
 }
 
 export default mockServer;

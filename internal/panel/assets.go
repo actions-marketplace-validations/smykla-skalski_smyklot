@@ -27,22 +27,43 @@ const (
 	panelSettingsPath          = "settings"
 )
 
+// The two documents the panel serves by name rather than as plain static files:
+// the shell every navigable route resolves to, and the worker, which is read and
+// rewritten rather than passed through.
+const (
+	indexAsset         = "index.html"
+	serviceWorkerAsset = "sw.js"
+)
+
 type assetBundle struct {
-	files         fs.FS
-	index         []byte
-	indexETag     string
+	files     fs.FS
+	index     []byte
+	indexETag string
+	// The same document with the error placeholders still in it, so an error
+	// response can fill them per request. Kept apart from index rather than
+	// re-derived: index is served on the hot path and must not carry them.
+	errorPage     string
 	serviceWorker []byte
 }
 
 func newAssetBundle(cfg Config) (*assetBundle, error) {
-	index, err := fs.ReadFile(cfg.Assets, "index.html")
+	index, err := fs.ReadFile(cfg.Assets, indexAsset)
 	if err != nil {
 		return nil, fmt.Errorf("read panel index: %w", err)
 	}
 	rewritten := strings.ReplaceAll(string(index), basePathSentinel, cfg.BasePath)
 	rewritten = strings.ReplaceAll(rewritten, versionSentinel, html.EscapeString(cfg.Version))
 	rewritten = strings.ReplaceAll(rewritten, serviceSentinel, html.EscapeString(cfg.ServiceHost))
-	serviceWorker, err := fs.ReadFile(cfg.Assets, "sw.js")
+	// An error document is built by substitution, so a missing placeholder would
+	// silently serve a page that reports nothing. Fail at startup instead.
+	for _, sentinel := range []string{errorSentinel, noscriptSentinel} {
+		if strings.Count(rewritten, sentinel) != 1 {
+			return nil, fmt.Errorf("panel index must carry %s exactly once", sentinel)
+		}
+	}
+	served := strings.NewReplacer(errorSentinel, "", noscriptSentinel, defaultNoscript).
+		Replace(rewritten)
+	serviceWorker, err := fs.ReadFile(cfg.Assets, serviceWorkerAsset)
 	if err != nil {
 		return nil, fmt.Errorf("read panel service worker: %w", err)
 	}
@@ -60,8 +81,9 @@ func newAssetBundle(cfg Config) (*assetBundle, error) {
 
 	return &assetBundle{
 		files:         cfg.Assets,
-		index:         []byte(rewritten),
-		indexETag:     fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(rewritten))),
+		index:         []byte(served),
+		indexETag:     fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(served))),
+		errorPage:     rewritten,
 		serviceWorker: []byte(rewrittenWorker),
 	}, nil
 }
@@ -69,12 +91,12 @@ func newAssetBundle(cfg Config) (*assetBundle, error) {
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	relative := strings.TrimPrefix(r.URL.Path, s.cfg.BasePath)
 	relative = strings.TrimPrefix(relative, "/")
-	if relative == "" || relative == "index.html" {
+	if relative == "" || relative == indexAsset {
 		s.writeIndex(w, r)
 		return
 	}
 	if !fs.ValidPath(relative) {
-		s.writeError(w, http.StatusNotFound, "not_found", "panel asset not found")
+		s.writePageError(w, r, http.StatusNotFound, "not_found", "panel asset not found")
 		return
 	}
 	content, err := fs.ReadFile(s.assets.files, relative)
@@ -82,7 +104,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 		if isPanelNavigationPath(relative) {
 			s.writeIndex(w, r)
 		} else {
-			s.writeError(w, http.StatusNotFound, "not_found", "panel route not found")
+			s.writePageError(w, r, http.StatusNotFound, "not_found", "panel route not found")
 		}
 		return
 	}
@@ -91,7 +113,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
-	if relative == "sw.js" {
+	if relative == serviceWorkerAsset {
 		content = s.assets.serviceWorker
 		w.Header().Set("Cache-Control", "no-cache")
 	} else if strings.HasPrefix(relative, "assets/") {
@@ -173,5 +195,5 @@ func (s *Server) writeIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("ETag", s.assets.indexETag)
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(s.assets.index))
+	http.ServeContent(w, r, indexAsset, time.Time{}, bytes.NewReader(s.assets.index))
 }

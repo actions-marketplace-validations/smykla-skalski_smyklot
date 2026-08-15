@@ -11,6 +11,7 @@ import type {
   DeliveryFailure,
   FailureHistoryRequest,
   Page,
+  PanelAccount,
   PanelErrorBody,
   PanelTarget,
   PanelInvitation,
@@ -119,6 +120,9 @@ export interface PanelApi {
   markNotificationRead(notificationId: string): Promise<SecurityNotification>;
   fetchTargetUsers(targetId: string, request: PanelUserPageRequest): Promise<Page<PanelUser>>;
   addTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser>;
+  /** Logins offered while one is being typed; see `UserCompletion`. */
+  suggestUsers(targetId: string, query: string): Promise<PanelAccount[]>;
+  suggestRootTargetUsers(targetId: string, query: string): Promise<PanelAccount[]>;
   updateTargetUser(
     targetId: string,
     accountId: string,
@@ -156,6 +160,16 @@ export interface PanelApi {
   signOut(): Promise<void>;
   signInUrl(invitation?: InvitationSignIn): string;
   openStream(handlers: PanelStreamHandlers, dialQuery?: () => string): PanelStreamHandle;
+  /**
+   * Told whenever the server refuses a request because there is no session
+   * behind it. Returns its own unsubscribe.
+   *
+   * Every view fetches for itself and every view handled a 401 as its own
+   * failure, so an expired session showed up as a panel full of loaded content
+   * with "sign in to use the panel" written across it and a Try again button
+   * that could only fail again. One place learns it, and the app leaves.
+   */
+  onSessionLost(handler: (code: string) => void): () => void;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -174,13 +188,23 @@ export function createPanelApi(
   fetchImpl: FetchLike,
   createWebSocket: PanelWebSocketFactory = browserWebSocket,
 ): PanelApi {
+  const sessionLost = new Set<(code: string) => void>();
+
   const request = async (path: string, init?: RequestInit): Promise<Response> => {
     const response = await fetchImpl(panelUrl(base, path), {
       ...init,
       credentials: 'same-origin',
     });
     if (!response.ok) {
-      throw await readError(response);
+      const failure = await readError(response);
+      /* Announced before it is thrown, so the app can leave for the sign-in page
+         while the caller still handles its own failure as it always did. The
+         session probe is deliberately not routed through here: a 401 there is the
+         ordinary way of asking whether anyone is signed in. */
+      if (response.status === 401) {
+        for (const handler of sessionLost) handler(failure.code);
+      }
+      throw failure;
     }
     return response;
   };
@@ -188,6 +212,26 @@ export function createPanelApi(
   const jsonRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const response = await request(path, init);
     return (await response.json()) as T;
+  };
+
+  /**
+   * Reads a completion list, and never fails loudly.
+   *
+   * Completion is an offer beside a field that works without it, so a request
+   * that does not arrive leaves the field exactly as it was. Surfacing this as an
+   * error would put a failure in front of somebody who is only typing a name, and
+   * whatever they type is still resolved when they submit.
+   */
+  const suggest = async (path: string, query: string): Promise<PanelAccount[]> => {
+    try {
+      const response = await jsonRequest<{ items?: PanelAccount[] }>(
+        `${path}?q=${encodeURIComponent(query)}`,
+      );
+
+      return response.items ?? [];
+    } catch {
+      return [];
+    }
   };
 
   const putJson = <T>(path: string, body: unknown): Promise<T> =>
@@ -488,6 +532,14 @@ export function createPanelApi(
       return postJson(`/api/v1/targets/${pathSegment(targetId)}/users`, input);
     },
 
+    suggestUsers(targetId: string, query: string): Promise<PanelAccount[]> {
+      return suggest(`/api/v1/targets/${pathSegment(targetId)}/user-suggestions`, query);
+    },
+
+    suggestRootTargetUsers(targetId: string, query: string): Promise<PanelAccount[]> {
+      return suggest(`/api/v1/root/installations/${pathSegment(targetId)}/user-suggestions`, query);
+    },
+
     updateTargetUser(
       targetId: string,
       accountId: string,
@@ -622,6 +674,13 @@ export function createPanelApi(
         handlers,
         createWebSocket,
       );
+    },
+
+    onSessionLost(handler: (code: string) => void): () => void {
+      sessionLost.add(handler);
+      return () => {
+        sessionLost.delete(handler);
+      };
     },
   };
 }

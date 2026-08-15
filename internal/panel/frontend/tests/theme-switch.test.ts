@@ -28,25 +28,43 @@ describe('the theme switch', () => {
     expect(holders).toEqual(['ThemeSwitch.svelte']);
   });
 
-  it('is what the sidebar and the invitation page both render', () => {
-    for (const file of ['IdentityBar.svelte', 'InvitationPage.svelte']) {
+  it('is what the sidebar and the pages outside the panel both render', () => {
+    // `NightPage` is the shell the invitation and the error pages share, so it is the one
+    // place outside the sidebar that renders a switch.
+    for (const file of ['IdentityBar.svelte', 'NightPage.svelte']) {
       expect(read(file)).toMatch(/<ThemeSwitch\b/u);
     }
   });
 
   it('offers "follow the system" only where the answer is kept', () => {
-    // The invitation page has no account behind it, so "system" there is an offer to follow
+    // A page outside the panel has no account behind it, so "system" there is an offer to follow
     // something it will forget. It asks for a theme outright instead; the sidebar still offers it.
-    expect(read('InvitationPage.svelte')).toMatch(/<ThemeSwitch[^>]*\ssystem=\{false\}/su);
+    expect(read('NightPage.svelte')).toMatch(/<ThemeSwitch[^>]*\ssystem=\{false\}/su);
     expect(read('IdentityBar.svelte')).not.toMatch(/<ThemeSwitch[^>]*\ssystem=/su);
   });
 
-  it('does not follow the system on the page that cannot remember', () => {
-    // A `MediaQuery` here would repaint the page under a reader midway through an invitation
-    // because their laptop reached sunset. The system theme is read once, as an opening choice.
-    // The page's own comment says so in words, so this asks what it *imports* rather than
-    // what it mentions.
-    const page = read('InvitationPage.svelte');
+  it('is on every page outside the panel, without exception', () => {
+    // The error pages went without one for a while, on the reasoning that there is nothing on an
+    // error page to settle into. It read as a page missing a piece: the head row is a title and a
+    // control, and with the control gone the title floated. `NightPage` renders it unconditionally
+    // now, so no page can be the odd one out.
+    const page = read('NightPage.svelte');
+
+    expect(page).toMatch(/<ThemeSwitch\b/u);
+    expect(page, 'the switch must not be behind a condition').not.toMatch(
+      /\{#if[^}]*\}\s*<ThemeSwitch/u,
+    );
+    for (const file of ['ErrorPage.svelte', 'InvitationPage.svelte', 'SignInPage.svelte']) {
+      expect(read(file), `${file} must not opt out`).not.toContain('themeChoice');
+    }
+  });
+
+  it('does not follow the system on the pages that cannot remember', () => {
+    // A live `MediaQuery` out here would repaint the page under a reader midway through an
+    // invitation because their laptop reached sunset, and these are the pages with no account
+    // behind them to remember what they would rather have. The system theme is read once, as an
+    // opening choice. The page's own comment says so in words, so this asks what it *imports*.
+    const page = read('NightPage.svelte');
 
     expect(page).not.toMatch(/^\s*import\b.*\bMediaQuery\b/mu);
     expect(page).toContain('systemThemeDisplay()');
