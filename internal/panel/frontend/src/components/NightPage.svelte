@@ -12,6 +12,7 @@
   import type { Snippet } from 'svelte';
 
   import type { PanelBuild } from '../lib/base';
+  import { SkySlots } from '../lib/sky-slots';
   import {
     applyDocumentTheme,
     DEFAULT_THEME_DISPLAY,
@@ -22,6 +23,9 @@
   } from '../lib/preferences';
   import { createPrefsSync } from '../lib/preferences-sync';
   import BrandMark from './BrandMark.svelte';
+  import NightAstronaut from './NightAstronaut.svelte';
+  import NightMeteors from './NightMeteors.svelte';
+  import NightRocket from './NightRocket.svelte';
   import NightSky from './NightSky.svelte';
   import PageFooter from './PageFooter.svelte';
   import ThemeSwitch from './ThemeSwitch.svelte';
@@ -88,6 +92,25 @@
   let theme = $state<ThemeDisplay>(storedTheme());
   const resolvedTheme = $derived(resolveThemeDisplay(theme, systemAtOpen));
 
+  /* The card, handed to the dark-mode rocket as the region it is invisible
+     behind - it crosses there in a straight line instead of performing to
+     nobody. */
+  let cardElement = $state<HTMLElement | null>(null);
+
+  /* One seat budget for the whole page: the sky band and the dark overlay
+     share it, so at most two easter eggs are ever on screen - including
+     mid-switch, when the old home's flight is still leaving while the new
+     home's waits for its seat. */
+  const flightSlots = new SkySlots();
+
+  /* The sky's element, handed to the overlay flights as the one region that
+     stays night after a switch to the light theme: a flight retiring across
+     the fresh light page darkens its ink below the sky's fade, so it is
+     visible all the way out. */
+  let skyElement = $state<HTMLElement | null>(null);
+
+  const darkFlight = $derived(resolvedTheme === 'dark');
+
   $effect(() => {
     applyDocumentTheme(document, resolvedTheme);
   });
@@ -109,10 +132,29 @@
 
 <main class={['shell', 'night-shell', size === 'compact' && 'night-compact']}>
   <div class="night-brand">
-    <NightSky height={skyHeight} />
+    <NightSky
+      height={skyHeight}
+      rocket={!darkFlight}
+      astronaut={!darkFlight}
+      meteors={!darkFlight}
+      slots={flightSlots}
+      bind:skyElement
+    />
     <!-- Open, so the sky carries through the ring: out here the mark stands on
          night in both themes, which is exactly the ground the robot wants. -->
     <BrandMark stacked interior="clear" size={MARK_SIZE} />
+  </div>
+
+  <!-- Both homes exist in both themes; the theme decides which is active.
+     Nothing unmounts on a switch, so a flight in progress retires on its own
+     terms - the rocket departs, crossings finish off screen - while the new
+     home's flights arrive. After the sky in source order: both sit at
+     z-index -1, where document order decides, and the flights belong above
+     the stars they fly through - still behind every piece of the content. -->
+  <div class="page-flight" aria-hidden="true">
+    <NightRocket quiet={cardElement} active={darkFlight} slots={flightSlots} sky={skyElement} />
+    <NightAstronaut active={darkFlight} slots={flightSlots} sky={skyElement} />
+    <NightMeteors active={darkFlight} slots={flightSlots} sky={skyElement} />
   </div>
 
   <div class="night-main">
@@ -128,6 +170,7 @@
     </div>
 
     <section
+      bind:this={cardElement}
       class={['plate', 'night-card', busy && 'busy']}
       aria-labelledby="night-page-title"
       aria-busy={busy}
@@ -174,6 +217,20 @@
   .night-compact {
     --night-column: 30rem;
     --night-card-floor: 0;
+  }
+
+  /* In the dark theme the whole page is night, so the easter eggs fly the full
+     window, still behind all of the content. */
+  .page-flight {
+    inset: 0;
+    pointer-events: none;
+    position: fixed;
+    z-index: -1;
+  }
+
+  .page-flight :global(canvas) {
+    inset: 0;
+    position: absolute;
   }
 
   /* Stretched to fill its row rather than centred inside it, so the element's own
