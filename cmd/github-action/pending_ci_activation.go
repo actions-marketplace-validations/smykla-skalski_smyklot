@@ -15,14 +15,14 @@ type pendingCIArtifacts interface {
 	GetLabels(context.Context, string, string, int) ([]string, error)
 	AddLabel(context.Context, string, string, int, string) error
 	RemoveLabel(context.Context, string, string, int, string) error
-	AddReaction(context.Context, string, string, int, github.ReactionType) error
-	RemoveReactionByUser(
+	AddPullRequestReaction(context.Context, string, string, int, github.ReactionType) error
+	RemovePullRequestReactionByUser(
 		context.Context,
 		string,
 		string,
 		int,
-		github.ReactionType,
 		string,
+		github.ReactionType,
 	) error
 }
 
@@ -42,6 +42,7 @@ type pendingCIActivationRequest struct {
 type pendingCIActivationErrors struct {
 	approval  error
 	label     error
+	reaction  error
 	command   error
 	stale     bool
 	ambiguous bool
@@ -60,65 +61,127 @@ func activatePendingCI(
 ) (pendingCIActivationErrors, error) {
 	var failures pendingCIActivationErrors
 	err := command.exclusive(ctx, func() error {
-		ownership, stopped, err := preparePendingCIActivation(
-			ctx, command, guard, request, &failures,
+		return activatePendingCIExclusive(
+			ctx, artifacts, command, guard, request, &failures,
 		)
-		if stopped {
-			return err
-		}
-		info, err := artifacts.GetPRInfo(
-			ctx, request.owner, request.repository, request.pullRequest,
-		)
-		if err != nil {
-			failures.approval = err
-
-			return nil
-		}
-		if pendingCIApprovalRequired(request.runtime, info) {
-			failures.approval = artifacts.ApprovePR(
-				ctx, request.owner, request.repository, request.pullRequest,
-			)
-			if failures.approval != nil {
-				return nil
-			}
-		}
-		failures.label = artifacts.AddLabel(
-			ctx, request.owner, request.repository,
-			request.pullRequest, github.LabelPendingCIServiceOwner,
-		)
-		if failures.label != nil {
-			return rollbackPendingCIArtifacts(
-				ctx, artifacts, request, ownership, false, !ownership.serviceMarker,
-			)
-		}
-		markerAdded := !ownership.serviceMarker
-		_ = artifacts.AddReaction(
-			ctx, request.owner, request.repository,
-			request.commentID, github.ReactionPendingCI,
-		)
-		failures.label = artifacts.AddLabel(
-			ctx, request.owner, request.repository, request.pullRequest, request.label,
-		)
-		if failures.label != nil {
-			return rollbackPendingCIArtifacts(
-				ctx, artifacts, request, ownership, true, markerAdded,
-			)
-		}
-
-		_, failures.command = command.arm(
-			ctx, request.runtime, request.pullRequest, request.commentID,
-			request.headSHA, request.baseBranch, request.method,
-			request.requiredChecksOnly, request.label,
-		)
-		if failures.command != nil {
-			return handlePendingCIArmFailure(
-				ctx, artifacts, command, request, ownership, &failures, markerAdded,
-			)
-		}
-		return removeConflictingPendingCILabels(ctx, artifacts, request)
 	})
 
 	return failures, err
+}
+
+func activatePendingCIExclusive(
+	ctx context.Context,
+	artifacts pendingCIArtifacts,
+	command *pendingCICommand,
+	guard pendingCIActivationGuard,
+	request pendingCIActivationRequest,
+	failures *pendingCIActivationErrors,
+) error {
+	ownership, stopped, err := preparePendingCIActivation(
+		ctx, command, guard, request, failures,
+	)
+	if stopped {
+		return err
+	}
+	if pendingCIApprovalFailed(ctx, artifacts, request, failures) {
+		return nil
+	}
+	stopped, err = addPendingCIServiceReaction(
+		ctx, artifacts, request, ownership, failures,
+	)
+	if stopped {
+		return err
+	}
+
+	return persistPendingCIActivation(
+		ctx, artifacts, command, guard, request, ownership, failures,
+	)
+}
+
+func pendingCIApprovalFailed(
+	ctx context.Context,
+	artifacts pendingCIArtifacts,
+	request pendingCIActivationRequest,
+	failures *pendingCIActivationErrors,
+) bool {
+	info, err := artifacts.GetPRInfo(
+		ctx, request.owner, request.repository, request.pullRequest,
+	)
+	if err != nil {
+		failures.approval = err
+
+		return true
+	}
+	if !pendingCIApprovalRequired(request.runtime, info) {
+		return false
+	}
+	failures.approval = artifacts.ApprovePR(
+		ctx, request.owner, request.repository, request.pullRequest,
+	)
+
+	return failures.approval != nil
+}
+
+func addPendingCIServiceReaction(
+	ctx context.Context,
+	artifacts pendingCIArtifacts,
+	request pendingCIActivationRequest,
+	ownership pendingCIArtifactOwnership,
+	failures *pendingCIActivationErrors,
+) (bool, error) {
+	if ownership.serviceFence {
+		return false, nil
+	}
+	failures.reaction = artifacts.AddPullRequestReaction(
+		ctx, request.owner, request.repository,
+		request.pullRequest, github.ReactionPendingCIService,
+	)
+	if failures.reaction == nil {
+		return false, nil
+	}
+
+	// A transport error is ambiguous: GitHub may have accepted the reaction
+	// even though the response never reached us. Remove it so the Action runner
+	// is not fenced forever.
+	return true, rollbackPendingCIArtifacts(ctx, artifacts, request, ownership, false)
+}
+
+func persistPendingCIActivation(
+	ctx context.Context,
+	artifacts pendingCIArtifacts,
+	command *pendingCICommand,
+	guard pendingCIActivationGuard,
+	request pendingCIActivationRequest,
+	ownership pendingCIArtifactOwnership,
+	failures *pendingCIActivationErrors,
+) error {
+	if err := revalidatePendingCIActivation(ctx, guard, failures); err != nil ||
+		failures.stoodDown {
+		rollbackErr := rollbackPendingCIArtifacts(
+			ctx, artifacts, request, ownership, false,
+		)
+
+		return errors.Join(err, rollbackErr)
+	}
+	failures.label = artifacts.AddLabel(
+		ctx, request.owner, request.repository, request.pullRequest, request.label,
+	)
+	if failures.label != nil {
+		return rollbackPendingCIArtifacts(ctx, artifacts, request, ownership, true)
+	}
+
+	_, failures.command = command.arm(
+		ctx, request.runtime, request.pullRequest, request.commentID,
+		request.headSHA, request.baseBranch, request.method,
+		request.requiredChecksOnly, request.label,
+	)
+	if failures.command != nil {
+		return handlePendingCIArmFailure(
+			ctx, artifacts, command, request, ownership, failures,
+		)
+	}
+
+	return removeConflictingPendingCILabels(ctx, artifacts, request)
 }
 
 func preparePendingCIActivation(
@@ -137,7 +200,7 @@ func preparePendingCIActivation(
 		return pendingCIArtifactOwnership{}, true, err
 	}
 	ownership, err := command.armedArtifactOwnership(
-		ctx, request.pullRequest, request.label, request.commentID,
+		ctx, request.pullRequest, request.label,
 	)
 	if err != nil {
 		failures.command = err
@@ -184,7 +247,7 @@ func classifyPendingCIArmFailure(
 
 		return
 	}
-	_ = resolveAmbiguousPendingCI(ctx, command, request, failures)
+	resolveAmbiguousPendingCI(ctx, command, request, failures)
 }
 
 func handlePendingCIArmFailure(
@@ -194,11 +257,10 @@ func handlePendingCIArmFailure(
 	request pendingCIActivationRequest,
 	ownership pendingCIArtifactOwnership,
 	failures *pendingCIActivationErrors,
-	markerAdded bool,
 ) error {
-	keepMarker := resolveAmbiguousPendingCI(ctx, command, request, failures)
+	resolveAmbiguousPendingCI(ctx, command, request, failures)
 	rollbackErr := rollbackPendingCIArtifacts(
-		ctx, artifacts, request, ownership, true, markerAdded && !keepMarker,
+		ctx, artifacts, request, ownership, true,
 	)
 	if errors.Is(failures.command, pendingci.ErrStaleSourceRevision) {
 		failures.command = nil
@@ -213,28 +275,25 @@ func resolveAmbiguousPendingCI(
 	command *pendingCICommand,
 	request pendingCIActivationRequest,
 	failures *pendingCIActivationErrors,
-) bool {
+) {
 	if !errors.Is(failures.command, pendingci.ErrAmbiguousSourceRevision) {
-		return false
+		return
 	}
 	result, err := command.cancelPullRequestLocked(
 		ctx,
 		request.pullRequest,
 		"commands from different comments have an ambiguous source order",
 	)
-	keepMarker := result.Request != nil || err != nil
 	if err != nil {
 		failures.command = errors.Join(failures.command, err)
 
-		return keepMarker
+		return
 	}
 	failures.command = nil
 	failures.ambiguous = true
 	if result.Request != nil {
 		command.wake()
 	}
-
-	return keepMarker
 }
 
 func removeConflictingPendingCILabels(
@@ -291,10 +350,8 @@ func rollbackPendingCIArtifacts(
 	request pendingCIActivationRequest,
 	ownership pendingCIArtifactOwnership,
 	labelAdded bool,
-	markerAdded bool,
 ) error {
 	var rollbackErr error
-	labelRemoved := true
 	if labelAdded && !ownership.label {
 		err := cleanupGitHubError(
 			"remove method label",
@@ -302,30 +359,20 @@ func rollbackPendingCIArtifacts(
 				ctx, request.owner, request.repository, request.pullRequest, request.label,
 			),
 		)
-		labelRemoved = err == nil
 		if err != nil {
 			rollbackErr = errors.Join(rollbackErr, err)
 		}
 	}
-	if !ownership.reaction {
-		if err := artifacts.RemoveReactionByUser(
+	if !ownership.serviceFence {
+		if err := artifacts.RemovePullRequestReactionByUser(
 			ctx, request.owner, request.repository,
-			request.commentID, github.ReactionPendingCI, request.runtime.BotUsername,
+			request.pullRequest, request.runtime.BotUsername, github.ReactionPendingCIService,
 		); err != nil {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove pending reaction: %w", err))
+			rollbackErr = errors.Join(
+				rollbackErr,
+				fmt.Errorf("remove pending CI service fence: %w", err),
+			)
 		}
 	}
-	if markerAdded && labelRemoved {
-		if err := cleanupGitHubError(
-			"remove ownership marker",
-			artifacts.RemoveLabel(
-				ctx, request.owner, request.repository,
-				request.pullRequest, github.LabelPendingCIServiceOwner,
-			),
-		); err != nil {
-			rollbackErr = errors.Join(rollbackErr, err)
-		}
-	}
-
 	return rollbackErr
 }

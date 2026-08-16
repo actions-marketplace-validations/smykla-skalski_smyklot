@@ -45,16 +45,16 @@ func TestPendingCIRequiredWaitRejectsUnprotectedBranch(t *testing.T) {
 func TestActionRecognizesServicePendingCIOwnership(t *testing.T) {
 	t.Parallel()
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/owner/repository/pulls/42" {
+		switch r.URL.Path {
+		case "/repos/owner/repository/pulls/42":
+			_, _ = w.Write([]byte(
+				`{"state":"open","head":{"sha":"head"},"base":{"ref":"main"},"labels":[]}`,
+			))
+		case "/repos/owner/repository/issues/42/reactions":
+			_, _ = w.Write([]byte(`[{"content":"hooray","user":{"login":"smyklot[bot]"}}]`))
+		default:
 			t.Fatalf("unexpected GitHub path %q", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{
-			"number":42,
-			"state":"open",
-			"head":{"sha":"head"},
-			"base":{"ref":"main"},
-			"labels":[{"name":"smyklot:pending:ci:service"}]
-		}`))
 	}))
 	defer api.Close()
 
@@ -63,13 +63,41 @@ func TestActionRecognizesServicePendingCIOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	owned, err := pendingCIServiceOwned(
-		context.Background(), client, "owner", "repository", 42,
+		context.Background(), client, "owner", "repository", 42, "smyklot[bot]",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !owned {
-		t.Fatal("service ownership marker was ignored")
+		t.Fatal("service ownership reaction was ignored")
+	}
+}
+
+func TestActionRecognizesLegacyPendingCIServiceLabel(t *testing.T) {
+	t.Parallel()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repository/pulls/42" {
+			t.Fatalf("unexpected GitHub path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(
+			`{"state":"open","head":{"sha":"head"},"base":{"ref":"main"},` +
+				`"labels":[{"name":"smyklot:pending:ci:service"}]}`,
+		))
+	}))
+	defer api.Close()
+
+	client, err := github.NewClient("installation-token", api.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, err := pendingCIServiceOwned(
+		t.Context(), client, "owner", "repository", 42, "smyklot[bot]",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned {
+		t.Fatal("legacy service ownership label was ignored during migration")
 	}
 }
 
@@ -97,18 +125,20 @@ func TestPendingCICleanupScopePreservesReplacementArtifacts(t *testing.T) {
 			current: pendingci.Request{
 				Label: "smyklot:pending:ci:rebase", SourceCommentID: 202,
 			},
-			scope: pendingCICleanupScope{label: true, reaction: true},
+			scope: pendingCICleanupScope{label: true, sourceReaction: true},
 		},
 		{
 			name: "replacement no longer armed", err: storage.ErrNotFound,
 			scope: pendingCICleanupScope{
-				label: true, reaction: true, serviceMarker: true,
+				label: true, sourceReaction: true, serviceFence: true,
 			},
 		},
 		{
 			name: "another terminal request retains ownership", err: storage.ErrNotFound,
 			otherCleanup: true,
-			scope:        pendingCICleanupScope{label: true, reaction: true},
+			scope: pendingCICleanupScope{
+				label: true, sourceReaction: true, serviceFence: true,
+			},
 		},
 	}
 	for _, test := range tests {

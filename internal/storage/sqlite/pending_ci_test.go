@@ -88,7 +88,9 @@ var _ = Describe("pending CI storage [Unit]", func() {
 		wake := pendingci.WakeRequest{
 			RepositoryID:    secondArm.RepositoryID,
 			PullRequest:     secondArm.PullRequest,
+			EventName:       "check_run",
 			EventKey:        "check_run:501:completed",
+			DeliveryID:      "delivery-501",
 			ExpectedHeadSHA: secondArm.HeadSHA,
 			OccurredAt:      now.Add(2 * time.Minute),
 		}
@@ -181,6 +183,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			SourceRevision: now.Add(4 * time.Minute).Format(time.RFC3339Nano),
 			SourceSequence: 2,
 			SourceOrder:    1,
+			Trigger:        pendingci.TriggerWebhook,
 			Reason:         "source comment changed",
 			CancelledAt:    now.Add(4 * time.Minute),
 		})
@@ -194,6 +197,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			SourceRevision: now.Add(4 * time.Minute).Format(time.RFC3339Nano),
 			SourceSequence: 2,
 			SourceOrder:    1,
+			Trigger:        pendingci.TriggerWebhook,
 			Reason:         "source comment changed",
 			CancelledAt:    now.Add(4 * time.Minute),
 		})
@@ -361,7 +365,9 @@ var _ = Describe("pending CI storage [Unit]", func() {
 		changed, err := store.Wake(ctx, pendingci.WakeRequest{
 			RepositoryID:    armed.Request.RepositoryID,
 			PullRequest:     armed.Request.PullRequest,
+			EventName:       "check_suite",
 			EventKey:        "check_suite:700:completed",
+			DeliveryID:      "delivery-700",
 			ExpectedHeadSHA: armed.Request.HeadSHA,
 			OccurredAt:      now.Add(2 * time.Second),
 		})
@@ -378,7 +384,9 @@ var _ = Describe("pending CI storage [Unit]", func() {
 		changed, err := store.WakeByHead(ctx, pendingci.WakeHeadRequest{
 			RepositoryID: armed.Request.RepositoryID,
 			HeadSHA:      "stale-head",
+			EventName:    "status",
 			EventKey:     "status:stale-head:build:success",
+			DeliveryID:   "delivery-stale",
 			OccurredAt:   now.Add(time.Second),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -387,7 +395,9 @@ var _ = Describe("pending CI storage [Unit]", func() {
 		wake := pendingci.WakeHeadRequest{
 			RepositoryID: armed.Request.RepositoryID,
 			HeadSHA:      armed.Request.HeadSHA,
+			EventName:    "status",
 			EventKey:     "status:head-for-status:build:success",
+			DeliveryID:   "delivery-current",
 			OccurredAt:   now.Add(2 * time.Second),
 		}
 		changed, err = store.WakeByHead(ctx, wake)
@@ -401,6 +411,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			RepositoryID: armed.Request.RepositoryID,
 			PullRequest:  armed.Request.PullRequest,
 			Lifecycle:    pendingci.LifecycleCancelled,
+			Trigger:      pendingci.TriggerFallback,
 			Reason:       "pending CI label removed",
 			FinishedAt:   now.Add(3 * time.Second),
 		})
@@ -410,6 +421,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			RepositoryID: armed.Request.RepositoryID,
 			PullRequest:  armed.Request.PullRequest,
 			Lifecycle:    pendingci.LifecycleMerged,
+			Trigger:      pendingci.TriggerFallback,
 			Reason:       "late close event",
 			FinishedAt:   now.Add(4 * time.Second),
 		})
@@ -580,6 +592,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			CommentID:      newer.SourceCommentID,
 			SourceRevision: now.Format(time.RFC3339Nano), SourceSequence: 2,
 			SourceOrder: 1,
+			Trigger:     pendingci.TriggerWebhook,
 			Reason:      "delayed edit", CancelledAt: now.Add(2 * time.Minute),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -663,6 +676,7 @@ var _ = Describe("pending CI storage [Unit]", func() {
 			CommentID:      created.SourceCommentID,
 			SourceRevision: created.SourceRevision, SourceSequence: 2,
 			SourceOrder: 1,
+			Trigger:     pendingci.TriggerWebhook,
 			Reason:      "same-second edit", CancelledAt: now.Add(time.Second),
 		})
 		Expect(err).NotTo(HaveOccurred())

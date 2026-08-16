@@ -22,16 +22,14 @@ type pendingCICommandStore interface {
 }
 
 type pendingCIArtifactOwnership struct {
-	label         bool
-	reaction      bool
-	serviceMarker bool
+	label        bool
+	serviceFence bool
 }
 
 func (command *pendingCICommand) armedArtifactOwnership(
 	ctx context.Context,
 	pullRequest int,
 	label string,
-	commentID int,
 ) (pendingCIArtifactOwnership, error) {
 	request, err := command.store.GetArmed(ctx, command.repositoryID, pullRequest)
 	if errors.Is(err, storage.ErrNotFound) {
@@ -44,8 +42,7 @@ func (command *pendingCICommand) armedArtifactOwnership(
 	}
 
 	return pendingCIArtifactOwnership{
-		label: request.Label == label, reaction: request.SourceCommentID == int64(commentID),
-		serviceMarker: true,
+		label: request.Label == label, serviceFence: true,
 	}, nil
 }
 
@@ -197,8 +194,8 @@ func (command *pendingCICommand) cancelPullRequestLocked(
 	if command.sourceCommentID == 0 {
 		request, err := command.store.FinishPR(ctx, pendingci.FinishPRRequest{
 			RepositoryID: command.repositoryID, PullRequest: pullRequest,
-			Lifecycle: pendingci.LifecycleCancelled,
-			Reason:    reason, FinishedAt: command.now(),
+			Lifecycle: pendingci.LifecycleCancelled, Trigger: pendingci.TriggerFallback,
+			Reason: reason, FinishedAt: command.now(),
 		})
 
 		return pendingci.CancelIntentResult{Accepted: true, Request: request}, err
