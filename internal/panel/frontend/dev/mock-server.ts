@@ -181,6 +181,19 @@ function enabled(): boolean {
 }
 
 /**
+ * Whether starting the server should also raise a browser.
+ *
+ * Off unless asked for. A dev server is restarted far more often than it is
+ * started to be looked at - after a config change, after a port clash, from a
+ * script - and each restart took a tab whether or not anybody wanted one.
+ * `SMYKLOT_PANEL_DEV_OPEN=1`, or Vite's own `--open`, which overrides this
+ * either way.
+ */
+function opensBrowser(): boolean {
+  return process.env.SMYKLOT_PANEL_DEV_OPEN === '1';
+}
+
+/**
  * Preferences outlive the process they were set in.
  *
  * Everything the panel remembers about you is a synced preference - the theme, whether the sidebar
@@ -636,6 +649,11 @@ function invitationSeeds(
   return invitations;
 }
 
+/* The ids are token-shaped because a real one is: the server mints an elevation
+   id with `randomToken`, and the inbox shows its tail as the correlation key to
+   search the audit trail with. Readable slugs here rendered as "Elevation
+   d-incident", which reads as a bug in the panel rather than as a fixture that
+   does not look like production. */
 function securityNotificationSeeds(
   iso: (offsetMs: number) => string,
   installation: PanelAccount,
@@ -646,7 +664,7 @@ function securityNotificationSeeds(
       id: 'security-3',
       installation,
       actor,
-      elevation_id: 'elevation-prod-incident',
+      elevation_id: 'R7mQ2xKfLp0Zc4Vn8sTdWb1yHgJ3aEuN6iOqXr5vBkM',
       audit_event_id: '203',
       action: 'repository.settings.updated',
       reason: 'Restore command handling during production incident',
@@ -656,7 +674,7 @@ function securityNotificationSeeds(
       id: 'security-2',
       installation,
       actor,
-      elevation_id: 'elevation-prod-incident',
+      elevation_id: 'R7mQ2xKfLp0Zc4Vn8sTdWb1yHgJ3aEuN6iOqXr5vBkM',
       audit_event_id: '202',
       action: 'target.settings.updated',
       reason: 'Restore command handling during production incident',
@@ -666,7 +684,7 @@ function securityNotificationSeeds(
       id: 'security-1',
       installation,
       actor,
-      elevation_id: 'elevation-support',
+      elevation_id: 'hT4wYs9dRfB2nKmXpQ7vLc0jZgA5eU8iRoW1yNbD3xE',
       audit_event_id: '188',
       action: 'repository.settings.updated',
       reason: 'Owner-approved support investigation',
@@ -969,7 +987,8 @@ export function mockServer(): Plugin {
     name: 'smyklot-panel-mock-server',
     config() {
       if (!enabled()) return;
-      return { base: '/', server: { open: '/' } };
+      // The mock serves the panel at the root rather than at the baked sentinel.
+      return { base: '/', server: opensBrowser() ? { open: '/' } : {} };
     },
     transformIndexHtml(html) {
       if (!enabled()) return html;

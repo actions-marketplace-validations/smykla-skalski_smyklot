@@ -2488,6 +2488,7 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	for _, path := range []string{
 		"/panel/",
+		"/panel/inbox",
 		"/panel/invite/abcdefghijklmnopqrstuvwxyzABCDEFGH_01234567",
 		"/panel/i/smykla-skalski/repositories",
 		"/panel/i/smykla-skalski/users",
@@ -2507,6 +2508,24 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		"/panel/root/history/audit",
 		"/panel/root/history/failures",
 		"/panel/root/settings",
+		// Every dialog the panel gives an address to. A link to one, and a reload
+		// of one, has to answer with the shell rather than the not-found page.
+		"/panel/i/smykla-skalski/repositories/api-gateway",
+		"/panel/i/smykla-skalski/repositories/api-gateway/behavior",
+		"/panel/i/smykla-skalski/users/add",
+		"/panel/i/smykla-skalski/users/octocat/history",
+		"/panel/i/smykla-skalski/users/octocat/remove-access",
+		"/panel/i/smykla-skalski/invitations/inv-1/revoke",
+		"/panel/root/access/users/octocat/ban",
+		"/panel/root/access/invitations/new",
+		"/panel/root/access/invitations/inv-1/reissue",
+		"/panel/root/installations/smykla-skalski/repositories/api-gateway/file",
+		"/panel/root/installations/smykla-skalski/users/octocat/history",
+		// A trailing slash is not part of the address; the panel's router reads
+		// `/inbox/` as `/inbox`, and the server has to agree.
+		"/panel/inbox/",
+		"/panel/i/smykla-skalski/history/audit/",
+		"/panel/root/access/users/",
 	} {
 		response := harness.request(t, http.MethodGet, path, nil, nil)
 		body := response.Body.String()
@@ -2541,6 +2560,14 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		"/panel/users",
 		"/panel/invitations",
 		"/panel/help",
+		"/panel/inbox/security",
+		"/panel/i/smykla-skalski/inbox",
+		// A view still has to be a view, and a dialog is one segment or two.
+		"/panel/root/installations/smykla-skalski",
+		"/panel/i/smykla-skalski/settings/anything",
+		"/panel/i/smykla-skalski/repositories/api-gateway/file/extra",
+		"/panel/root/access/users/octocat/ban/extra",
+		"/panel/root/installations/smykla-skalski/settings/anything",
 		"/panel/smykla-skalski/repositories",
 		"/panel/auth/settings",
 		"/panel/webhook/history",

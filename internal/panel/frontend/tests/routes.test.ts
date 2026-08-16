@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { legacyInboxRoute } from '../src/lib/dialog-route.svelte';
 import {
   createPanelRouter,
   panelDocumentTitle,
@@ -157,6 +158,7 @@ describe('panel document titles', () => {
     [{ account: 'acme', view: 'invitations' }, 'Invitations | Access | SMYKLOT'],
     [{ account: 'acme', view: 'history', section: 'audit' }, 'Audit | History | SMYKLOT'],
     [{ account: 'acme', view: 'history', section: 'failures' }, 'Failures | History | SMYKLOT'],
+    [{ personal: 'inbox' }, 'Inbox | SMYKLOT'],
     [{ rootView: 'overview' }, 'Overview | Root Console | SMYKLOT'],
     [{ rootView: 'installations' }, 'Installations | Root Console | SMYKLOT'],
     [{ rootView: 'access-users' }, 'Users | Access | Root Console | SMYKLOT'],
@@ -271,6 +273,78 @@ describe('browser panel router', () => {
     // Walking to another view leaves behind what was open on the one before it.
     router.push({ rootView: 'overview' });
     expect(fixture.url()).toBe('/panel/root');
+  });
+});
+
+describe('personal routes', () => {
+  it('reads the inbox at the top of the panel, under any mount', () => {
+    expect(parsePanelRoute('', '/inbox')).toEqual({ personal: 'inbox' });
+    expect(parsePanelRoute('/panel', '/panel/inbox/')).toEqual({ personal: 'inbox' });
+    expect(panelRoutePath('/panel', { personal: 'inbox' })).toBe('/panel/inbox');
+  });
+
+  it('refuses anything hanging off it, or scoped to a workspace', () => {
+    expect(parsePanelRoute('', '/inbox/security')).toBeNull();
+    expect(parsePanelRoute('', '/i/acme/inbox')).toBeNull();
+    expect(parsePanelRoute('', '/root/inbox')).toBeNull();
+  });
+
+  /* The name is only read in the first segment, so an account called `inbox` is
+     still an account. Reading it anywhere else would take a workspace away from
+     whoever owns that name. */
+  it('leaves an account of the same name alone', () => {
+    expect(parsePanelRoute('', '/i/inbox/settings')).toEqual({
+      account: 'inbox',
+      view: 'settings',
+    });
+    expect(parsePanelRoute('', '/root/installations/inbox/repositories')).toEqual({
+      rootView: 'installation',
+      account: 'inbox',
+      view: 'repositories',
+    });
+  });
+
+  /* The Root user table offers no history - decisions are made inside an
+     installation - so an address naming one does not resolve, rather than
+     resolving to the table with nothing open on it. */
+  it('refuses a Root user history that nothing opens', () => {
+    expect(parsePanelRoute('', '/root/access/users/octocat/history')).toBeNull();
+    expect(parsePanelRoute('', '/root/access/users/octocat/ban')).toEqual({
+      rootView: 'access-users',
+      dialog: { name: 'root-user-action', params: { user: 'octocat', action: 'ban' } },
+    });
+    // The same person inside an installation still has one.
+    expect(parsePanelRoute('', '/root/installations/acme/users/octocat/history')).toEqual({
+      rootView: 'installation',
+      account: 'acme',
+      view: 'users',
+      dialog: { name: 'decision-history', params: { user: 'octocat' } },
+    });
+  });
+
+  it('drops a stale dialog query when it lands on the page it names', () => {
+    const fixture = fakeBrowser('/panel/inbox', '?dialog=security-notifications');
+    const router = createPanelRouter('/panel', fixture.browser);
+
+    router.replace({ personal: 'inbox' });
+    expect(fixture.url()).toBe('/panel/inbox');
+  });
+
+  /* Replacing normally keeps the query, because it names the dialog open on the
+     view being tidied. A personal page hosts none, so a query carried onto one
+     would name something nothing there will ever open. */
+  it('drops the query on the way to a page that hosts no dialogs', () => {
+    const fixture = fakeBrowser('/panel/i/acme/repositories', '?dialog=security-notifications');
+    const router = createPanelRouter('/panel', fixture.browser);
+
+    router.replace({ personal: 'inbox' });
+    expect(fixture.url()).toBe('/panel/inbox');
+  });
+
+  it('sends the inbox dialog that used to ride the query to the page', () => {
+    expect(legacyInboxRoute('?dialog=security-notifications')).toEqual({ personal: 'inbox' });
+    expect(legacyInboxRoute('?dialog=repository-settings&repository=api')).toBeNull();
+    expect(legacyInboxRoute('')).toBeNull();
   });
 });
 
