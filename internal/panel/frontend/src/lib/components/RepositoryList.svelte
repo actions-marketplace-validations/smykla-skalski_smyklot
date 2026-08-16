@@ -57,6 +57,7 @@
   import PanelHeader from './PanelHeader.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import SearchField from './SearchField.svelte';
+  import TableToolsMenu from './TableToolsMenu.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
@@ -860,6 +861,45 @@
       value={search}
       onInput={(value) => (search = value)}
     />
+    <!-- Everything the column headings carry, for the widths where there are no
+         column headings: the table becomes a stack of cards on a phone and its
+         three sorts and three filters went with the `thead`, leaving the search
+         field alone on the page. Sharing the same state as the headings rather
+         than a copy of it. -->
+    <TableToolsMenu
+      sorts={[
+        { label: 'Repository', direction: sortDirection('name'), onToggle: toggleNameSort },
+        { label: 'File state', direction: sortDirection('file'), onToggle: toggleFileSort },
+        { label: 'Updated', direction: sortDirection('updated'), onToggle: toggleUpdatedSort },
+      ]}
+      filters={[
+        {
+          label: 'Overrides',
+          hint: 'Match any selected repository override',
+          sections: SETTING_FILTER_SECTIONS,
+          selected: settingSelection,
+          multiple: true,
+          fallbackValue: 'all',
+          onChange: (values) => repositoryTable.getColumn('overrides')?.setFilterValue(values),
+        },
+        {
+          label: 'File state',
+          hint: 'Select one or more file states',
+          sections: FILE_FILTER_SECTIONS,
+          selected: fileFilters,
+          multiple: true,
+          onChange: (values) => repositoryTable.getColumn('file')?.setFilterValue(values),
+        },
+        {
+          label: 'Enablement',
+          hint: "Filter by Smyklot's effective state",
+          sections: STATE_FILTER_SECTIONS,
+          selected: [stateFilter],
+          fallbackValue: 'all',
+          onChange: (values) => repositoryTable.getColumn('enablement')?.setFilterValue(values[0]),
+        },
+      ]}
+    />
   </div>
 
   <div
@@ -1312,6 +1352,20 @@
     gap: var(--space-2);
     grid-template-columns: minmax(16rem, 1fr);
     padding: 0 0 var(--space-3);
+  }
+
+  /* Only where the column headings are not. They carry the same three sorts and
+     three filters while the table is a table, and two ways to set one value is
+     one way too many - the menu exists because the headings go away, not
+     instead of them. */
+  .repository-tools :global(.tools-trigger) {
+    display: none;
+  }
+
+  @media (max-width: 48rem) {
+    .repository-tools :global(.tools-trigger) {
+      display: inline-flex;
+    }
   }
 
   .repository-results {
@@ -1974,8 +2028,10 @@
   }
 
   @media (max-width: 48rem) {
+    /* Search on the left, one control on the right holding everything the
+       column headings carried. */
     .repository-tools {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr) auto;
     }
 
     .repository-tools :global(.search-field) {
@@ -2000,7 +2056,7 @@
 
     .repository-row {
       border-bottom: 1px solid var(--border-subtle);
-      padding: var(--space-3);
+      padding: var(--card-inset);
     }
 
     .repository-row td {
@@ -2024,9 +2080,80 @@
       text-transform: uppercase;
     }
 
+    /* The name is the card's heading and was not dressed as one: at
+       `--font-size-meta` and 600 it came out 13px, under the 12px/650 uppercase
+       labels standing beneath it, so the thing the card is *about* read as the
+       lightest line on it. A step up in size and weight puts it back on top.
+       Mono still - it is a repository name and the column above it is mono. */
+    /* A card heading, not a table cell, so it wraps rather than being cut: at
+       320 the longest name here is 6px over its share of the line and lost its
+       tail to an ellipsis, which is a poor trade for a heading. */
+    .repo-copy {
+      flex-wrap: wrap;
+    }
+
+    /* Trimmed to the cap band so the room either side of it is the room the
+       reader sees. Untrimmed, the box carries ascender and descender air the
+       name never uses, and every figure measured against it is off by however
+       much of it this font happens to reserve. */
+    .repo-copy strong {
+      font-size: var(--font-size-body);
+      font-weight: 700;
+      overflow: visible;
+      text-box: trim-both cap alphabetic;
+      white-space: normal;
+    }
+
+    /* One height for every label-and-value row, set by the tallest thing that
+       can stand in one: a segmented control, 2.125rem. Each row used to be as
+       tall as whatever it happened to hold - 38px for the file state, 50px for
+       the three carrying a control, a time that is given a control's height so
+       it lines up in the *table* - so the card read as a stack of unrelated
+       spacings. Padding comes down as the floor goes up, so the rows that were
+       bloated by their control end up shorter than before rather than everything
+       ending up taller. */
+    .repository-row td[data-label] {
+      min-height: calc(var(--control-height-compact) + var(--space-2));
+      padding-block: var(--space-1);
+    }
+
+    /* The heading takes the room the rows gave back, and takes the same amount
+       on both sides. Above it is the card's own padding plus its own, so the
+       top is that one figure less the padding already there and the bottom is
+       the figure itself - written once, and equal by construction rather than
+       by two numbers that happen to add up. */
+    .repository-row {
+      --card-inset: var(--space-3);
+      --heading-room: var(--space-5);
+    }
+
+    .repository-row td:first-child {
+      border-bottom: 1px solid var(--border-subtle);
+      /* Below the rule as much as above it, measured in ink rather than in
+         boxes. Taken as a margin because the rows all stand at one height and
+         padding on the first would have made it the odd one out, and it is
+         `--heading-room` less what the row already puts between the line and its
+         first glyph: its own padding, and the slack its 2.125rem control height
+         leaves around a 13px label. Matching the boxes instead read as 7px too
+         much space under the line, which is exactly that slack. */
+      margin-bottom: calc(var(--heading-room) - var(--space-1) - var(--space-2));
+      padding-block: calc(var(--heading-room) - var(--card-inset)) var(--heading-room);
+    }
+
     .file-status {
       align-items: flex-start;
       flex-direction: column;
+    }
+  }
+
+  /* Its edge is drawn on hover, which on a device that cannot hover means never:
+     "Configure" was permanently a word in the corner of the card with nothing to
+     say it could be pressed. Keyed on `hover: none` rather than on a width,
+     because the absence of hover is the whole reason it was invisible. */
+  @media (hover: none) {
+    .configure {
+      border-color: var(--control-border);
+      color: var(--text);
     }
   }
 </style>
