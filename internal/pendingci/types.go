@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+const (
+	// MinPassingQuiet is the shortest supported stable-passing window.
+	MinPassingQuiet = time.Second
+	// DefaultPassingQuiet is how long a stable passing observation must remain
+	// unchanged before a pending-CI request may merge.
+	DefaultPassingQuiet = 30 * time.Second
+	// MaxPassingQuiet keeps runtime settings representable by every API client.
+	MaxPassingQuiet = 24 * time.Hour
+)
+
 type Lifecycle string
 
 const (
@@ -161,6 +171,13 @@ type LegacyDrainResult struct {
 type LeaseResult struct {
 	Request     *Request
 	AvailableAt *time.Time
+}
+
+// RetuneQuietPeriodRequest moves every unleased passing request to the
+// deadline implied by the current stable-passing window.
+type RetuneQuietPeriodRequest struct {
+	PassingQuiet time.Duration
+	ChangedAt    time.Time
 }
 
 type WakeRequest struct {
@@ -346,6 +363,7 @@ type Store interface {
 	Get(context.Context, int64) (Request, error)
 	GetArmed(context.Context, string, int) (Request, error)
 	LeaseDue(context.Context, time.Time, time.Time) (LeaseResult, error)
+	RetuneQuietPeriod(context.Context, RetuneQuietPeriodRequest) (int64, error)
 	Wake(context.Context, WakeRequest) (bool, error)
 	WakeByHead(context.Context, WakeHeadRequest) (int64, error)
 	CheckNow(context.Context, CheckNowRequest) (Request, error)

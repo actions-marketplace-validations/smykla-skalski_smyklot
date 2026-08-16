@@ -192,6 +192,7 @@ func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarn
 		WebhookPath:              "/webhook",
 		LogLevel:                 slog.LevelInfo,
 		PollInterval:             5 * time.Minute,
+		PendingCIQuietPeriod:     30 * time.Second,
 		SessionTTL:               12 * time.Hour,
 		ProcessConfig:            config.Default(),
 		WebhookCredentialPresent: true,
@@ -1303,17 +1304,19 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 		`"effective_seconds":43200`,
 		`"deployment":"info"`, `"public":":8080"`,
 		`"reaction_poll_interval":{"deployment_seconds":300`,
+		`"merge_after_ci_quiet_period":{"deployment_seconds":30`,
 		`"webhook":true`, `"revision":0`,
 	)
 
 	behavior := config.Default()
 	behavior.QuietSuccess = true
 	content, err := json.Marshal(map[string]any{
-		"bot_config":                     behavior,
-		"log_level":                      "debug",
-		"reaction_poll_interval_seconds": 90,
-		"session_ttl_seconds":            3600,
-		"expected_revision":              0,
+		"bot_config":                          behavior,
+		"log_level":                           "debug",
+		"reaction_poll_interval_seconds":      90,
+		"merge_after_ci_quiet_period_seconds": 45,
+		"session_ttl_seconds":                 3600,
+		"expected_revision":                   0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1325,11 +1328,13 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 		t, updated, "update Root runtime settings", http.StatusOK,
 		`"quiet_success":true`, `"override":"debug"`,
 		`"reaction_poll_interval":{"deployment_seconds":300,"override_seconds":90,"effective_seconds":90}`,
+		`"merge_after_ci_quiet_period":{"deployment_seconds":30,"override_seconds":45,"effective_seconds":45}`,
 		`"override_seconds":3600`, `"revision":1`,
 	)
 	if !harness.runtime.values.BotConfig.QuietSuccess ||
 		harness.runtime.values.LogLevel != slog.LevelDebug ||
 		harness.runtime.values.PollInterval != 90*time.Second ||
+		harness.runtime.values.PendingCIQuietPeriod != 45*time.Second ||
 		harness.runtime.values.SessionTTL != time.Hour {
 		t.Fatalf("applied runtime values = %#v", harness.runtime.values)
 	}
@@ -1342,12 +1347,32 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 	if want := harness.now.Add(time.Hour); !shortened.ExpiresAt.Equal(want) {
 		t.Fatalf("session expiry = %s, want %s", shortened.ExpiresAt, want)
 	}
-	disabledContent, err := json.Marshal(map[string]any{
+	legacyContent, err := json.Marshal(map[string]any{
 		"bot_config":                     behavior,
 		"log_level":                      "debug",
-		"reaction_poll_interval_seconds": 0,
+		"reaction_poll_interval_seconds": 90,
 		"session_ttl_seconds":            3600,
 		"expected_revision":              1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUpdated := harness.request(
+		t, http.MethodPut, "/panel/api/v1/root/settings",
+		bytes.NewReader(legacyContent), rootSession,
+	)
+	requireResponse(
+		t, legacyUpdated, "preserve settings omitted by an older client", http.StatusOK,
+		`"merge_after_ci_quiet_period":{"deployment_seconds":30,"override_seconds":45,"effective_seconds":45}`,
+		`"revision":2`,
+	)
+	disabledContent, err := json.Marshal(map[string]any{
+		"bot_config":                          behavior,
+		"log_level":                           "debug",
+		"reaction_poll_interval_seconds":      0,
+		"merge_after_ci_quiet_period_seconds": 45,
+		"session_ttl_seconds":                 3600,
+		"expected_revision":                   2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1359,7 +1384,7 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 	requireResponse(
 		t, disabled, "disable reaction sweep", http.StatusOK,
 		`"reaction_poll_interval":{"deployment_seconds":300,"override_seconds":0,"effective_seconds":0}`,
-		`"revision":2`,
+		`"revision":3`,
 	)
 	if harness.runtime.values.PollInterval != 0 {
 		t.Fatalf("disabled reaction sweep = %s", harness.runtime.values.PollInterval)
@@ -1371,18 +1396,20 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
             "bot_config":null,
             "log_level":null,
 			"reaction_poll_interval_seconds":null,
+			"merge_after_ci_quiet_period_seconds":null,
             "session_ttl_seconds":null,
-            "expected_revision":2
+			"expected_revision":3
         }`),
 		rootSession,
 	)
 	requireResponse(
 		t, reset, "reset Root runtime settings", http.StatusOK,
-		`"override":null`, `"override_seconds":null`, `"revision":3`,
+		`"override":null`, `"override_seconds":null`, `"revision":4`,
 	)
 	if harness.runtime.values.BotConfig.QuietSuccess ||
 		harness.runtime.values.LogLevel != slog.LevelInfo ||
 		harness.runtime.values.PollInterval != 5*time.Minute ||
+		harness.runtime.values.PendingCIQuietPeriod != 30*time.Second ||
 		harness.runtime.values.SessionTTL != 12*time.Hour {
 		t.Fatalf("reset runtime values = %#v", harness.runtime.values)
 	}
@@ -1395,6 +1422,41 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 	if !unchanged.ExpiresAt.Equal(shortened.ExpiresAt) {
 		t.Fatalf("session was extended from %s to %s", shortened.ExpiresAt, unchanged.ExpiresAt)
 	}
+
+	invalid := harness.request(
+		t, http.MethodPut, "/panel/api/v1/root/settings",
+		strings.NewReader(`{
+            "bot_config":null,
+            "log_level":null,
+			"reaction_poll_interval_seconds":null,
+			"merge_after_ci_quiet_period_seconds":0,
+            "session_ttl_seconds":null,
+			"expected_revision":4
+        }`),
+		rootSession,
+	)
+	requireResponse(
+		t, invalid, "reject zero pending-CI quiet period", http.StatusBadRequest,
+		`"code":"invalid_runtime_settings"`,
+		`"message":"merge-after-CI quiet period must be at least 1s"`,
+	)
+	overMaximum := harness.request(
+		t, http.MethodPut, "/panel/api/v1/root/settings",
+		strings.NewReader(`{
+            "bot_config":null,
+            "log_level":null,
+			"reaction_poll_interval_seconds":null,
+			"merge_after_ci_quiet_period_seconds":86401,
+            "session_ttl_seconds":null,
+			"expected_revision":4
+        }`),
+		rootSession,
+	)
+	requireResponse(
+		t, overMaximum, "reject overlong pending-CI quiet period", http.StatusBadRequest,
+		`"code":"invalid_runtime_settings"`,
+		`"message":"merge-after-CI quiet period is outside the supported range"`,
+	)
 
 	audit := harness.request(
 		t, http.MethodGet, "/panel/api/v1/root/history/audit?category=runtime", nil, rootSession,
