@@ -866,6 +866,114 @@ func DeclareSpecs(harness Harness) {
 		Expect(repository.ConfigFileError).To(HaveValue(Equal(problem)))
 	})
 
+	// Discovery looks in four places plus a panel-chosen one, so the status
+	// alone stopped saying which file it was describing - and a repository that
+	// migrated to TOML and left the YAML behind has a file it believes is in
+	// charge and is not
+	It("records which file was read and which were passed over", func() {
+		_, target := seedInstallation(ctx, store, now)
+
+		stateChanged, err := store.UpdateRepositoryFileState(ctx, storage.RepositoryFileState{
+			TargetID:     target.TargetID,
+			RepositoryID: "repo-1",
+			Status:       storage.RepositoryFileValid,
+			Path:         ".smyklot.toml",
+			Superseded:   []string{".github/smyklot.yaml"},
+			ObservedAt:   now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stateChanged).To(BeTrue())
+
+		repository, err := store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigFilePath).To(Equal(".smyklot.toml"))
+		Expect(repository.ConfigFileSuperseded).To(ConsistOf(".github/smyklot.yaml"))
+
+		// The panel is told to refresh on the strength of this, and a
+		// repository that moved its file changes neither status nor patch
+		stateChanged, err = store.UpdateRepositoryFileState(ctx, storage.RepositoryFileState{
+			TargetID:     target.TargetID,
+			RepositoryID: "repo-1",
+			Status:       storage.RepositoryFileValid,
+			Path:         ".github/.smyklot.toml",
+			ObservedAt:   now.Add(2 * time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stateChanged).To(BeTrue())
+
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigFilePath).To(Equal(".github/.smyklot.toml"))
+		Expect(repository.ConfigFileSuperseded).To(BeEmpty())
+	})
+
+	// A pull request somebody closed is a refusal, and asking again every sweep
+	// tick would be the bot arguing with a decision a person already made
+	It("remembers that a configuration migration was refused", func() {
+		_, target := seedInstallation(ctx, store, now)
+
+		repository, err := store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationNone))
+		Expect(repository.ConfigMigrationPR).To(BeNil())
+
+		number := 12
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID:     target.TargetID,
+			RepositoryID: "repo-1",
+			State:        storage.ConfigMigrationProposed,
+			PullRequest:  &number,
+		})).To(Succeed())
+
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationProposed))
+		Expect(repository.ConfigMigrationPR).To(HaveValue(Equal(number)))
+
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID:     target.TargetID,
+			RepositoryID: "repo-1",
+			State:        storage.ConfigMigrationDeclined,
+			PullRequest:  &number,
+		})).To(Succeed())
+
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationDeclined))
+
+		// Panel-owned settings are not touched by it, and it does not contend
+		// for their revision: a sweep tick must not fail somebody's save
+		settings, err := store.UpdateRepositorySettings(ctx, storage.RepositorySettingsChange{
+			TargetID:         target.TargetID,
+			RepositoryID:     "repo-1",
+			ActorAccountID:   testAccount(now).ID,
+			ConfigPatch:      config.Patch{},
+			ExpectedRevision: repository.Revision,
+			ChangedAt:        now.Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(settings.ConfigMigration).To(Equal(storage.ConfigMigrationDeclined))
+
+		// GitHub refusing the push is durable for a different reason than
+		// somebody closing the pull request, and both engines have to accept it
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID:     target.TargetID,
+			RepositoryID: "repo-1",
+			State:        storage.ConfigMigrationBlocked,
+		})).To(Succeed())
+
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationBlocked))
+		Expect(repository.ConfigMigrationPR).To(BeNil())
+
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID:     target.TargetID,
+			RepositoryID: "absent",
+			State:        storage.ConfigMigrationNone,
+		})).To(MatchError(storage.ErrNotFound))
+	})
+
 	It("reconciles the complete catalog without deleting removed target settings", func() {
 		account := testAccount(now)
 		first := testInstallation(account, now, []storage.RepositorySnapshot{
