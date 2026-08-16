@@ -41,10 +41,35 @@ func (c *Client) FindRepoConfig(
 	ctx context.Context,
 	owner, repo, preferred string,
 ) (RepoConfig, error) {
+	return c.findRepoConfig(ctx, owner, repo, preferred, "")
+}
+
+// FindRepoConfigAtCommit reads configuration from one immutable commit.
+//
+// This is deliberately separate from FindRepoConfig. Commands are authorized
+// from the default branch GitHub serves, never a caller-selected ref. The
+// migration uses this method only after resolving that default branch to a
+// commit, so the bytes it converts and the tree it deletes them from are one
+// atomic repository snapshot.
+func (c *Client) FindRepoConfigAtCommit(
+	ctx context.Context,
+	owner, repo, preferred, commit string,
+) (RepoConfig, error) {
+	if commit == "" {
+		return RepoConfig{}, fmt.Errorf("configuration commit must not be empty")
+	}
+
+	return c.findRepoConfig(ctx, owner, repo, preferred, commit)
+}
+
+func (c *Client) findRepoConfig(
+	ctx context.Context,
+	owner, repo, preferred, ref string,
+) (RepoConfig, error) {
 	var found RepoConfig
 
 	for _, path := range candidatePaths(preferred) {
-		content, err := c.getFileContent(ctx, owner, repo, path, maxRepoConfigSize)
+		content, err := c.getFileContentAtRef(ctx, owner, repo, path, ref, maxRepoConfigSize)
 		if err != nil {
 			// Before anything is found this is the read failing, and the file
 			// is fail-closed. After, the answer is already in hand and the

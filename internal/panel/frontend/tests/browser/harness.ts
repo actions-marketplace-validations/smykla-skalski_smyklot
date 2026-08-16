@@ -10,7 +10,7 @@
  */
 import type { Browser } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { createServer, type ViteDevServer } from 'vite';
+import { createServer, defaultClientConditions, type ViteDevServer } from 'vite';
 
 /** Long enough for a route to load its data. */
 export const SETTLE_MS = 1500;
@@ -30,6 +30,10 @@ export async function startPanel(): Promise<Panel> {
   // so naming one is the difference between a measurement and a connection refused.
   const server: ViteDevServer = await createServer({
     logLevel: 'error',
+    // This server runs inside a Vitest worker. Testing Library replaces Vite's
+    // client conditions there, which would otherwise resolve Svelte's default
+    // (server) entry in the real browser and fail before the panel mounts.
+    resolve: { conditions: [...defaultClientConditions] },
     server: { host: '127.0.0.1', port: 0 },
   });
   let browser: Browser | undefined;
@@ -69,7 +73,7 @@ export async function startPanel(): Promise<Panel> {
   }
 }
 
-/** Signs in against the mock and reports the workspace it landed on. */
+/** Signs in against the mock and reports a workspace the viewer owns. */
 async function signIn(browser: Browser, origin: string): Promise<string> {
   const page = await browser.newPage();
   try {
@@ -77,11 +81,26 @@ async function signIn(browser: Browser, origin: string): Promise<string> {
     await page.waitForTimeout(SETTLE_MS);
     const landing = new URL(page.url()).pathname;
     const match = /^\/i\/([^/]+)\//u.exec(landing);
-    if (match?.[1] === undefined) {
-      throw new Error(`signing in did not land on a workspace, it landed on ${landing}`);
+    if (match?.[1] !== undefined) return decodeURIComponent(match[1]);
+
+    // Root viewers deliberately land in the application console instead of an
+    // installation. Ask the same authenticated API the workspace switcher uses
+    // rather than teaching this fixture the seeded account's name.
+    if (landing === '/root' || landing.startsWith('/root/')) {
+      const account = await page.evaluate(async () => {
+        const response = await fetch('/api/v1/targets');
+        if (!response.ok) throw new Error(`targets returned HTTP ${response.status}`);
+
+        const body = (await response.json()) as {
+          targets?: { account?: { login?: unknown } }[];
+        };
+        const login = body.targets?.[0]?.account?.login;
+        return typeof login === 'string' && login.trim() !== '' ? login : null;
+      });
+      if (account !== null) return account;
     }
 
-    return match[1];
+    throw new Error(`signing in did not expose a workspace, it landed on ${landing}`);
   } finally {
     await page.close();
   }

@@ -164,9 +164,10 @@ func newPanelHarnessForSubject(t *testing.T, login, subjectID string) *panelHarn
 		SyncedAt: now,
 	}
 	assets := fstest.MapFS{
-		"index.html":    &fstest.MapFile{Data: []byte(`<!doctype html><meta name="smyklot-panel-base" content="/__smyklot_panel_base__"><meta name="smyklot-panel-version" content="__smyklot_panel_version__"><meta name="smyklot-panel-service" content="__smyklot_panel_service__"><meta name="smyklot-panel-error" content="__smyklot_panel_error__"><link rel="icon" href="/__smyklot_panel_base__/smyklot-avatar.png?v=__smyklot_panel_version__"><noscript>__smyklot_panel_noscript__</noscript>`)},
-		"assets/app.js": &fstest.MapFile{Data: []byte("export {}")},
-		"sw.js":         &fstest.MapFile{Data: []byte(`const BUILD_VERSION = '__smyklot_panel_version__';`)},
+		"index.html":        &fstest.MapFile{Data: []byte(`<!doctype html><meta name="smyklot-panel-base" content="/__smyklot_panel_base__"><meta name="smyklot-panel-version" content="__smyklot_panel_version__"><meta name="smyklot-panel-service" content="__smyklot_panel_service__"><meta name="smyklot-panel-error" content="__smyklot_panel_error__"><link rel="icon" href="/__smyklot_panel_base__/smyklot-avatar.png?v=__smyklot_panel_version__"><noscript>__smyklot_panel_noscript__</noscript>`)},
+		"_app/app.js":       &fstest.MapFile{Data: []byte("const base='__smyklot_panel_base__';")},
+		"service-worker.js": &fstest.MapFile{Data: []byte(`const version='__smyklot_panel_version__';`)},
+		"theme-boot.js":     &fstest.MapFile{Data: []byte(`document.documentElement.dataset.theme = "dark";`)},
 	}
 	randomBytes := make([]byte, 0, tokenBytes*32)
 	for index := range 32 {
@@ -1600,6 +1601,26 @@ func TestPanelRootElevationAndOwnerNotifications(t *testing.T) {
 	requireResponse(
 		t, repositoryWrite, "elevated Root repository write", http.StatusOK, `"revision":2`,
 	)
+	proposal := 42
+	if err := harness.store.SetRepositoryConfigMigration(
+		t.Context(),
+		storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repository-30",
+			State: storage.ConfigMigrationDeclined, PullRequest: &proposal,
+		},
+	); err != nil {
+		t.Fatalf("seed declined configuration migration: %v", err)
+	}
+	migrationReset := harness.request(
+		t, http.MethodPost,
+		"/panel/api/v1/root/installations/"+target.TargetID+
+			"/repositories/repository-30/config-migration",
+		strings.NewReader(`{}`), rootSession,
+	)
+	requireResponse(
+		t, migrationReset, "elevated Root configuration migration reset", http.StatusOK,
+		`"config_migration":"none"`,
+	)
 
 	subject := storage.Account{
 		ID: "github:test:user:support", Provider: "github:test", SubjectID: "support",
@@ -1685,6 +1706,7 @@ func TestPanelRootElevationAndOwnerNotifications(t *testing.T) {
 	requireResponse(
 		t, installationAudit, "Root installation audit", http.StatusOK,
 		`"target.access.updated"`, `"invitation.created"`,
+		`"repository.config_migration.reset"`,
 	)
 	notificationAudit := harness.request(
 		t, http.MethodGet,
@@ -1706,9 +1728,10 @@ func TestPanelRootElevationAndOwnerNotifications(t *testing.T) {
 	)
 	requireResponse(
 		t, notifications, "Owner notifications", http.StatusOK,
-		`"unread":7`, `"elevation_id":"`+elevation.ID+`"`,
+		`"unread":8`, `"elevation_id":"`+elevation.ID+`"`,
 		`"action":"target.settings.updated"`, `"action":"repository.settings.updated"`,
 		`"action":"target.access.updated"`, `"action":"invitation.created"`,
+		`"action":"repository.config_migration.reset"`,
 	)
 	var page notificationPageResponse
 	if err := json.Unmarshal(notifications.Body.Bytes(), &page); err != nil {
@@ -2562,6 +2585,7 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		body := response.Body.String()
 		if response.Code != http.StatusOK ||
 			response.Header().Get("Cache-Control") != "private, no-cache" ||
+			response.Header().Get("Content-Security-Policy") != "frame-ancestors 'none'" ||
 			response.Header().Get("ETag") == "" ||
 			!strings.Contains(body, `content="/panel"`) ||
 			!strings.Contains(body, `href="/panel/smyklot-avatar.png?v=1.0.0"`) ||
@@ -2577,13 +2601,19 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 	if conditional.Code != http.StatusNotModified || conditional.Body.Len() != 0 {
 		t.Fatalf("conditional index = %d %s", conditional.Code, conditional.Body.String())
 	}
-	asset := harness.request(t, http.MethodGet, "/panel/assets/app.js", nil, nil)
-	if asset.Code != http.StatusOK || asset.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
-		t.Fatalf("asset response = %d %#v", asset.Code, asset.Header())
+	asset := harness.request(t, http.MethodGet, "/panel/_app/app.js", nil, nil)
+	if asset.Code != http.StatusOK || asset.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" ||
+		strings.Contains(asset.Body.String(), basePathSentinel) {
+		t.Fatalf("asset response = %d %#v %s", asset.Code, asset.Header(), asset.Body.String())
 	}
-	worker := harness.request(t, http.MethodGet, "/panel/sw.js", nil, nil)
+	themeBoot := harness.request(t, http.MethodGet, "/panel/theme-boot.js", nil, nil)
+	if themeBoot.Code != http.StatusOK || themeBoot.Header().Get("Cache-Control") != "public, max-age=3600" ||
+		!strings.Contains(themeBoot.Body.String(), "document.documentElement.dataset.theme") ||
+		strings.Contains(themeBoot.Body.String(), basePathSentinel) {
+		t.Fatalf("theme boot response = %d %#v %s", themeBoot.Code, themeBoot.Header(), themeBoot.Body.String())
+	}
+	worker := harness.request(t, http.MethodGet, "/panel/service-worker.js", nil, nil)
 	if worker.Code != http.StatusOK || worker.Header().Get("Cache-Control") != "no-cache" ||
-		!strings.Contains(worker.Body.String(), `const BUILD_VERSION = "1.0.0";`) ||
 		strings.Contains(worker.Body.String(), versionSentinel) {
 		t.Fatalf("service worker response = %d %#v %s", worker.Code, worker.Header(), worker.Body.String())
 	}
@@ -2614,7 +2644,7 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		"/panel/invite/too-short",
 		"/panel/invite/abcdefghijklmnopqrstuvwxyzABCDEFGH.01234567",
 		"/panel/invite/abcdefghijklmnopqrstuvwxyzABCDEFGH_01234567/extra",
-		"/panel/assets/missing.js",
+		"/panel/_app/missing.js",
 	} {
 		response := harness.request(t, http.MethodGet, path, nil, nil)
 		if response.Code != http.StatusNotFound {

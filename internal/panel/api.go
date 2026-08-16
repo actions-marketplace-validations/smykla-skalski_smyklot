@@ -47,6 +47,12 @@ type repositorySettingsRequest struct {
 	ExpectedRevision     *int64        `json:"expected_revision"`
 }
 
+type configMigrationActor struct {
+	accountID        string
+	elevationID      *string
+	sessionTokenHash string
+}
+
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	account, ok := s.requireViewer(w, r)
 	if !ok {
@@ -232,7 +238,11 @@ func (s *Server) postRepositoryConfigMigrationReset(w http.ResponseWriter, r *ht
 	if !ok {
 		return
 	}
-	s.resetConfigMigration(w, r, target, repository, account.ID, s.writeStorageError)
+	s.resetConfigMigration(
+		w, r, target, repository,
+		configMigrationActor{accountID: account.ID},
+		s.writeStorageError,
+	)
 }
 
 // resetConfigMigration is the half of the reset that does not depend on how the
@@ -243,17 +253,19 @@ func (s *Server) resetConfigMigration(
 	r *http.Request,
 	target storage.Target,
 	repository storage.Repository,
-	actorID string,
+	actor configMigrationActor,
 	writeError func(http.ResponseWriter, error),
 ) {
 	if err := s.store.SetRepositoryConfigMigration(
 		r.Context(),
 		storage.RepositoryConfigMigration{
-			TargetID:       target.ID,
-			RepositoryID:   repository.ID,
-			State:          storage.ConfigMigrationNone,
-			ActorAccountID: &actorID,
-			ChangedAt:      s.now().UTC(),
+			TargetID:         target.ID,
+			RepositoryID:     repository.ID,
+			State:            storage.ConfigMigrationNone,
+			ActorAccountID:   &actor.accountID,
+			ElevationID:      actor.elevationID,
+			SessionTokenHash: actor.sessionTokenHash,
+			ChangedAt:        s.now().UTC(),
 		},
 	); err != nil {
 		writeError(w, err)

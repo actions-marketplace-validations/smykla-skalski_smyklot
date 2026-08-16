@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path"
 	"strconv"
 	"strings"
 	"syscall"
@@ -351,7 +352,8 @@ func applyPanelFlags(cmd *cobra.Command, cfg *serveConfig) error {
 	}
 	if cfg.panel.basePath == cfg.webhookPath ||
 		cfg.panel.basePath == healthPath ||
-		cfg.panel.basePath == schemaRoot {
+		cfg.panel.basePath == schemaRoot ||
+		path.Dir(cfg.panel.basePath) == schemaRoot {
 		return fmt.Errorf("%w: panel base path conflicts with a public service route", ErrPanelConfig)
 	}
 

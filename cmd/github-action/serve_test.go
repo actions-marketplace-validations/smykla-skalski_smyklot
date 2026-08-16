@@ -398,6 +398,9 @@ var _ = Describe("Serve configuration [Unit]", func() {
 			Entry("at the webhook route", map[string]string{envPanelBase: defaultWebhookPath}),
 			Entry("at the health route", map[string]string{envPanelBase: healthPath}),
 			Entry("at the schema route", map[string]string{envPanelBase: schemaRoot}),
+			Entry("at a schema document route", map[string]string{
+				envPanelBase: schemaRoot + "/team",
+			}),
 		)
 	})
 })

@@ -1,37 +1,68 @@
-import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+import adapter from '@sveltejs/adapter-static';
+import { sveltekit } from '@sveltejs/kit/vite';
+import { svelteTesting } from '@testing-library/svelte/vite';
 import { defineConfig } from 'vitest/config';
 import { configDefaults } from 'vitest/config';
 
-import { mockServer } from './dev/mock-server';
+import { mockServer } from './dev/mock-server.ts';
 
-// The panel's mount point is a runtime flag (`--base-path`), but Vite bakes
-// `base` into the emitted asset URLs at build time. Building against a sentinel
-// and having the Go asset handler substitute the configured prefix into
-// `index.html` keeps one build correct under any mount point. Nothing outside
-// `index.html` is rewritten, so the sentinel must not appear in the bundles.
+// In dev the mock server mounts at /, so SvelteKit's router must not enforce
+// the production base. The build keeps the sentinel so the Go server can
+// resolve it at startup.
+const isMockDev = process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
+
+// The mock no-ops unless `SMYKLOT_PANEL_DEV_MOCK=1`, so the build and the
+// default dev server are unaffected by it being listed here.
 export default defineConfig({
-  base: '/__smyklot_panel_base__/',
-  experimental: {
-    // Assets referenced from JS and CSS resolve relative to their importer
-    // instead of the baked base, so the sentinel stays out of the bundles.
-    // index.html keeps the default handling: the Go server rewrites it.
-    renderBuiltUrl(_filename, { hostType }) {
-      return hostType === 'html' ? undefined : { relative: true };
-    },
-  },
-  // The mock no-ops unless `SMYKLOT_PANEL_DEV_MOCK=1`, so the build and the
-  // default dev server are unaffected by it being listed here.
-  plugins: [svelte(), mockServer()],
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-    // The service worker reads this graph at install time so every hashed
-    // application asset is available before it takes control.
-    manifest: 'cache-manifest.json',
+  plugins: [
+    sveltekit({
+      preprocess: vitePreprocess(),
+      adapter: adapter({
+        pages: 'dist',
+        assets: 'dist',
+        fallback: 'index.html',
+      }),
+      csp: {
+        mode: 'hash',
+        directives: {
+          'default-src': ['self'],
+          'connect-src': ['self'],
+          'img-src': ['self', 'https:'],
+          'style-src': ['self'],
+          // Virtualized rows, data bars, and component dimensions are dynamic
+          // style attributes. Keep style elements hash-restricted while allowing
+          // that narrower channel.
+          'style-src-attr': ['unsafe-inline'],
+          'script-src': ['self'],
+          'base-uri': ['none'],
+          'form-action': ['self', 'https://github.com'],
+        },
+      },
+      paths: {
+        base: isMockDev ? '' : '/__smyklot_panel_base__',
+      },
+      version: {
+        // The Go server resolves this in every text asset, including the
+        // generated service worker, from the runtime deployment version.
+        name: '__smyklot_panel_version__',
+      },
+    }),
+    svelteTesting(),
+    mockServer(),
+  ],
+  server: {
+    port: 5175,
+    strictPort: true,
   },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
+    server: {
+      deps: {
+        inline: [/svelte/, /@testing-library/],
+      },
+    },
     // The browser budget boots a dev server and drives Chrome, which costs ten
     // times what everything else here costs put together. It runs from
     // `vitest.browser.config.ts`, so that `npm test` stays a loop worth running

@@ -228,7 +228,18 @@ func (c *Client) getFileContent(
 	owner, repo, filePath string,
 	maxSize int,
 ) ([]byte, error) {
+	return c.getFileContentAtRef(ctx, owner, repo, filePath, "", maxSize)
+}
+
+func (c *Client) getFileContentAtRef(
+	ctx context.Context,
+	owner, repo, filePath, ref string,
+	maxSize int,
+) ([]byte, error) {
 	path := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, filePath)
+	if ref != "" {
+		path += "?" + url.Values{"ref": []string{ref}}.Encode()
+	}
 
 	response, err := doJSON[map[string]interface{}](ctx, c, http.MethodGet, path, nil)
 	if err != nil {

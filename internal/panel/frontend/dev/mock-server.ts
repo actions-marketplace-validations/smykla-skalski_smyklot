@@ -6,6 +6,8 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin } from 'vite';
 
+import { rewriteMockHtml } from './mock-html.ts';
+
 import type {
   AuditEntry,
   AccessDecision,
@@ -43,9 +45,9 @@ import type {
   UpdateRootUserInput,
   InvitationDays,
   InvitationStatus,
-} from '../src/lib/types';
-import { canonicalStringify, PREF_DEFAULTS } from '../src/lib/preferences-sync';
-import { parseInvitationToken, parsePanelRoute } from '../src/lib/routes';
+} from '../src/lib/types.ts';
+import { canonicalStringify, PREF_DEFAULTS } from '../src/lib/preferences-sync.ts';
+import { parseInvitationToken, parsePanelRoute } from '../src/lib/routes.ts';
 
 type DevHttpServer = HttpServer;
 const BASE = '';
@@ -172,10 +174,6 @@ interface MockState {
 
 /** How a served `index.html` reaches its final form: Vite's own dev transform. */
 type IndexTransform = (url: string, html: string) => Promise<string> | string;
-
-const ERROR_SENTINEL = '__smyklot_panel_error__';
-const NOSCRIPT_SENTINEL = '__smyklot_panel_noscript__';
-const DEFAULT_NOSCRIPT = 'The Smyklot panel needs JavaScript to run.';
 
 function enabled(): boolean {
   return process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
@@ -1002,28 +1000,19 @@ export function mockServer(): Plugin {
     name: 'smyklot-panel-mock-server',
     config() {
       if (!enabled()) return;
-      // The mock serves the panel at the root rather than at the baked sentinel.
-      return { base: '/', server: opensBrowser() ? { open: '/' } : {} };
+      return { server: opensBrowser() ? { open: '/' } : {} };
     },
     transformIndexHtml(html) {
       if (!enabled()) return html;
-      return html
-        .replaceAll('/__smyklot_panel_base__', '')
-        .replaceAll('__smyklot_panel_version__', 'dev')
-        .replaceAll('__smyklot_panel_service__', 'local mock service')
-        .replaceAll(ERROR_SENTINEL, '')
-        .replaceAll(NOSCRIPT_SENTINEL, DEFAULT_NOSCRIPT);
+      return rewriteMockHtml(html);
     },
     configureServer(server) {
-      if (enabled()) {
-        install(server.httpServer as DevHttpServer, server.middlewares, (url, html) =>
-          server.transformIndexHtml(url, html),
-        );
-      }
+      if (!enabled()) return;
+      install(server.httpServer as DevHttpServer, server.middlewares, (url, html) =>
+        server.transformIndexHtml(url, html),
+      );
     },
     configurePreviewServer(server) {
-      // Preview serves the built bundle, which went through the hook above at
-      // build time, so there is nothing left to transform.
       if (enabled()) {
         install(server.httpServer as DevHttpServer, server.middlewares, (_url, html) => html);
       }
@@ -1223,7 +1212,7 @@ async function handle(
 ): Promise<void> {
   if (req.headers.host !== undefined) devOrigin = `http://${req.headers.host}`;
   const parsed = new URL(req.url ?? '/', 'http://localhost');
-  const path = parsed.pathname;
+  const path = parsed.pathname.replace(/^\/__smyklot_panel_base__/, '');
   const method = req.method ?? 'GET';
 
   if (path === '/' && method === 'GET') {
@@ -1266,10 +1255,6 @@ async function handle(
       await respondError(state, req, res, 404, 'not_found', 'panel route not found');
       return;
     }
-  }
-  if (path.startsWith('/__smyklot_panel_base__')) {
-    respond(res, 404, { error: { code: 'not_found', message: 'the mock panel is mounted at /' } });
-    return;
   }
   const publicInvitation = path.match(/^\/api\/v1\/invites\/(?<token>[^/]+)$/);
   if (publicInvitation && method === 'GET') {
@@ -1534,6 +1519,12 @@ async function handle(
     );
     const rootRepositorySettings = path.match(
       /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)\/settings$/,
+    );
+    const repositoryConfigMigration = path.match(
+      /^\/api\/v1\/targets\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)\/config-migration$/,
+    );
+    const rootRepositoryConfigMigration = path.match(
+      /^\/api\/v1\/root\/installations\/(?<target>[^/]+)\/repositories\/(?<repository>[^/]+)\/config-migration$/,
     );
     const audit = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/audit$/);
     const failures = path.match(/^\/api\/v1\/targets\/(?<target>[^/]+)\/failures$/);
@@ -1832,6 +1823,13 @@ async function handle(
       respond(res, 200, stored.detail);
       return;
     }
+    if (rootRepositoryConfigMigration && method === 'POST') {
+      const target = findTarget(state, rootRepositoryConfigMigration.groups?.target ?? '');
+      requireRootWrite(state, target);
+      const stored = findRepository(target, rootRepositoryConfigMigration.groups?.repository ?? '');
+      respond(res, 200, resetMockConfigMigration(state, target, stored));
+      return;
+    }
 
     if (installationUserDecisions && method === 'GET') {
       const target = findTarget(state, installationUserDecisions.groups?.target ?? '');
@@ -2031,6 +2029,12 @@ async function handle(
         repository_id: stored.detail.repository.id,
       });
       respond(res, 200, stored.detail);
+      return;
+    }
+    if (repositoryConfigMigration && method === 'POST') {
+      const target = findTarget(state, repositoryConfigMigration.groups?.target ?? '');
+      const stored = findRepository(target, repositoryConfigMigration.groups?.repository ?? '');
+      respond(res, 200, resetMockConfigMigration(state, target, stored));
       return;
     }
     if (installationAudit && method === 'GET') {
@@ -2755,9 +2759,11 @@ function scopedUserValue(state: MockState, targetId: string, user: PanelUser): P
   return { ...structuredClone(user), target_access: structuredClone(access) };
 }
 
-function findRepository(target: MockTarget, encodedId: string): MockRepository {
-  const id = decodeURIComponent(encodedId);
-  const repository = target.repositories.find((entry) => entry.detail.repository.id === id);
+function findRepository(target: MockTarget, encodedSelector: string): MockRepository {
+  const selector = decodeURIComponent(encodedSelector);
+  const repository = target.repositories.find(
+    (entry) => entry.detail.repository.id === selector || entry.detail.repository.name === selector,
+  );
   if (repository === undefined) throw new MockApiError(404, 'not_found', 'repository not found');
   return repository;
 }
@@ -2781,6 +2787,35 @@ function addAudit(target: MockTarget, action: string, summary: string, repositor
     repository_full_name: repository,
     created_at: new Date().toISOString(),
   });
+}
+
+function resetMockConfigMigration(
+  state: MockState,
+  target: MockTarget,
+  stored: MockRepository,
+): RepositoryDetail {
+  if (stored.detail.config_migration === 'none') return stored.detail;
+  if (
+    stored.detail.config_migration !== 'declined' &&
+    stored.detail.config_migration !== 'blocked'
+  ) {
+    throw new MockApiError(409, 'conflict', 'the migration is no longer declined');
+  }
+  stored.detail.config_migration = 'none';
+  stored.detail.config_migration_pr = undefined;
+  addAudit(
+    target,
+    'repository.config_migration.reset',
+    'Allowed Smyklot to propose the TOML migration again',
+    stored.detail.repository.full_name,
+  );
+  broadcast(state, {
+    type: 'repository.changed',
+    target_id: target.value.id,
+    repository_id: stored.detail.repository.id,
+  });
+
+  return stored.detail;
 }
 
 function mockDecisions(user: PanelUser, target: PanelTarget): AccessDecision[] {
@@ -3202,7 +3237,7 @@ async function renderErrorDocument(
   code: string,
   message: string,
 ): Promise<string> {
-  const source = readFileSync(resolve(FRONTEND_DIR, 'index.html'), 'utf8');
+  const source = readFileSync(resolve(FRONTEND_DIR, 'src/app.html'), 'utf8');
   const transformed = await state.transformIndex(url, source);
   const descriptor = escapeHtml(JSON.stringify({ status, code, message }));
 

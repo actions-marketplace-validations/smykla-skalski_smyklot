@@ -141,7 +141,12 @@ func (s *Server) postRootRepositoryConfigMigrationReset(w http.ResponseWriter, r
 		return
 	}
 	s.resetConfigMigration(
-		w, r, context.Target, repository, context.Account.ID, s.writeRootWriteError,
+		w, r, context.Target, repository,
+		configMigrationActor{
+			accountID: context.Account.ID, elevationID: elevationID(context.Elevation),
+			sessionTokenHash: context.SessionHash,
+		},
+		s.writeRootWriteError,
 	)
 }
 

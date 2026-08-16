@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,7 +34,7 @@ func (s *Store) UpdateTargetSettings(
 
 	defer func() { _ = tx.Rollback() }()
 
-	elevation, err := elevatedWrite(
+	elevation, err := s.elevatedWrite(
 		ctx,
 		tx,
 		change.ElevationID,
@@ -116,7 +117,7 @@ func (s *Store) UpdateRepositorySettings(
 
 	defer func() { _ = tx.Rollback() }()
 
-	elevation, err := elevatedWrite(
+	elevation, err := s.elevatedWrite(
 		ctx,
 		tx,
 		change.ElevationID,
@@ -262,26 +263,28 @@ func (s *Store) SetRepositoryConfigMigration(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	result, err := tx.ExecContext(ctx, `
-UPDATE repositories SET
-    config_migration = ?,
-    config_migration_pr = ?
-WHERE target_id = ? AND id = ?`,
-		migration.State,
-		migration.PullRequest,
-		migration.TargetID,
-		migration.RepositoryID,
-	)
-	if err != nil {
-		return fmt.Errorf("update repository config migration: %w", err)
+	var elevation *storage.Elevation
+	if migration.ActorAccountID != nil {
+		elevation, err = s.elevatedWrite(
+			ctx,
+			tx,
+			migration.ElevationID,
+			migration.SessionTokenHash,
+			*migration.ActorAccountID,
+			migration.TargetID,
+			migration.ChangedAt,
+		)
+		if err != nil {
+			return err
+		}
 	}
 
-	affected, err := result.RowsAffected()
+	changed, err := updateRepositoryConfigMigration(ctx, tx, migration)
 	if err != nil {
-		return fmt.Errorf("update repository config migration: %w", err)
+		return err
 	}
-	if affected == 0 {
-		return storage.ErrNotFound
+	if !changed {
+		return nil
 	}
 
 	// Only when somebody decided. The sweep observed a pull request rather than
@@ -292,16 +295,25 @@ WHERE target_id = ? AND id = ?`,
 		if err != nil {
 			return fmt.Errorf("read repository for audit: %w", err)
 		}
-		if _, err := insertAudit(ctx, tx, auditInsert{
+		auditEventID, err := insertAudit(ctx, tx, auditInsert{
 			TargetID:           migration.TargetID,
 			RepositoryID:       &migration.RepositoryID,
 			RepositoryFullName: &repository.FullName,
 			ActorAccountID:     *migration.ActorAccountID,
+			ElevationID:        migration.ElevationID,
 			Action:             actionConfigMigration,
 			Summary:            "Allowed Smyklot to propose the TOML migration again",
 			CreatedAt:          migration.ChangedAt,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if elevation != nil {
+			if err := insertElevatedNotifications(
+				ctx, tx, *elevation, auditEventID, actionConfigMigration, migration.ChangedAt,
+			); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -310,6 +322,64 @@ WHERE target_id = ? AND id = ?`,
 	}
 
 	return nil
+}
+
+func updateRepositoryConfigMigration(
+	ctx context.Context,
+	tx runner,
+	migration storage.RepositoryConfigMigration,
+) (bool, error) {
+	query := `
+UPDATE repositories SET
+    config_migration = ?,
+    config_migration_pr = ?
+WHERE target_id = ? AND id = ?`
+	arguments := []any{
+		migration.State,
+		migration.PullRequest,
+		migration.TargetID,
+		migration.RepositoryID,
+	}
+	if migration.ActorAccountID != nil {
+		if migration.State != storage.ConfigMigrationNone || migration.PullRequest != nil {
+			return false, storage.ErrConflict
+		}
+		query += " AND config_migration IN (?, ?)"
+		arguments = append(
+			arguments,
+			storage.ConfigMigrationDeclined,
+			storage.ConfigMigrationBlocked,
+		)
+	}
+	result, err := tx.ExecContext(ctx, query, arguments...)
+	if err != nil {
+		return false, fmt.Errorf("update repository config migration: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update repository config migration: %w", err)
+	}
+	if affected != 0 {
+		return true, nil
+	}
+
+	var current storage.ConfigMigrationState
+	err = tx.QueryRowContext(ctx, `
+SELECT config_migration FROM repositories WHERE target_id = ? AND id = ?`,
+		migration.TargetID,
+		migration.RepositoryID,
+	).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, storage.ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("classify repository config migration update: %w", err)
+	}
+	if migration.ActorAccountID != nil && current == storage.ConfigMigrationNone {
+		return false, nil
+	}
+
+	return false, storage.ErrConflict
 }
 
 func updateRepositorySettings(

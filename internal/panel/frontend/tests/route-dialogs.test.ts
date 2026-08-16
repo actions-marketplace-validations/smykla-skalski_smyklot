@@ -133,6 +133,10 @@ describe('dialog addresses on a view [Unit]', () => {
 
 describe('dialog addresses in the Root console [Unit]', () => {
   it('gives the Root tables the same grammar as an installation', () => {
+    expect(parsePanelRoute('', '/root/access/users/add')).toEqual({
+      rootView: 'access-users',
+      dialog: { name: 'root-add-installation-user', params: {} },
+    });
     expect(parsePanelRoute('', '/root/access/users/octocat/ban')).toEqual({
       rootView: 'access-users',
       dialog: { name: 'root-user-action', params: { user: 'octocat', action: 'ban' } },
@@ -198,7 +202,7 @@ describe('dialog addresses in the Root console [Unit]', () => {
  */
 describe('the Root user actions the console offers [Unit]', () => {
   const component = readFileSync(
-    new URL('../src/components/RootAccess.svelte', import.meta.url),
+    new URL('../src/lib/components/RootAccess.svelte', import.meta.url),
     'utf8',
   );
 

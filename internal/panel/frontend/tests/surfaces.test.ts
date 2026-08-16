@@ -105,10 +105,10 @@ describe.each(palettes.map((palette) => [palette.name, palette] as const))(
 
 describe('the palette', () => {
   const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
-  const sources = readdirSync(new URL('../src/components', import.meta.url))
+  const sources = readdirSync(new URL('../src/lib/components', import.meta.url))
     .filter((file) => file.endsWith('.svelte'))
-    .map((file) => readFileSync(new URL(`../src/components/${file}`, import.meta.url), 'utf8'))
-    .concat(css, readFileSync(new URL('../src/App.svelte', import.meta.url), 'utf8'));
+    .map((file) => readFileSync(new URL(`../src/lib/components/${file}`, import.meta.url), 'utf8'))
+    .concat(css, readFileSync(new URL('../src/routes/+layout.svelte', import.meta.url), 'utf8'));
 
   it('declares nothing it does not paint', () => {
     // Four tokens were declared in every palette and referenced by nothing: --table-sorted-bg,
@@ -152,7 +152,7 @@ describe('the palette', () => {
        near-black label on the Root menu's near-black track at 1.09:1. Nothing else in the block
        was wrong, and the one that was is the one nobody reads until they hover. */
     const control = readFileSync(
-      new URL('../src/components/SegmentedControl.svelte', import.meta.url),
+      new URL('../src/lib/components/SegmentedControl.svelte', import.meta.url),
       'utf8',
     );
     const body = (selector: string): string => {

@@ -73,13 +73,18 @@ func fetchRepositoryConfig(
 			status: storage.RepositoryFileMissing, fingerprint: fingerprint,
 		}, nil
 	}
+
+	return repositoryConfigFileFrom(found, fingerprint), nil
+}
+
+func repositoryConfigFileFrom(found github.RepoConfig, fingerprint string) repositoryConfigFile {
 	if len(bytes.TrimSpace(found.Content)) == 0 {
 		return repositoryConfigFile{
 			status:      storage.RepositoryFileValid,
 			path:        found.Path,
 			superseded:  found.Superseded,
 			fingerprint: fingerprint,
-		}, nil
+		}
 	}
 
 	patch, err := parseRepositoryConfig(found)
@@ -90,7 +95,7 @@ func fetchRepositoryConfig(
 			path:        found.Path,
 			superseded:  found.Superseded,
 			fingerprint: fingerprint,
-		}, nil
+		}
 	}
 
 	return repositoryConfigFile{
@@ -99,7 +104,7 @@ func fetchRepositoryConfig(
 		path:        found.Path,
 		superseded:  found.Superseded,
 		fingerprint: fingerprint,
-	}, nil
+	}
 }
 
 // parseRepositoryConfig reads a found file in whichever format its name says.

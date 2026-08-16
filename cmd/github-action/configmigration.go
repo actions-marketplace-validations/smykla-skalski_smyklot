@@ -12,11 +12,9 @@ import (
 )
 
 const (
-	// migrationBranch is fixed rather than derived from the content.
-	//
-	// It is what makes "have I already asked?" one reference lookup instead of
-	// a pull request search, and it is what stops a second proposal appearing
-	// beside the first when the file changes while one is open.
+	// migrationBranch prefixes immutable, content-addressed proposal branches.
+	// A retry built from a newer default branch gets a new name rather than
+	// replacing the branch a maintainer may still be working on.
 	migrationBranch = "smyklot/config-toml-migration"
 
 	// migrationTarget is where the converted file goes: the first path
@@ -94,11 +92,11 @@ func (s *server) proposeConfigMigration(
 		)
 
 	case migrationStepFollowUp:
-		return s.followUpConfigMigration(ctx, client, targetID, repo)
+		return s.followUpConfigMigration(ctx, client, targetID, repo, repository.ConfigMigrationPR)
 
 	default:
 		return s.stopIfRefused(
-			ctx, targetID, repo, s.openConfigMigration(ctx, targetID, client, repo, file),
+			ctx, targetID, repo, s.openConfigMigration(ctx, targetID, client, repo),
 		)
 	}
 }
@@ -252,15 +250,22 @@ func (s *server) followUpConfigMigration(
 	client *github.Client,
 	targetID string,
 	repo github.Repository,
+	pullRequest *int,
 ) error {
-	pull, err := client.FindPullRequestByHead(ctx, repo.Owner, repo.Name, migrationBranch)
+	if pullRequest == nil {
+		// A proposed state without the proposal number cannot ever be followed.
+		// Heal it so the next tick can create a proposal it can track.
+		return s.recordConfigMigration(ctx, targetID, repo, storage.ConfigMigrationNone, nil)
+	}
+
+	pull, err := client.GetPullRequestState(ctx, repo.Owner, repo.Name, *pullRequest)
 	if err != nil {
 		return err
 	}
 
 	switch {
-	case pull == nil || pull.State != github.PullRequestClosed:
-		// Nothing to report, or still open and waiting on the repository.
+	case pull.Open:
+		// Still waiting on the repository.
 		return nil
 
 	case pull.Merged:
@@ -289,46 +294,58 @@ func (s *server) openConfigMigration(
 	targetID string,
 	client *github.Client,
 	repo github.Repository,
-	file repositoryConfigFile,
 ) error {
-	// One reference lookup answers "have I already done this". A branch that
-	// exists means an earlier tick got as far as pushing it, and what to do
-	// about that depends on whether anything is still open against it.
-	existing, err := client.GetRef(ctx, repo.Owner, repo.Name, "heads/"+migrationBranch)
+	built, err := s.buildConfigMigration(ctx, client, repo)
+	if err != nil || built.commit == "" {
+		return err
+	}
+	head := migrationBranchFor(built.tree)
+
+	existing, err := client.GetRef(ctx, repo.Owner, repo.Name, "heads/"+head)
 	if err != nil {
 		return err
 	}
+	if existing == "" {
+		if err := s.pushConfigMigration(ctx, client, repo, head, built.commit); err != nil {
+			return err
+		}
+	} else {
+		tip, err := client.GetCommit(ctx, repo.Owner, repo.Name, existing)
+		if err != nil {
+			return err
+		}
+		if tip.Tree != built.tree {
+			logging.From(ctx).Info(
+				"configuration migration branch changed after creation; leaving it alone",
+				"branch", head,
+				"commit", existing,
+			)
 
-	if existing != "" {
-		adopted, err := s.adoptConfigMigration(ctx, targetID, client, repo)
+			return nil
+		}
+
+		adopted, err := s.adoptConfigMigration(ctx, targetID, client, repo, head)
 		if err != nil || adopted {
 			return err
 		}
-
-		// Nothing open against the branch: an earlier tick pushed it and never
-		// opened anything, or the proposal was closed and an operator has since
-		// asked for it again. Either way the branch is stale - but rebuilding it
-		// replaces its history, so it is only stale if Smyklot is still the last
-		// thing to have written to it.
-		own, err := s.ownsMigrationBranch(ctx, client, repo, existing)
-		if err != nil || !own {
-			return err
-		}
 	}
 
-	commit, branch, err := s.buildConfigMigration(ctx, client, repo, file)
-	if err != nil || commit == "" {
-		return err
-	}
+	return s.createConfigMigrationPull(
+		ctx, targetID, client, repo, head, built.branch, built.source,
+	)
+}
 
-	if err := s.pushConfigMigration(ctx, client, repo, commit, existing != ""); err != nil {
-		return err
-	}
-
+func (s *server) createConfigMigrationPull(
+	ctx context.Context,
+	targetID string,
+	client *github.Client,
+	repo github.Repository,
+	head, branch, source string,
+) error {
 	pull, err := client.CreatePullRequest(ctx, repo.Owner, repo.Name, github.NewPullRequest{
 		Title: migrationTitle,
-		Body:  fmt.Sprintf(migrationBody, file.path),
-		Head:  migrationBranch,
+		Body:  fmt.Sprintf(migrationBody, source),
+		Head:  head,
 		Base:  branch,
 	})
 	if err != nil {
@@ -338,7 +355,7 @@ func (s *server) openConfigMigration(
 	logging.From(ctx).Info(
 		"configuration migration proposed",
 		"pull_request", pull.Number,
-		"from", file.path,
+		"from", source,
 		"to", migrationTarget,
 	)
 
@@ -347,34 +364,51 @@ func (s *server) openConfigMigration(
 	)
 }
 
-// buildConfigMigration writes the converted file as a commit on the default
-// branch, and reports the commit and the branch it was built on.
+// buildConfigMigration reads and converts one immutable default-branch commit,
+// then reports the new commit, its base branch, and the source file it moved.
 //
 // An empty commit means there is nothing to build on - a repository whose
 // default branch GitHub did not name, or which has no commits at all.
+type configMigrationBuild struct {
+	commit string
+	branch string
+	source string
+	tree   string
+}
+
 func (s *server) buildConfigMigration(
 	ctx context.Context,
 	client *github.Client,
 	repo github.Repository,
-	file repositoryConfigFile,
-) (commit, branch string, err error) {
-	content, err := config.RenderTOML(file.patch)
-	if err != nil {
-		return "", "", err
-	}
-
+) (configMigrationBuild, error) {
 	// The branch the file was read from, since that is the branch the
 	// configuration takes effect on. A repository whose default GitHub did not
 	// report is one this cannot safely guess at.
-	branch = repo.DefaultBranch
+	branch := repo.DefaultBranch
 	if branch == "" {
-		return "", "", nil
+		return configMigrationBuild{}, nil
 	}
 
 	base, err := client.GetRef(ctx, repo.Owner, repo.Name, "heads/"+branch)
 	if err != nil || base == "" {
 		// An empty repository has no configuration file to move.
-		return "", "", err
+		return configMigrationBuild{}, err
+	}
+
+	// Re-read from the immutable commit this tree is built from. The sweep's
+	// cached file may describe an older default-branch tip; using those bytes
+	// here would delete a maintainer's newer YAML while writing stale TOML.
+	found, err := client.FindRepoConfigAtCommit(ctx, repo.Owner, repo.Name, "", base)
+	if err != nil {
+		return configMigrationBuild{}, err
+	}
+	file := repositoryConfigFileFrom(found, "")
+	if !migratable(file) {
+		return configMigrationBuild{}, nil
+	}
+	content, err := config.RenderTOML(file.patch)
+	if err != nil {
+		return configMigrationBuild{}, err
 	}
 
 	// The tree the base commit records, because that is what a tree is built
@@ -382,14 +416,14 @@ func (s *server) buildConfigMigration(
 	// commit points at.
 	baseCommit, err := client.GetCommit(ctx, repo.Owner, repo.Name, base)
 	if err != nil {
-		return "", "", err
+		return configMigrationBuild{}, err
 	}
 
 	blob, err := client.CreateBlob(
 		ctx, repo.Owner, repo.Name, append([]byte(migrationHeader), content...),
 	)
 	if err != nil {
-		return "", "", err
+		return configMigrationBuild{}, err
 	}
 
 	tree, err := client.CreateTree(ctx, repo.Owner, repo.Name, baseCommit.Tree, []github.TreeChange{
@@ -397,70 +431,28 @@ func (s *server) buildConfigMigration(
 		{Path: file.path},
 	})
 	if err != nil {
-		return "", "", err
+		return configMigrationBuild{}, err
 	}
 
-	commit, err = client.CreateCommit(ctx, repo.Owner, repo.Name, migrationCommit, tree, base)
+	commit, err := client.CreateCommit(ctx, repo.Owner, repo.Name, migrationCommit, tree, base)
 
-	return commit, branch, err
-}
-
-// ownsMigrationBranch reports a branch still carrying the commit Smyklot put
-// there, and nothing on top of it.
-//
-// A branch named after the bot is the bot's by convention and by nothing
-// stronger - it is a place anybody can push to. So the tip is checked rather
-// than assumed, because the alternative is that a fixup somebody pushed after
-// closing the proposal disappears on the next tick with no error and no trace:
-// the failure that made file sync's force-push dangerous in the tool this
-// replaces.
-//
-// Somebody else's branch is left alone rather than written down as blocked,
-// because the state resolves itself. Whoever pushed opens a pull request, and
-// the next tick adopts it; a refusal recorded here would be a refusal to.
-func (s *server) ownsMigrationBranch(
-	ctx context.Context,
-	client *github.Client,
-	repo github.Repository,
-	head string,
-) (bool, error) {
-	tip, err := client.GetCommit(ctx, repo.Owner, repo.Name, head)
-	if err != nil {
-		return false, err
-	}
-
-	if tip.Message == migrationCommit {
-		return true, nil
-	}
-
-	logging.From(ctx).Info(
-		"configuration migration branch carries somebody else's work; leaving it alone",
-		"branch", migrationBranch,
-		"commit", head,
-	)
-
-	return false, nil
+	return configMigrationBuild{
+		commit: commit, branch: branch, source: file.path, tree: tree,
+	}, err
 }
 
 // pushConfigMigration puts the commit on the migration branch.
-//
-// Replacing an existing branch is a force, and what makes that safe is checked
-// rather than assumed. A branch with an open proposal is adopted instead of
-// pushed over, and a branch whose tip somebody else wrote is left alone, so
-// what reaches here is a branch holding Smyklot's own commit and nothing else.
 func (s *server) pushConfigMigration(
 	ctx context.Context,
 	client *github.Client,
 	repo github.Repository,
+	branch string,
 	commit string,
-	exists bool,
 ) error {
-	if !exists {
-		return client.CreateRef(ctx, repo.Owner, repo.Name, "heads/"+migrationBranch, commit)
-	}
-
-	return client.UpdateRef(ctx, repo.Owner, repo.Name, "heads/"+migrationBranch, commit, true)
+	return client.CreateRef(ctx, repo.Owner, repo.Name, "heads/"+branch, commit)
 }
+
+func migrationBranchFor(tree string) string { return migrationBranch + "-" + tree }
 
 // adoptConfigMigration records a proposal that is still open, and reports
 // whether there was one.
@@ -475,8 +467,9 @@ func (s *server) adoptConfigMigration(
 	targetID string,
 	client *github.Client,
 	repo github.Repository,
+	branch string,
 ) (bool, error) {
-	pull, err := client.FindPullRequestByHead(ctx, repo.Owner, repo.Name, migrationBranch)
+	pull, err := client.FindPullRequestByHead(ctx, repo.Owner, repo.Name, branch)
 	if err != nil || pull == nil || pull.State != github.PullRequestOpen {
 		return false, err
 	}

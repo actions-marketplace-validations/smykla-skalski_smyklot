@@ -99,10 +99,6 @@ type Commit struct {
 	// a commit. Peeling one to the other is a request rather than an assumption
 	// about what GitHub will accept.
 	Tree string
-
-	// Message is what the commit says, which is how Smyklot recognises its own
-	// work on a branch anyone else can also push to.
-	Message string
 }
 
 // GetCommit reads a commit object.
@@ -114,7 +110,7 @@ func (c *Client) GetCommit(ctx context.Context, owner, repo, sha string) (Commit
 		return Commit{}, wrapError(ErrAPIRequest, http.MethodGet, path, err)
 	}
 
-	return Commit{Tree: found.GetTree().GetSHA(), Message: found.GetMessage()}, nil
+	return Commit{Tree: found.GetTree().GetSHA()}, nil
 }
 
 // UpdateRef moves an existing reference to a commit.
@@ -191,7 +187,7 @@ func (c *Client) CreateTree(
 	return tree.GetSHA(), nil
 }
 
-// CreateCommit records a tree as a commit on top of parent.
+// CreateCommit records a tree on top of one parent.
 func (c *Client) CreateCommit(
 	ctx context.Context,
 	owner, repo, message, tree, parent string,

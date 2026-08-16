@@ -82,7 +82,14 @@ async function measure(path: string): Promise<Measurement> {
   const page = await panel.browser.newPage();
   const watcher = watch(page);
   try {
+    const mounted = page.waitForRequest((request) => request.url().includes('/api/'), {
+      timeout: 30_000,
+    });
     await page.goto(`${panel.origin}${path}`, { waitUntil: 'domcontentloaded' });
+    // `DOMContentLoaded` only says Vite served the shell. On a cold run its client
+    // chunks can still be compiling, especially while all routes start together.
+    // Begin the settle window when the mounted panel first reaches its API.
+    await mounted;
     await page.waitForTimeout(SETTLE_MS);
 
     return {
@@ -110,9 +117,13 @@ async function walk(): Promise<Measurement> {
   const page = await panel.browser.newPage();
   const watcher = watch(page);
   try {
+    const mounted = page.waitForRequest((request) => request.url().includes('/api/'), {
+      timeout: 30_000,
+    });
     await page.goto(`${panel.origin}/i/${panel.account}/settings`, {
       waitUntil: 'domcontentloaded',
     });
+    await mounted;
     await page.waitForTimeout(SETTLE_MS);
 
     for (const path of [

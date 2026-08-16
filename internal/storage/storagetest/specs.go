@@ -363,6 +363,105 @@ func DeclareSpecs(harness Harness) {
 		Expect(errors.Is(err, storage.ErrConflict)).To(BeTrue())
 	})
 
+	It("binds configuration migration resets to their Root elevation", func() {
+		root, owner, target, session := seedElevationScenario(ctx, store, now)
+		elevation, err := store.BeginElevation(ctx, storage.ElevationGrant{
+			ID: "elevation-config-migration", SessionTokenHash: session.TokenHash,
+			RootAccountID: root.ID, TargetID: target.TargetID, StartedAt: now,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		proposal := 12
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationDeclined, PullRequest: &proposal,
+		})).To(Succeed())
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationNone, ActorAccountID: &root.ID,
+			ElevationID: &elevation.ID, SessionTokenHash: session.TokenHash,
+			ChangedAt: now.Add(time.Minute),
+		})).To(Succeed())
+		// A retry after the first response was lost is a no-op, not a second
+		// decision with another audit event and Owner notification.
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationNone, ActorAccountID: &root.ID,
+			ElevationID: &elevation.ID, SessionTokenHash: session.TokenHash,
+			ChangedAt: now.Add(2 * time.Minute),
+		})).To(Succeed())
+
+		notifications, err := store.ListSecurityNotifications(
+			ctx, owner.ID, storage.NotificationPageRequest{Limit: 10},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(notifications.Items).To(ConsistOf(And(
+			HaveField("Action", "repository.config_migration.reset"),
+			HaveField("ElevationID", elevation.ID),
+		)))
+		audit, err := store.ListRootAudit(ctx, storage.RootAuditPageRequest{
+			HistoryPageRequest: storage.HistoryPageRequest{Limit: 10},
+			Categories:         []storage.AuditCategory{storage.AuditCategoryConfiguration},
+			TargetID:           &target.TargetID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(audit.Items).To(ContainElement(And(
+			HaveField("Action", "repository.config_migration.reset"),
+			HaveField("ElevationID", HaveValue(Equal(elevation.ID))),
+		)))
+		Expect(audit.Items).To(HaveLen(1))
+
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationBlocked,
+		})).To(Succeed())
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationNone, ActorAccountID: &root.ID,
+			ElevationID: &elevation.ID, SessionTokenHash: session.TokenHash,
+			ChangedAt: now.Add(3 * time.Minute),
+		})).To(Succeed())
+		repository, err := store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationNone))
+
+		proposal = 13
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationProposed, PullRequest: &proposal,
+		})).To(Succeed())
+		err = store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationNone, ActorAccountID: &root.ID,
+			ElevationID: &elevation.ID, SessionTokenHash: session.TokenHash,
+			ChangedAt: now.Add(4 * time.Minute),
+		})
+		Expect(errors.Is(err, storage.ErrConflict)).To(BeTrue())
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationProposed))
+
+		_, err = store.EndElevation(
+			ctx, elevation.ID, session.TokenHash, storage.ElevationRevoked, now.Add(5*time.Minute),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		proposal = 14
+		Expect(store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationDeclined, PullRequest: &proposal,
+		})).To(Succeed())
+		err = store.SetRepositoryConfigMigration(ctx, storage.RepositoryConfigMigration{
+			TargetID: target.TargetID, RepositoryID: "repo-1",
+			State: storage.ConfigMigrationNone, ActorAccountID: &root.ID,
+			ElevationID: &elevation.ID, SessionTokenHash: session.TokenHash,
+			ChangedAt: now.Add(6 * time.Minute),
+		})
+		Expect(errors.Is(err, storage.ErrExpired)).To(BeTrue())
+		repository, err = store.GetRepository(ctx, target.TargetID, "repo-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigMigration).To(Equal(storage.ConfigMigrationDeclined))
+	})
+
 	It("records elevated access and invitation writes with Owner notifications", func() {
 		root, owner, target, session := seedElevationScenario(ctx, store, now)
 		elevation, err := store.BeginElevation(ctx, storage.ElevationGrant{

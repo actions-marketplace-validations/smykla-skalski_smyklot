@@ -313,7 +313,7 @@ Create shortcuts for commands:
 
 ```yaml
 env:
-  SMYKLOT_COMMAND_ALIASES: '{"app":"approve","a":"approve","m":"merge"}'
+  SMYKLOT_COMMAND_ALIASES: "app=approve,a=approve,m=merge"
 ```
 
 Users can use `/app`, `/a`, or `/m` as shortcuts.

@@ -3,6 +3,7 @@ package panel
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -10,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -28,65 +30,206 @@ const (
 	panelSettingsPath          = "settings"
 )
 
-// The two documents the panel serves by name rather than as plain static files:
-// the shell every navigable route resolves to, and the worker, which is read and
-// rewritten rather than passed through.
+// The documents the panel serves by name rather than as plain static files.
 const (
 	indexAsset         = "index.html"
-	serviceWorkerAsset = "sw.js"
+	serviceWorkerAsset = "service-worker.js"
 )
 
+// Text file extensions whose sentinels the server rewrites at startup. Binary
+// files (images, fonts) are stored verbatim.
+var textExtensions = map[string]bool{
+	".html": true,
+	".js":   true,
+	".mjs":  true,
+	".css":  true,
+	".json": true,
+	".svg":  true,
+	".map":  true,
+}
+
+var scriptSourceAttribute = regexp.MustCompile(`(?i)(?:^|\s)src\s*=`)
+
 type assetBundle struct {
-	files     fs.FS
+	files     map[string][]byte
 	index     []byte
 	indexETag string
-	// The same document with the error placeholders still in it, so an error
-	// response can fill them per request. Kept apart from index rather than
-	// re-derived: index is served on the hot path and must not carry them.
-	errorPage     string
-	serviceWorker []byte
+	// The index with the error and noscript placeholders still in it, so an
+	// error response can fill them per request. Kept apart from index rather
+	// than re-derived: index is served on the hot path and must not carry them.
+	errorPage string
 }
 
 func newAssetBundle(cfg Config) (*assetBundle, error) {
-	index, err := fs.ReadFile(cfg.Assets, indexAsset)
+	files, indexRaw, err := loadAssetFiles(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("read panel index: %w", err)
+		return nil, fmt.Errorf("walk panel assets: %w", err)
 	}
-	rewritten := strings.ReplaceAll(string(index), basePathSentinel, cfg.BasePath)
-	rewritten = strings.ReplaceAll(rewritten, versionSentinel, html.EscapeString(cfg.Version))
-	rewritten = strings.ReplaceAll(rewritten, serviceSentinel, html.EscapeString(cfg.ServiceHost))
+
+	if indexRaw == "" {
+		return nil, fmt.Errorf("panel bundle has no %s", indexAsset)
+	}
+
 	// An error document is built by substitution, so a missing placeholder would
 	// silently serve a page that reports nothing. Fail at startup instead.
 	for _, sentinel := range []string{errorSentinel, noscriptSentinel} {
-		if strings.Count(rewritten, sentinel) != 1 {
+		if strings.Count(indexRaw, sentinel) != 1 {
 			return nil, fmt.Errorf("panel index must carry %s exactly once", sentinel)
 		}
 	}
 	served := strings.NewReplacer(errorSentinel, "", noscriptSentinel, defaultNoscript).
-		Replace(rewritten)
-	serviceWorker, err := fs.ReadFile(cfg.Assets, serviceWorkerAsset)
-	if err != nil {
-		return nil, fmt.Errorf("read panel service worker: %w", err)
-	}
-	encodedVersion, err := json.Marshal(cfg.Version)
-	if err != nil {
-		return nil, fmt.Errorf("encode panel version: %w", err)
-	}
-	rewrittenWorker := string(serviceWorker)
-	for _, placeholder := range []string{`"` + versionSentinel + `"`, `'` + versionSentinel + `'`} {
-		rewrittenWorker = strings.ReplaceAll(rewrittenWorker, placeholder, string(encodedVersion))
-	}
-	if strings.Contains(rewrittenWorker, versionSentinel) {
-		return nil, fmt.Errorf("rewrite panel service worker version")
+		Replace(indexRaw)
+
+	// index.html is served via writeIndex, not from the file map.
+	delete(files, indexAsset)
+
+	// Fail-closed: no served text asset may retain an unresolved sentinel.
+	for p, content := range files {
+		if strings.Contains(string(content), basePathSentinel) ||
+			strings.Contains(string(content), versionSentinel) ||
+			strings.Contains(string(content), serviceSentinel) {
+			return nil, fmt.Errorf("panel asset %s retains an unresolved sentinel after rewrite", p)
+		}
 	}
 
 	return &assetBundle{
-		files:         cfg.Assets,
-		index:         []byte(served),
-		indexETag:     fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(served))),
-		errorPage:     rewritten,
-		serviceWorker: []byte(rewrittenWorker),
+		files:     files,
+		index:     []byte(served),
+		indexETag: fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(served))),
+		errorPage: indexRaw,
 	}, nil
+}
+
+func loadAssetFiles(cfg Config) (map[string][]byte, string, error) {
+	files := make(map[string][]byte)
+	var indexRaw string
+
+	err := fs.WalkDir(cfg.Assets, ".", func(p string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		content, err := fs.ReadFile(cfg.Assets, p)
+		if err != nil {
+			return err
+		}
+		if !textExtensions[path.Ext(p)] {
+			files[p] = content
+			return nil
+		}
+		rewritten := rewriteAssetText(p, string(content), cfg)
+		if p == indexAsset {
+			rewritten, err = refreshInlineScriptHashes(string(content), rewritten)
+			if err != nil {
+				return fmt.Errorf("refresh panel CSP hashes: %w", err)
+			}
+		}
+		files[p] = []byte(rewritten)
+		if p == indexAsset {
+			indexRaw = rewritten
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	return files, indexRaw, nil
+}
+
+func rewriteAssetText(assetPath, content string, cfg Config) string {
+	if assetPath == indexAsset {
+		content = strings.ReplaceAll(content, basePathSentinel, html.EscapeString(cfg.BasePath))
+		content = strings.ReplaceAll(content, versionSentinel, html.EscapeString(cfg.Version))
+
+		return strings.ReplaceAll(content, serviceSentinel, html.EscapeString(cfg.ServiceHost))
+	}
+
+	// The generated worker and version manifest carry these sentinels as
+	// complete string literals. Replacing the delimiters too makes one encoding
+	// correct for JavaScript and JSON, regardless of which quote style the
+	// bundler chose. A naked or embedded sentinel is deliberately left behind so
+	// the fail-closed check below rejects a new, context-ambiguous build shape.
+	content = strings.ReplaceAll(content, basePathSentinel, cfg.BasePath)
+	content = replaceStringLiteral(content, versionSentinel, cfg.Version)
+
+	return replaceStringLiteral(content, serviceSentinel, cfg.ServiceHost)
+}
+
+// SvelteKit hashes its generated inline bootstrap at build time. The bootstrap
+// carries the base-path sentinel, so replacing the sentinel changes the script
+// bytes and invalidates that hash. Refresh the matching CSP token after every
+// HTML rewrite, and fail closed if the generated document no longer has the
+// shape the server knows how to secure.
+func refreshInlineScriptHashes(original, rewritten string) (string, error) {
+	originalScripts, err := inlineScriptBodies(original)
+	if err != nil {
+		return "", err
+	}
+	rewrittenScripts, err := inlineScriptBodies(rewritten)
+	if err != nil {
+		return "", err
+	}
+	if len(originalScripts) != len(rewrittenScripts) {
+		return "", fmt.Errorf(
+			"inline script count changed from %d to %d",
+			len(originalScripts),
+			len(rewrittenScripts),
+		)
+	}
+
+	for index, originalScript := range originalScripts {
+		rewrittenScript := rewrittenScripts[index]
+		if originalScript == rewrittenScript {
+			continue
+		}
+		oldHash := quotedScriptHash(originalScript)
+		if strings.Count(rewritten, oldHash) != 1 {
+			return "", fmt.Errorf("changed inline script %d has no unique CSP hash", index)
+		}
+		rewritten = strings.Replace(rewritten, oldHash, quotedScriptHash(rewrittenScript), 1)
+	}
+
+	return rewritten, nil
+}
+
+func inlineScriptBodies(document string) ([]string, error) {
+	var bodies []string
+	for remaining := document; ; {
+		open := strings.Index(remaining, "<script")
+		if open == -1 {
+			return bodies, nil
+		}
+		tagEnd := strings.IndexByte(remaining[open:], '>')
+		if tagEnd == -1 {
+			return nil, fmt.Errorf("inline script opening tag is incomplete")
+		}
+		tagEnd += open
+		bodyStart := tagEnd + 1
+		closeOffset := strings.Index(remaining[bodyStart:], "</script>")
+		if closeOffset == -1 {
+			return nil, fmt.Errorf("script closing tag is missing")
+		}
+		bodyEnd := bodyStart + closeOffset
+		if !scriptSourceAttribute.MatchString(remaining[open:tagEnd]) {
+			bodies = append(bodies, remaining[bodyStart:bodyEnd])
+		}
+		remaining = remaining[bodyEnd+len("</script>"):]
+	}
+}
+
+func quotedScriptHash(script string) string {
+	digest := sha256.Sum256([]byte(script))
+
+	return `'sha256-` + base64.StdEncoding.EncodeToString(digest[:]) + `'`
+}
+
+func replaceStringLiteral(content, sentinel, value string) string {
+	encoded, _ := json.Marshal(value) // A Go string always has a JSON representation.
+	for _, delimiter := range []string{`"`, `'`, "`"} {
+		content = strings.ReplaceAll(content, delimiter+sentinel+delimiter, string(encoded))
+	}
+
+	return content
 }
 
 func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
@@ -103,8 +246,8 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 		s.writePageError(w, r, http.StatusNotFound, "not_found", "panel asset not found")
 		return
 	}
-	content, err := fs.ReadFile(s.assets.files, relative)
-	if err != nil {
+	content, ok := s.assets.files[relative]
+	if !ok {
 		if isPanelNavigationPath(relative) {
 			s.writeIndex(w, r)
 		} else {
@@ -118,9 +261,8 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	if relative == serviceWorkerAsset {
-		content = s.assets.serviceWorker
 		w.Header().Set("Cache-Control", "no-cache")
-	} else if strings.HasPrefix(relative, "assets/") {
+	} else if strings.HasPrefix(relative, "_app/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=3600")

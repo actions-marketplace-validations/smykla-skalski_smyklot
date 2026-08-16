@@ -98,7 +98,7 @@ async function openAndWatch(path: string, trigger: string): Promise<Thumb> {
         // Scoped to the open layer: a closed popover still has its markup, and its thumb is
         // legitimately nothing at all.
         const indicator = document.querySelector<HTMLElement>(
-          '.app-popover:popover-open .selection-indicator',
+          '.app-popover[data-state="open"] .selection-indicator',
         );
         if (indicator !== null) {
           frames.push({ left: indicator.offsetLeft, width: indicator.offsetWidth });
@@ -112,7 +112,7 @@ async function openAndWatch(path: string, trigger: string): Promise<Thumb> {
     await page.waitForTimeout(SETTLE_MS);
 
     const measured = await page.evaluate(() => {
-      const layer = document.querySelector('.app-popover:popover-open');
+      const layer = document.querySelector('.app-popover[data-state="open"]');
       const indicator = layer?.querySelector('.selection-indicator') ?? null;
       const checked = layer?.querySelector<HTMLInputElement>('input:checked') ?? null;
       const option = checked?.closest('label') ?? null;
@@ -138,7 +138,7 @@ async function openAndWatch(path: string, trigger: string): Promise<Thumb> {
        that says the control still animates at all. */
     const moved = await page.evaluate(async () => {
       const window_ = window as unknown as { thumbFrames: { left: number; width: number }[] };
-      const layer = document.querySelector('.app-popover:popover-open');
+      const layer = document.querySelector('.app-popover[data-state="open"]');
       const options = [...(layer?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? [])];
       const other = options.find((option) => !option.checked);
       if (other === undefined) return null;

@@ -446,6 +446,12 @@ type RepositoryConfigMigration struct {
 	// there is no synthetic account to attribute that to.
 	ActorAccountID *string
 
+	// Elevated Root decisions carry both halves of the proof. The store checks
+	// them again inside the write transaction so an elevation revoked after the
+	// HTTP authorization check cannot still commit.
+	ElevationID      *string
+	SessionTokenHash string
+
 	// ChangedAt stamps the audit entry an actor earns.
 	ChangedAt time.Time
 }

@@ -243,6 +243,34 @@ var _ = Describe("Repository configuration discovery [Unit]", func() {
 		}
 	})
 
+	It("pins migration reads to the resolved default-branch commit", func() {
+		var queries []string
+
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			queries = append(queries, r.URL.Query().Get("ref"))
+			if strings.HasSuffix(r.URL.Path, "/contents/.github/smyklot.yaml") {
+				_, _ = w.Write([]byte(githubtest.ContentsResponse("quiet_success: true\n")))
+
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		}))
+
+		client, err := github.NewClient("test-token", server.URL)
+		Expect(err).NotTo(HaveOccurred())
+
+		found, err := client.FindRepoConfigAtCommit(
+			context.Background(), "acme", "web", "", "base-commit",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found.Path).To(Equal(".github/smyklot.yaml"))
+		Expect(queries).To(HaveLen(len(github.RepoConfigPaths)))
+		Expect(queries).To(ConsistOf(
+			"base-commit", "base-commit", "base-commit", "base-commit",
+		))
+	})
+
 	It("surfaces a read failure rather than trying the next path", func() {
 		var asked []string
 

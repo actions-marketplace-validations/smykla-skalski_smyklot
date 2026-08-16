@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,16 +28,18 @@ type githubStub struct {
 	// is how the configuration migration asks what became of its proposal.
 	branchPRs string
 
-	// migrationRef is the migration branch, empty until something pushes it.
-	migrationRef string
+	// migrationRefs are immutable, content-addressed proposal branches.
+	migrationRefs map[string]string
 
-	// migrationTip is what the commit on the migration branch says. Smyklot's
-	// own, unless a spec describes somebody else having pushed to it.
-	migrationTip string
+	// migrationTipTree is the tree recorded by a migration branch's tip.
+	migrationTipTree string
+	createdTreeSHA   string
+	migrationPRState string
 
-	// forcedPushes counts the times the branch was replaced rather than
-	// created, which must only happen when nothing is open against it.
-	forcedPushes int
+	// Branch updates keep both the wire body and whether one asked GitHub to
+	// discard non-fast-forward work.
+	branchUpdates []string
+	forcedPushes  int
 
 	// refuseBranchPush is an App that was never granted write access here.
 	refuseBranchPush bool
@@ -47,9 +50,10 @@ type githubStub struct {
 
 	// createdPRs and createdTrees are what the migration sent, because a pull
 	// request nobody asked for is judged entirely on what it contains.
-	createdPRs   []string
-	createdTrees []string
-	createdBlobs []string
+	createdPRs     []string
+	createdTrees   []string
+	createdBlobs   []string
+	createdCommits []string
 
 	// repoConfigTOML is the repository's .smyklot.toml, or empty for a
 	// repository that has not migrated. Stocking both is how a spec describes
@@ -59,6 +63,11 @@ type githubStub struct {
 	// repoConfig is the repository's .github/smyklot.yaml, or empty for a
 	// repository without one
 	repoConfig string
+
+	// repoConfigAtBase, when set, is the file at the immutable default-branch
+	// commit used to build a migration. The unpinned cache read can then differ
+	// from the exact snapshot without a timing-dependent test.
+	repoConfigAtBase *string
 
 	// prAuthor is who opened the pull request, which decides whether a command
 	// counts as self-approval
@@ -99,8 +108,10 @@ type githubStub struct {
 
 func newGitHubStub() *githubStub {
 	return &githubStub{
-		codeowners:   "* @someone\n",
-		migrationTip: migrationCommit,
+		codeowners:       "* @someone\n",
+		migrationRefs:    map[string]string{},
+		migrationTipTree: "treesha",
+		createdTreeSHA:   "treesha",
 
 		prAuthor:   "author",
 		prLabels:   `[]`,
@@ -258,6 +269,11 @@ func (s *githubStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": 1}`))
 
 	case strings.Contains(r.URL.Path, "/pulls/"):
+		if s.migrationPRState != "" {
+			_, _ = io.WriteString(w, s.migrationPRState)
+
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{
 			"number": 42,
 			"state": "open",
@@ -442,9 +458,13 @@ func (s *githubStub) servePulls(w http.ResponseWriter, r *http.Request) {
 // serveRepoConfig stocks the two configuration paths a spec can set, and 404s
 // the rest - which is what a repository that only has one of them looks like.
 func (s *githubStub) serveRepoConfig(w http.ResponseWriter, r *http.Request) {
+	legacy := s.currentRepoConfig()
+	if r.URL.Query().Get("ref") == "basecommit" && s.repoConfigAtBase != nil {
+		legacy = *s.repoConfigAtBase
+	}
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/contents/.github/smyklot.yaml"):
-		s.writeFile(w, s.currentRepoConfig())
+		s.writeFile(w, legacy)
 
 	case strings.HasSuffix(r.URL.Path, "/contents/.smyklot.toml"):
 		s.writeFile(w, s.repoConfigTOML)
@@ -461,9 +481,10 @@ func (s *githubStub) serveRepoConfig(w http.ResponseWriter, r *http.Request) {
 // the thing under test, not what git would have made of it.
 func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case strings.HasSuffix(r.URL.Path, "/git/ref/heads/"+migrationBranch):
+	case strings.Contains(r.URL.Path, "/git/ref/heads/"+migrationBranch):
+		branch := r.URL.Path[strings.Index(r.URL.Path, "/git/ref/heads/")+len("/git/ref/heads/"):]
 		s.mu.Lock()
-		sha := s.migrationRef
+		sha := s.migrationRefs[branch]
 		s.mu.Unlock()
 
 		if sha == "" {
@@ -483,15 +504,14 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/git/commits/basecommit"):
 		_, _ = io.WriteString(w, `{"sha":"basecommit","tree":{"sha":"basetree"}}`)
 
-	// The tip of the migration branch, whose message is what says whether the
-	// branch is still Smyklot's to rebuild.
+	// The tip of an existing migration branch.
 	case strings.Contains(r.URL.Path, "/git/commits/"):
 		s.mu.Lock()
-		message := s.migrationTip
+		tree := s.migrationTipTree
 		s.mu.Unlock()
 
 		_, _ = fmt.Fprintf(
-			w, `{"sha":"commitsha","tree":{"sha":"treesha"},"message":%q}`, message,
+			w, `{"sha":"commitsha","tree":{"sha":%q},"message":%q}`, tree, migrationCommit,
 		)
 
 	case strings.HasSuffix(r.URL.Path, "/git/blobs"):
@@ -501,17 +521,28 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasSuffix(r.URL.Path, "/git/trees"):
 		s.record(&s.createdTrees, r)
+		s.mu.Lock()
+		tree := s.createdTreeSHA
+		s.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
-		_, _ = io.WriteString(w, `{"sha":"treesha"}`)
+		_, _ = fmt.Fprintf(w, `{"sha":%q}`, tree)
 
 	case strings.HasSuffix(r.URL.Path, "/git/commits"):
+		s.record(&s.createdCommits, r)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"sha":"commitsha"}`)
 
 	case strings.Contains(r.URL.Path, "/git/refs/heads/"):
+		body, _ := io.ReadAll(r.Body)
+		var update struct {
+			Force bool `json:"force"`
+		}
+		_ = json.Unmarshal(body, &update)
 		s.mu.Lock()
-		s.migrationRef = "commitsha"
-		s.forcedPushes++
+		s.branchUpdates = append(s.branchUpdates, string(body))
+		if update.Force {
+			s.forcedPushes++
+		}
 		s.mu.Unlock()
 		_, _ = io.WriteString(w, `{"object":{"sha":"commitsha"}}`)
 
@@ -531,8 +562,14 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		body, _ := io.ReadAll(r.Body)
+		var created struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		}
+		_ = json.Unmarshal(body, &created)
 		s.mu.Lock()
-		s.migrationRef = "commitsha"
+		s.migrationRefs[strings.TrimPrefix(created.Ref, "refs/heads/")] = created.SHA
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"object":{"sha":"commitsha"}}`)

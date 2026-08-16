@@ -26,6 +26,10 @@ var _ = Describe("Configuration migration [Unit]", func() {
 
 	BeforeEach(func() {
 		stub = newGitHubStub()
+		stub.migrationPRState = `{
+			"number":77,"state":"open","merged":false,
+			"head":{"sha":"commitsha"},"base":{"ref":"main"}
+		}`
 		stub.installations = `[{"id":411,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
 		stub.repos = `{"repositories":[{"id":41,"name":"smyklot",` +
 			`"full_name":"smykla-skalski/smyklot","default_branch":"main",` +
@@ -140,7 +144,7 @@ var _ = Describe("Configuration migration [Unit]", func() {
 				Body  string `json:"body"`
 			}
 			Expect(json.Unmarshal([]byte(stub.createdPRs[0]), &pull)).To(Succeed())
-			Expect(pull.Head).To(Equal(migrationBranch))
+			Expect(pull.Head).To(Equal(migrationBranchFor("treesha")))
 			Expect(pull.Base).To(Equal("main"))
 			Expect(pull.Body).To(ContainSubstring(".github/smyklot.yaml"))
 
@@ -174,6 +178,25 @@ var _ = Describe("Configuration migration [Unit]", func() {
 			Expect(found.ConfigMigrationPR).To(HaveValue(Equal(77)))
 		})
 
+		It("converts the file from the exact default-branch commit it builds on", func() {
+			baseContent := "quiet_success: false\ncommand_prefix: \"@\"\n"
+			stub.repoConfigAtBase = &baseContent
+
+			targetID := seed()
+			propose(targetID)
+
+			Expect(stub.createdBlobs).To(HaveLen(1))
+			var blob struct {
+				Content string `json:"content"`
+			}
+			Expect(json.Unmarshal([]byte(stub.createdBlobs[0]), &blob)).To(Succeed())
+			content, err := base64.StdEncoding.DecodeString(blob.Content)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("quiet_success = false"))
+			Expect(string(content)).To(ContainSubstring("command_prefix = '@'"))
+			Expect(string(content)).NotTo(ContainSubstring("command_prefix = '!'"))
+		})
+
 		It("asks once rather than once per sweep tick", func() {
 			targetID := seed()
 			propose(targetID)
@@ -191,7 +214,10 @@ var _ = Describe("Configuration migration [Unit]", func() {
 			targetID := seed()
 			propose(targetID)
 
-			stub.branchPRs = `[{"number":77,"state":"closed","merged":false}]`
+			stub.migrationPRState = `{
+				"number":77,"state":"closed","merged":false,
+				"head":{"sha":"commitsha"},"base":{"ref":"main"}
+			}`
 			propose(targetID)
 			Expect(repository(targetID).ConfigMigration).
 				To(Equal(storage.ConfigMigrationDeclined))
@@ -206,13 +232,12 @@ var _ = Describe("Configuration migration [Unit]", func() {
 		// An earlier tick got as far as pushing the branch and no further, so
 		// the state on disk says nothing has happened while GitHub disagrees
 		It("adopts a branch with an open proposal rather than pushing over it", func() {
-			stub.migrationRef = "commitsha"
+			stub.migrationRefs[migrationBranchFor("treesha")] = "commitsha"
 			stub.branchPRs = `[{"number":77,"state":"open","merged":false}]`
 
 			targetID := seed()
 			propose(targetID)
 
-			Expect(stub.createdTrees).To(BeEmpty())
 			Expect(stub.createdPRs).To(BeEmpty())
 			Expect(stub.forcedPushes).To(BeZero(),
 				"somebody's review was pushed over")
@@ -225,13 +250,14 @@ var _ = Describe("Configuration migration [Unit]", func() {
 		// leave, because nothing re-drove the proposal from a branch that
 		// already existed
 		It("proposes from a branch nothing was opened from", func() {
-			stub.migrationRef = "commitsha"
+			stub.migrationRefs[migrationBranchFor("treesha")] = "commitsha"
 
 			targetID := seed()
 			propose(targetID)
 
 			Expect(stub.createdPRs).To(HaveLen(1))
-			Expect(stub.forcedPushes).To(Equal(1))
+			Expect(stub.branchUpdates).To(BeEmpty())
+			Expect(stub.forcedPushes).To(BeZero())
 			Expect(repository(targetID).ConfigMigration).
 				To(Equal(storage.ConfigMigrationProposed))
 		})
@@ -241,25 +267,25 @@ var _ = Describe("Configuration migration [Unit]", func() {
 		// proposal, pushed a fixup and had an operator clear the refusal would
 		// have watched their commit disappear with no error and no trace
 		It("leaves a branch somebody else pushed to alone", func() {
-			stub.migrationRef = "commitsha"
-			stub.migrationTip = "fix the thing the bot got wrong"
+			stub.migrationRefs[migrationBranchFor("treesha")] = "humancommit"
+			stub.migrationTipTree = "human-tree"
 
 			targetID := seed()
 			propose(targetID)
 
 			Expect(stub.forcedPushes).To(BeZero(), "somebody's commit was pushed over")
-			Expect(stub.createdTrees).To(BeEmpty())
 			Expect(stub.createdPRs).To(BeEmpty())
 
-			// And nothing is written down, because the state resolves itself:
-			// whoever pushed opens a pull request and the next tick adopts it
+			// And nothing is written down. Even if whoever changed the branch
+			// opens a pull request, its contents are no longer Smyklot's exact
+			// proposal and must not be adopted as one.
 			Expect(repository(targetID).ConfigMigration).
 				To(Equal(storage.ConfigMigrationNone))
 
 			stub.branchPRs = `[{"number":77,"state":"open","merged":false}]`
 			propose(targetID)
-			Expect(repository(targetID).ConfigMigration).
-				To(Equal(storage.ConfigMigrationProposed))
+			Expect(repository(targetID).ConfigMigration).To(Equal(storage.ConfigMigrationNone))
+			Expect(stub.createdPRs).To(BeEmpty())
 		})
 
 		// The panel's only way back from a refusal. It used to undo itself on
@@ -269,7 +295,10 @@ var _ = Describe("Configuration migration [Unit]", func() {
 			targetID := seed()
 			propose(targetID)
 
-			stub.branchPRs = `[{"number":77,"state":"closed","merged":false}]`
+			stub.migrationPRState = `{
+				"number":77,"state":"closed","merged":false,
+				"head":{"sha":"commitsha"},"base":{"ref":"main"}
+			}`
 			propose(targetID)
 			Expect(repository(targetID).ConfigMigration).
 				To(Equal(storage.ConfigMigrationDeclined))
@@ -288,6 +317,49 @@ var _ = Describe("Configuration migration [Unit]", func() {
 			Expect(stub.createdPRs).To(HaveLen(2), "the reset did not survive a sweep tick")
 			Expect(repository(targetID).ConfigMigration).
 				To(Equal(storage.ConfigMigrationProposed))
+		})
+
+		It("rebuilds a reset proposal from the current default branch", func() {
+			targetID := seed()
+			propose(targetID)
+
+			stub.migrationPRState = `{
+				"number":77,"state":"closed","merged":false,
+				"head":{"sha":"commitsha"},"base":{"ref":"main"}
+			}`
+			propose(targetID)
+			Expect(repository(targetID).ConfigMigration).
+				To(Equal(storage.ConfigMigrationDeclined))
+
+			Expect(service.store.SetRepositoryConfigMigration(
+				GinkgoT().Context(),
+				storage.RepositoryConfigMigration{
+					TargetID:     targetID,
+					RepositoryID: "github:repository:41",
+					State:        storage.ConfigMigrationNone,
+				},
+			)).To(Succeed())
+
+			current := "quiet_success: false\ncommand_prefix: \"@\"\n"
+			stub.repoConfigAtBase = &current
+			stub.createdTreeSHA = "currenttree"
+			propose(targetID)
+
+			Expect(stub.createdPRs).To(HaveLen(2))
+			var pull struct {
+				Head string `json:"head"`
+			}
+			Expect(json.Unmarshal([]byte(stub.createdPRs[1]), &pull)).To(Succeed())
+			Expect(pull.Head).To(Equal(migrationBranchFor("currenttree")))
+
+			var blob struct {
+				Content string `json:"content"`
+			}
+			Expect(json.Unmarshal([]byte(stub.createdBlobs[1]), &blob)).To(Succeed())
+			content, err := base64.StdEncoding.DecodeString(blob.Content)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("quiet_success = false"))
+			Expect(string(content)).To(ContainSubstring("command_prefix = '@'"))
 		})
 	})
 
@@ -434,7 +506,10 @@ var _ = Describe("Configuration migration [Unit]", func() {
 		Expect(repository(targetID).ConfigMigration).
 			To(Equal(storage.ConfigMigrationProposed))
 
-		stub.branchPRs = `[{"number":77,"state":"closed","merged":true}]`
+		stub.migrationPRState = `{
+			"number":77,"state":"closed","merged":true,
+			"head":{"sha":"commitsha"},"base":{"ref":"main"}
+		}`
 		propose(targetID)
 
 		found := repository(targetID)

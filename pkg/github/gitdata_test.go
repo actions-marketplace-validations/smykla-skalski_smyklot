@@ -87,15 +87,13 @@ var _ = Describe("Git data [Unit]", func() {
 	})
 
 	Describe("GetCommit", func() {
-		// The tree because a commit is not one, and the message because it is
-		// what tells Smyklot's own commit on a branch from anybody else's.
-		It("reads the tree and the message", func() {
+		It("reads the tree", func() {
 			server = record(map[string]string{
 				"/git/commits/c1": `{"tree":{"sha":"t1"},"message":"chore: move it"}`,
 			})
 
 			Expect(client().GetCommit(context.Background(), "acme", "web", "c1")).
-				To(Equal(github.Commit{Tree: "t1", Message: "chore: move it"}))
+				To(Equal(github.Commit{Tree: "t1"}))
 		})
 	})
 
@@ -147,6 +145,28 @@ var _ = Describe("Git data [Unit]", func() {
 			Expect(json.Unmarshal(bodies["/repos/acme/web/git/refs"], &sent)).To(Succeed())
 			Expect(sent.Ref).To(Equal("refs/heads/smyklot/x"))
 			Expect(sent.SHA).To(Equal("c1"))
+		})
+	})
+
+	Describe("UpdateRef", func() {
+		It("can require a fast-forward update", func() {
+			server = record(map[string]string{
+				"/git/refs/heads/smyklot/x": `{"object":{"sha":"c2"}}`,
+			})
+
+			Expect(client().UpdateRef(
+				context.Background(), "acme", "web", "heads/smyklot/x", "c2", false,
+			)).To(Succeed())
+
+			var sent struct {
+				SHA   string `json:"sha"`
+				Force bool   `json:"force"`
+			}
+			Expect(json.Unmarshal(
+				bodies["/repos/acme/web/git/refs/heads/smyklot/x"], &sent,
+			)).To(Succeed())
+			Expect(sent.SHA).To(Equal("c2"))
+			Expect(sent.Force).To(BeFalse())
 		})
 	})
 
