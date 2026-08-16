@@ -52,6 +52,14 @@ var tables = []string{
 	"user_invitations",
 	"runtime_settings",
 	"user_preferences",
+	// Sync, in dependency order: what is configured, then the plans computed
+	// from it, then the actions hanging off a plan.
+	"sync_configs",
+	"sync_repository_overrides",
+	"sync_repository_state",
+	"sync_plans",
+	"sync_plan_actions",
+	"sync_audit_entries",
 }
 
 // Engine is what a copy needs from a store: a connection to read or write on,

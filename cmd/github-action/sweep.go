@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smykla-skalski/smyklot/internal/orgsync"
 	"github.com/smykla-skalski/smyklot/pkg/github"
 	"github.com/smykla-skalski/smyklot/pkg/logging"
 	"github.com/smykla-skalski/smyklot/pkg/metrics"
@@ -198,6 +199,18 @@ func (s *server) sweepMode(ctx context.Context, pollReactions bool) error {
 	}
 
 	var sweepErr error
+
+	// Once per tick rather than once per installation. Retiring plans nobody
+	// acted on names no installation, so running it inside the loop below issued
+	// the same table-wide statement once for every account the App is installed
+	// on and changed nothing after the first.
+	if s.panel != nil {
+		if err := s.store.ExpireSyncPlans(ctx, time.Now().UTC()); err != nil {
+			logging.From(ctx).Error("could not retire expired sync plans", "error", err)
+			sweepErr = errors.Join(sweepErr, err)
+		}
+	}
+
 	for _, installation := range installations {
 		installCtx := logging.With(ctx,
 			"installation", installation.ID, "account", installation.Account)
@@ -247,7 +260,41 @@ func (s *server) sweepInstallation(
 		}
 	}
 
+	// After the repositories, because planning compares against the catalog the
+	// reconcile above has just refreshed. Its failure is reported and does not
+	// stop the sweep: org sync is a slower promise than answering a comment,
+	// and a planner that could not read GitHub gets another tick.
+	if err := s.reconcileInstallationSync(ctx, client, installation); err != nil {
+		logging.From(ctx).Error("sync reconcile failed", "error", err)
+		sweepErr = errors.Join(sweepErr, err)
+	}
+
 	return sweepErr
+}
+
+// reconcileInstallationSync computes and applies whatever org sync is due.
+//
+// Planning and applying on the same tick, rather than waiting for the next one,
+// so that a repository somebody switched sync on for is not left waiting an
+// interval for work that was already decided.
+func (s *server) reconcileInstallationSync(
+	ctx context.Context,
+	client *github.Client,
+	installation github.Installation,
+) error {
+	if s.panel == nil {
+		// No database means nowhere to keep a plan, and a sync with no plan is
+		// the shape this work exists to replace.
+		return nil
+	}
+
+	targetID := installationStorageID(installation.ID)
+
+	if err := s.planInstallationSync(ctx, client, targetID, orgsync.TriggerReconcile); err != nil {
+		return err
+	}
+
+	return s.applySyncPlans(ctx)
 }
 
 func (s *server) reconcileSweepInstallation(
