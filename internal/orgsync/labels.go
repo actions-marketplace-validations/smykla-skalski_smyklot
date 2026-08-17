@@ -1,9 +1,6 @@
 package orgsync
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // Label is one label as configuration describes it.
 type Label struct {
@@ -76,7 +73,7 @@ func (c LabelConfig) Validate() error {
 		return err
 	}
 
-	seen := make(map[string]string, len(c.Labels))
+	seen := foldedNames{}
 
 	for index, label := range c.Labels {
 		if err := label.validate(index); err != nil {
@@ -87,36 +84,28 @@ func (c LabelConfig) Validate() error {
 		// and refuses to create "Bug" alongside "bug", so a configuration
 		// carrying both is one that cannot be applied - and it would fail on
 		// whichever came second, differently per repository.
-		folded := strings.ToLower(label.Name)
-		if first, duplicate := seen[folded]; duplicate {
-			if first == label.Name {
-				return invalid("label %q is listed twice", label.Name)
-			}
-
+		//
+		// Asked here rather than over the whole list afterwards, so the first
+		// thing wrong with a document is the thing it is refused for.
+		first, clashed := seen.clash(label.Name)
+		switch {
+		case !clashed:
+		case first == label.Name:
+			return invalid("label %q is listed twice", first)
+		default:
 			return invalid(
 				"labels %q and %q differ only in case, and GitHub treats them as one",
 				first, label.Name,
 			)
 		}
-		seen[folded] = label.Name
 	}
 
 	return nil
 }
 
 func (l Label) validate(index int) error {
-	name := strings.TrimSpace(l.Name)
-	if name == "" {
-		return invalid("label %d has no name", index+1)
-	}
-	if name != l.Name {
-		// GitHub trims it silently, so a configured " bug" would be created as
-		// "bug" and then look missing on the next reconcile, which would create
-		// it again for ever.
-		return invalid("label %q has leading or trailing whitespace", l.Name)
-	}
-	if len(l.Name) > maxLabelName {
-		return invalid("label %q is longer than %d characters", l.Name, maxLabelName)
+	if err := validateName("label", index, l.Name, maxLabelName); err != nil {
+		return err
 	}
 
 	if err := validateColor(l.Name, l.Color); err != nil {
@@ -162,8 +151,4 @@ func validateColor(name, color string) error {
 	}
 
 	return nil
-}
-
-func invalid(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrInvalidConfig, fmt.Sprintf(format, args...))
 }

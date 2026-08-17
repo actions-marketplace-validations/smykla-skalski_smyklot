@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ import (
 	"github.com/smykla-skalski/smyklot/pkg/github"
 )
 
-var _ = Describe("Label sync [Unit]", func() {
+var _ = Describe("Org sync [Unit]", func() {
 	var (
 		service  *server
 		stub     *githubStub
@@ -668,6 +669,239 @@ var _ = Describe("Label sync [Unit]", func() {
 			_, actions := livePlan(target)
 			Expect(actions).To(HaveLen(1))
 			Expect(actions[0].Kind).To(Equal(orgsync.KindLabels))
+		})
+
+		// The whole way through, because the two switch arms this adds are the
+		// only thing between a configured ruleset and nothing happening at all.
+		// A kind whose planner is wired and whose executor is not reports a plan
+		// applied that nothing performed
+		It("creates the ruleset the plan named", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/main"]},
+				 "rules":{"deletion":true,"non_fast_forward":true}}]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Kind).To(Equal(orgsync.KindRulesets))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationCreate))
+			approve(computed)
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.rulesetWrites).To(HaveLen(1))
+			Expect(stub.rulesetWrites[0]).To(
+				HavePrefix("POST /repos/smykla-skalski/smyklot/rulesets "))
+			Expect(stub.rulesetWrites[0]).To(ContainSubstring(`"name":"main-branch-protection"`))
+			Expect(stub.rulesetWrites[0]).To(ContainSubstring(`"type":"deletion"`))
+		})
+
+		// The listing carries no rules, so a planner that compared against it
+		// would find every rule missing and rewrite a matching repository on
+		// every tick for ever
+		It("reads a ruleset whole before deciding it has drifted", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[{"id":7,"name":"main-branch-protection",
+				"target":"branch","enforcement":"active","source_type":"Repository"}]`
+			stub.rulesetBodies = map[int64]string{7: `{"id":7,
+				"name":"main-branch-protection","target":"branch","enforcement":"active",
+				"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
+				"rules":[{"type":"deletion"}]}`}
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/main"]},
+				 "rules":{"deletion":true}}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			// And the next tick asks GitHub nothing at all about it
+			reads := stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/rulesets")
+			plan(target)
+			Expect(stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/rulesets")).
+				To(Equal(reads))
+		})
+
+		// The whole way through, because a domain field the wiring never fills
+		// is a plan that reads exactly as it would if the rule were not there.
+		// Everything else about this ruleset matches, so nothing but the
+		// unreadable rule puts it in a plan at all
+		It("says what a replacement drops that this version cannot express", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[{"id":7,"name":"main-branch-protection",
+				"target":"branch","enforcement":"active","source_type":"Repository"}]`
+			stub.rulesetBodies = map[int64]string{7: `{"id":7,
+				"name":"main-branch-protection","target":"branch","enforcement":"active",
+				"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
+				"rules":[{"type":"deletion"},
+				         {"type":"commit_message_pattern",
+				          "parameters":{"operator":"starts_with","pattern":"feat"}}]}`}
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/main"]},
+				 "rules":{"deletion":true}}]}`)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationUpdate))
+			Expect(actions[0].After).To(ContainSubstring("this drops commit_message_pattern"))
+		})
+
+		// A ruleset nothing can address produces no action, and an empty answer
+		// is what a repository that already matches produces too. Recorded as
+		// settled it would look finished and be left alone for six hours, so
+		// the one repository nothing manages would be the one nothing looks at
+		It("never records a repository holding two of a name as settled", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[
+				{"id":7,"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active","source_type":"Repository"},
+				{"id":8,"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active","source_type":"Repository"}]`
+
+			// Both readable, and both already matching. Without them the read
+			// fails and this spec passes on the error path instead, proving
+			// nothing about the ambiguity it is named for
+			whole := `{"id":%d,"name":"main-branch-protection","target":"branch",
+				"enforcement":"active",
+				"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
+				"rules":[{"type":"deletion"}]}`
+			stub.rulesetBodies = map[int64]string{
+				7: fmt.Sprintf(whole, 7),
+				8: fmt.Sprintf(whole, 8),
+			}
+
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/main"]},
+				 "rules":{"deletion":true}}]}`)
+
+			plan(target)
+
+			// No plan, because there is no action anything could take
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			// And nothing recorded, so the next sweep reads it again rather
+			// than believing it matches
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(BeEmpty())
+
+			reads := stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/rulesets")
+			plan(target)
+			Expect(stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/rulesets")).
+				To(BeNumerically(">", reads))
+		})
+
+		// The same silence at the other end. One ruleset here is unresolvable
+		// and another needs creating, so there is real work to plan - and a
+		// kind whose every action applied is a kind the executor records as
+		// settled, against the digest for the whole configuration. Acting on
+		// the half it can address would mark the half it cannot as up to date
+		It("plans nothing for a kind it cannot resolve, however much of it it can", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[
+				{"id":7,"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active","source_type":"Repository"},
+				{"id":8,"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active","source_type":"Repository"}]`
+
+			whole := `{"id":%d,"name":"main-branch-protection","target":"branch",
+				"enforcement":"active",
+				"conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
+				"rules":[{"type":"deletion"}]}`
+			stub.rulesetBodies = map[int64]string{
+				7: fmt.Sprintf(whole, 7),
+				8: fmt.Sprintf(whole, 8),
+			}
+
+			// The second one is unambiguous and this repository has none of it
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main-branch-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/main"]},
+				 "rules":{"deletion":true}},
+				{"name":"release-protection","target":"branch",
+				 "enforcement":"active",
+				 "conditions":{"include":["refs/heads/release/*"]},
+				 "rules":{"non_fast_forward":true}}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(BeEmpty())
+		})
+
+		// The tool this replaces had no delete path at all, so a ruleset dropped
+		// from configuration went on enforcing for ever. The id comes off the
+		// plan rather than being looked up again, because by apply time the name
+		// may belong to something else
+		It("removes a ruleset configuration no longer names", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[{"id":9,"name":"old-protection",
+				"target":"branch","enforcement":"active","source_type":"Repository"}]`
+			configureKind(target, orgsync.KindRulesets,
+				`{"rulesets":[],"allow_removal":true}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationDelete))
+			approve(computed)
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.rulesetWrites).To(HaveLen(1))
+			Expect(stub.rulesetWrites[0]).To(
+				HavePrefix("DELETE /repos/smykla-skalski/smyklot/rulesets/9 "))
+			Expect(syncAuditActions(service, target)).
+				To(ContainElement(string(orgsync.AuditDeleted)))
+		})
+
+		// Not this repository's to change and not its to delete. Proposing it
+		// would put work in a plan that could only fail
+		It("leaves a ruleset the organization defines alone", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoRulesets = `[{"id":99,"name":"org-wide",
+				"target":"branch","enforcement":"active","source_type":"Organization"}]`
+			configureKind(target, orgsync.KindRulesets,
+				`{"rulesets":[],"allow_removal":true}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+			Expect(stub.rulesetWrites).To(BeEmpty())
+		})
+
+		// A plan holding work GitHub is going to refuse asks somebody to approve
+		// a promise it cannot keep. The panel checks what somebody types; this
+		// covers a row written before a rule existed
+		It("plans nothing from a stored ruleset GitHub would refuse", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			configureKind(target, orgsync.KindRulesets, `{"rulesets":[
+				{"name":"main","target":"branch","enforcement":"active",
+				 "conditions":{"include":["refs/tags/v*"]}}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
 		})
 
 		It("does nothing for a plan nobody approved", func() {
