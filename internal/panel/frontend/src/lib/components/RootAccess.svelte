@@ -37,7 +37,7 @@
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
   import TableToolsMenu from './TableToolsMenu.svelte';
-  import NavigationTabs from './NavigationTabs.svelte';
+  import SegmentedControl from './SegmentedControl.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
   type AccessSection = 'users' | 'invitations';
@@ -466,8 +466,10 @@
 </script>
 
 {#snippet sectionSwitch()}
-  <NavigationTabs
+  <SegmentedControl
+    name="root-access-section"
     label="Root access lists"
+    variant="navigation"
     options={SECTIONS}
     value={section}
     onSelect={selectSection}
@@ -550,7 +552,7 @@
       />
     </div>
 
-    <div class:loading class="user-results" aria-busy={loading}>
+    <div class:loading class="user-results table-region" aria-busy={loading}>
       <!-- A refresh that failed over a loaded table has not made the table wrong. -->
       {#if problem !== null && page !== null}
         <ResultProblem
@@ -1050,16 +1052,9 @@
     padding: var(--space-3);
   }
 
+  /* Layout, keyline and corner come from `.table-region` in `app.css`. */
   .user-results {
-    background: var(--table-filler-bg);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-surface);
-    display: flex;
-    flex: 1;
-    flex-direction: column;
     min-height: 8rem;
-    overflow: hidden;
-    position: relative;
   }
 
   /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
@@ -1318,10 +1313,6 @@
 
   .empty-row td {
     height: 10rem;
-  }
-
-  .empty-row td :global(.table-empty-state) {
-    margin-inline: auto;
   }
 
   .table-skeleton {

@@ -59,7 +59,7 @@
   import ResultProblem from './ResultProblem.svelte';
   import RolePicker, { type RolePickerOption } from './RolePicker.svelte';
   import SearchField from './SearchField.svelte';
-  import NavigationTabs from './NavigationTabs.svelte';
+  import SegmentedControl from './SegmentedControl.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
   type ManagementSection = 'users' | 'invitations';
@@ -1322,8 +1322,10 @@
 
   <div class="user-management-body">
     <div class="management-navigation">
-      <NavigationTabs
+      <SegmentedControl
+        name="user-management-section"
         label="User management lists"
+        variant="navigation"
         options={sectionOptions}
         value={activeSection}
         onSelect={selectSection}
@@ -1352,7 +1354,7 @@
       <div id="users-list-panel" aria-label="Users">
         <div
           class:loading={loadingUsers}
-          class="user-results"
+          class="user-results table-region"
           bind:this={userResults}
           aria-busy={loadingUsers}
         >
@@ -1592,7 +1594,7 @@
       <div id="invitations-list-panel" aria-label="Invitations">
         <div
           class:loading={loadingInvitations}
-          class="invitation-results"
+          class="invitation-results table-region"
           bind:this={invitationResults}
           aria-busy={loadingInvitations}
         >
@@ -2165,18 +2167,10 @@
     padding: 0 0 var(--space-3);
   }
 
+  /* Layout, keyline and corner come from `.table-region` in `app.css`. */
   .user-results,
   .invitation-results {
-    background: var(--table-filler-bg);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-surface);
-    display: flex;
-    flex-direction: column;
-    flex: 1;
     margin-top: 0;
-    min-height: 0;
-    overflow: hidden;
-    position: relative;
   }
 
   .user-results.loading,
@@ -2187,10 +2181,6 @@
   .empty-row td {
     border-bottom: 0;
     height: 12rem;
-  }
-
-  .empty-row td :global(.table-empty-state) {
-    margin-inline: auto;
   }
 
   .table-skeleton {
