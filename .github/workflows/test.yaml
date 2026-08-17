@@ -214,9 +214,21 @@ jobs:
       - name: Test panel dependency cache restoration
         run: mise run test:panel-install
 
+  # Two jobs rather than one step after the other, because together they were
+  # 67s of the last release and either one alone is half of that. They share
+  # nothing but the restored `node_modules`, so there was never an order between
+  # them - only a runner.
   frontend:
-    name: frontend
+    name: frontend (${{ matrix.area }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - area: lint
+            task: panel:frontend:lint
+          - area: unit
+            task: panel:frontend:test
 
     steps:
       - name: Checkout code
@@ -236,19 +248,50 @@ jobs:
           path: internal/panel/frontend/node_modules
           key: ${{ runner.os }}-panel-npm-${{ hashFiles('internal/panel/frontend/package-lock.json') }}
 
-      - name: Lint the panel
-        run: mise run panel:frontend:lint
+      - name: Check the panel
+        run: mise run ${{ matrix.task }}
 
-      - name: Test the panel
-        run: mise run panel:frontend:test
-
-  # The panel driven in Chrome, counting what it asks the server for. Its own
-  # job because it costs ten times what the unit tests cost, and because it is
-  # the only check here that needs a browser: the runner image ships Chrome, so
-  # nothing is downloaded to get one.
-  budget:
-    name: request budget
+  # The panel driven in Chrome. Its own job because it costs ten times what the
+  # unit tests cost, and because it is the only check here that needs a browser:
+  # the runner image ships Chrome, so nothing is downloaded to get one.
+  #
+  # Split like the Go matrix above, and for the same reason: vitest runs these
+  # files one at a time, so giving each area its own runner is the only
+  # parallelism available between them.
+  #
+  # Four areas because of the tail rather than the total. Every file pays for a
+  # dev server, a Chrome and a sign-in before it measures anything, which is
+  # about nine seconds here, so the areas do not cost what they cost on a
+  # laptop: measured one file per runner they are 43s for `mobile-layout` down
+  # to 10s for `icon-geometry`. Three areas puts the largest at the minute this
+  # is trying to stay under; four leaves ten seconds in hand.
+  #
+  # `scripts/check-test-matrix.sh` fails when a file here runs in no area, or in
+  # more than one.
+  browser:
+    name: browser (${{ matrix.area }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Nineteen routes at two widths, so half the suite's pages are here.
+          - area: phone
+            files: tests/browser/mobile-layout.test.ts
+          - area: type
+            files: >-
+              tests/browser/vertical-alignment.test.ts
+              tests/browser/table-headers.test.ts
+          - area: requests
+            files: >-
+              tests/browser/request-budget.test.ts
+              tests/browser/runtime-settings.test.ts
+          - area: controls
+            files: >-
+              tests/browser/segmented-control.test.ts
+              tests/browser/config-migration.test.ts
+              tests/browser/sidebar-selection.test.ts
+              tests/browser/icon-geometry.test.ts
 
     steps:
       - name: Checkout code
@@ -265,5 +308,5 @@ jobs:
           path: internal/panel/frontend/node_modules
           key: ${{ runner.os }}-panel-npm-${{ hashFiles('internal/panel/frontend/package-lock.json') }}
 
-      - name: Count what the panel asks for
-        run: mise run panel:frontend:test:browser
+      - name: Drive the panel in Chrome
+        run: mise run panel:frontend:test:browser ${{ matrix.files }}

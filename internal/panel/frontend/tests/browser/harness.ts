@@ -8,7 +8,7 @@
  * does a developer's machine. There is no skip if it is missing - a guard that stands down when it
  * cannot run is not a guard.
  */
-import type { Browser } from 'playwright-core';
+import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
 import { createServer, defaultClientConditions, type ViteDevServer } from 'vite';
 
@@ -72,6 +72,196 @@ export async function startPanel(): Promise<Panel> {
     throw failure;
   }
 }
+
+/**
+ * Opens a route and waits for it to be finished rather than for a fixed length of time.
+ *
+ * Every sweep in this directory used to `goto` and then sleep `SETTLE_MS`, which is two guesses at
+ * once: too long for the routes that are ready in a third of it - and every file here walks ten to
+ * forty routes, so that guess is most of what this suite costs - and too short for whichever route
+ * is slowest on a loaded machine, where the reward for guessing wrong is a measurement taken of a
+ * page that had not drawn yet.
+ *
+ * What the sweeps are actually waiting for is the route's data, so that is what this waits for.
+ * Three things have to be true, and they fail differently:
+ *
+ *  - The panel has to mount before it can ask for anything, and between `DOMContentLoaded` and the
+ *    first request there is a gap that looks exactly like a settled page. So the first API call is
+ *    the starting gun, and it is given a long deadline: on a cold dev server the client chunks are
+ *    still being compiled, and that is slow rather than broken. A caller measuring one particular
+ *    thing can name it as `ready` instead, which is a stronger gun than any request.
+ *  - Nothing may have been in flight for `QUIET_MS`. A response that arrives late restarts the
+ *    window, which is what makes this cover a route that loads a list and then a page of it.
+ *  - Nothing on the page may still say it is loading. Quiet alone is not enough and CI proved it:
+ *    a view whose query has resolved but whose next one has not yet been issued is quiet, and
+ *    `i/users` was measured in exactly that gap - the table header it renders was still a skeleton,
+ *    and the run reported the panel drawing no table header at all. The panel announces the state
+ *    itself, in `aria-busy` and in the skeleton it puts up in place of rows, so that announcement
+ *    is what gets read rather than a longer guess at how big the gap might be.
+ *
+ * None of them throws on running out of time. The measurement is taken anyway, and every file here
+ * already states its own precondition - a heading, a table header, five rows - which says far more
+ * about what went wrong than a navigation timeout does.
+ */
+export function visit(page: Page, url: string, options: Settle = {}): Promise<void> {
+  return settle(
+    page,
+    async () => void (await page.goto(url, { waitUntil: 'domcontentloaded' })),
+    options,
+  );
+}
+
+/**
+ * The same wait, around something other than a page load.
+ *
+ * Entering a route by pressing a link is the arrangement two files here need - it mounts on top of
+ * what is already there, which is where both of the request loops that shipped lived - and it is a
+ * navigation the browser never reports. The watchers have to be attached before the press either
+ * way, so the press is handed over rather than made first.
+ */
+export async function settle(
+  page: Page,
+  act: () => Promise<void>,
+  options: Settle = {},
+): Promise<void> {
+  const quiet = options.quiet ?? QUIET_MS;
+  const ceiling = options.ceiling ?? QUIET_CEILING_MS;
+
+  let inFlight = 0;
+  let mounted = false;
+  let last = Date.now();
+
+  const asked = (request: { url: () => string }): void => {
+    inFlight += 1;
+    last = Date.now();
+    if (request.url().includes('/api/')) mounted = true;
+  };
+  const answered = (): void => {
+    inFlight = Math.max(0, inFlight - 1);
+    last = Date.now();
+  };
+
+  page.on('request', asked);
+  page.on('requestfinished', answered);
+  page.on('requestfailed', answered);
+
+  try {
+    await act();
+
+    const mountBy = Date.now() + (options.mount ?? MOUNT_MS);
+    if (options.ready === undefined) {
+      while (!mounted && Date.now() < mountBy) await page.waitForTimeout(POLL_MS);
+    } else {
+      await page
+        .locator(options.ready)
+        .first()
+        .waitFor({ state: 'attached', timeout: mountBy - Date.now() })
+        .catch(() => {
+          // Reported by the caller's own precondition, which names the route as well as the thing.
+        });
+    }
+
+    const settleBy = Date.now() + ceiling;
+    while (Date.now() < settleBy) {
+      // The page is asked only once the network has gone quiet, so a lane costs one round trip to
+      // settle rather than one every `POLL_MS`.
+      if (inFlight === 0 && Date.now() - last >= quiet && (await drawn(page))) break;
+      await page.waitForTimeout(POLL_MS);
+    }
+
+    /* Text is measured cap-to-baseline in more than one file here, and a fallback face has
+       different metrics from the one the page ends up drawing. Cheap when the faces are already
+       resolved, which after the wait above they almost always are. */
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+    });
+  } finally {
+    page.off('request', asked);
+    page.off('requestfinished', answered);
+    page.off('requestfailed', answered);
+  }
+}
+
+/** Whether the panel has stopped saying it is loading. */
+function drawn(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () =>
+      document.querySelector('[aria-busy="true"], [class*="skeleton"]') === null &&
+      // A view that draws no skeleton says the same thing by rendering nothing yet.
+      document.querySelector('main, [role="main"]') !== null,
+  );
+}
+
+export interface Settle {
+  /**
+   * What the caller is about to measure, as a selector. A far better starting gun than the first
+   * API call when there is one to name: the request only says the panel asked.
+   */
+  ready?: string;
+  /** How long nothing may be in flight before the route counts as loaded. */
+  quiet?: number;
+  /** Longest to wait for that quiet before measuring anyway. */
+  ceiling?: number;
+  /**
+   * Longest to wait for the starting gun. The default is generous because a cold dev server
+   * compiling for six lanes at once is slow rather than broken - but a route entered by pressing a
+   * link has its modules already, and a route svelte-query answers from cache fires no request at
+   * all, so a caller pressing links should name a short one rather than wait out this.
+   */
+  mount?: number;
+}
+
+const QUIET_MS = 250;
+const QUIET_CEILING_MS = 8000;
+const MOUNT_MS = 30_000;
+const POLL_MS = 25;
+
+/**
+ * Measures many routes at once, each in its own page.
+ *
+ * A route measurement is a navigation and then a wait, and the wait is nearly all of it. Taken one
+ * after another that wait is paid once per route; taken together it is paid once. `request-budget`
+ * has always done this - it opens every address at the same time and says why: a count does not
+ * change under load, only how long a page takes to reach it does. The same holds for everything
+ * else measured here, because it is all geometry and computed style, and neither has a clock in
+ * it. What load does change is the settling, and `visit` above waits for that rather than assuming
+ * it, which is what makes running them together safe.
+ *
+ * Bounded rather than unbounded: the dev server compiling modules for thirty pages at once is the
+ * one way this could make a route slower to settle than the ceiling allows.
+ */
+export async function inLanes<T, R>(
+  items: readonly T[],
+  measure: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = Array.from({ length: items.length }) as R[];
+  let next = 0;
+
+  const lane = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await measure(items[index]!);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(LANES, items.length) }, lane));
+
+  return results;
+}
+
+/**
+ * How many pages are measured at once.
+ *
+ * Not derived from the core count, because cores are not what a lane spends its time on: a route
+ * loads for a few hundred milliseconds and then waits, and it is the waiting that overlaps. Six is
+ * where the return flattens on a four-core runner - past it the bound stops being the machine and
+ * becomes the single thread serving the modules, and every lane simply queues behind it.
+ *
+ * `SMYKLOT_BROWSER_LANES=1` puts any of these files back to one page at a time, which is what to
+ * reach for when a failure needs to be watched rather than reproduced.
+ */
+export const LANES = Math.max(1, Number.parseInt(process.env.SMYKLOT_BROWSER_LANES ?? '', 10) || 6);
 
 /** Signs in against the mock and reports a workspace the viewer owns. */
 async function signIn(browser: Browser, origin: string): Promise<string> {
