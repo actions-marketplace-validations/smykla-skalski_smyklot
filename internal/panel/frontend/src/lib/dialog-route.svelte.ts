@@ -8,9 +8,7 @@
  */
 
 import { page } from '$app/state';
-import { pushState, replaceState } from '$app/navigation';
-import { base, resolve } from '$app/paths';
-import type { Pathname } from '$app/types';
+import { goto } from '$app/navigation';
 import { SvelteURLSearchParams } from 'svelte/reactivity';
 
 import {
@@ -20,7 +18,9 @@ import {
   type DialogHost,
   type RouteDialog,
 } from './route-dialogs';
-import { panelRoutePath, type PanelRoute, type RootRoute } from './routes';
+import { panelAddress } from './addresses';
+import { basePath } from './paths';
+import type { PanelRoute, RootRoute } from './routes';
 
 export type { RouteDialog } from './route-dialogs';
 
@@ -50,15 +50,18 @@ function withoutDialogState(): App.PageState {
 }
 
 function isRootInstallation(): boolean {
-  return page.url.pathname.startsWith(`${base}/root/installations/`);
+  return page.url.pathname.startsWith(`${basePath}/root/installations/`);
 }
 
-function currentPanelPath(search = page.url.search): string {
-  const pathname =
-    base !== '' && page.url.pathname.startsWith(base)
-      ? page.url.pathname.slice(base.length)
-      : page.url.pathname;
-  return `${pathname}${search}${page.url.hash}`;
+/**
+ * The address as it stands, with a different query.
+ *
+ * Whole, base and all: `panelAddress` returns addresses SvelteKit has already resolved,
+ * so the two are the same kind of thing and either can be navigated to directly. This
+ * used to strip the base off so the caller could put it back on.
+ */
+function currentPanelAddress(search: string): string {
+  return `${page.url.pathname}${search}${page.url.hash}`;
 }
 
 export function parseDialog(search: string): OpenDialog | null {
@@ -89,46 +92,45 @@ export function legacyInboxRoute(search: string): boolean {
 
 function dialogHostFromPage(): DialogHost | null {
   const view = page.params.view;
-  if (view !== undefined && isDialogHost(view)) return view as DialogHost;
+  if (view !== undefined && isDialogHost(view)) return view;
   const section = page.params.section;
   if (section !== undefined) {
     const host = `access-${section}`;
-    if (isDialogHost(host)) return host as DialogHost;
+    if (isDialogHost(host)) return host;
   }
   return null;
 }
 
 function pathForDialog(host: DialogHost, dialog: RouteDialog): string | null {
-  const segments = dialogSegments(host, dialog);
-  if (segments === null) return null;
+  if (dialogSegments(host, dialog) === null) return null;
 
-  const suffix = segments.map((segment) => `/${encodeURIComponent(segment)}`).join('');
-  const section = page.params.section;
-  if (typeof section === 'string' && (host === 'access-users' || host === 'access-invitations')) {
-    return `/root/access/${section}${suffix}`;
+  if (host === 'access-users' || host === 'access-invitations') {
+    return panelAddress({ rootView: host, dialog } as RootRoute);
   }
 
   const view = page.params.view;
   const account = page.params.account;
   if (view === undefined || account === undefined || !isDialogHost(view)) return null;
   if (isRootInstallation()) {
-    return panelRoutePath('', { rootView: 'installation', account, view, dialog } as RootRoute);
+    return panelAddress({ rootView: 'installation', account, view, dialog } as RootRoute);
   }
-  return panelRoutePath('', { account, view, dialog } as PanelRoute);
+  return panelAddress({ account, view, dialog } as PanelRoute);
 }
 
 function bareHostPath(): string | null {
   const section = page.params.section;
-  if (typeof section === 'string' && page.url.pathname.startsWith(`${base}/root/access/`)) {
-    return `/root/access/${section}`;
+  if (typeof section === 'string' && page.url.pathname.startsWith(`${basePath}/root/access/`)) {
+    return panelAddress({
+      rootView: section === 'users' ? 'access-users' : 'access-invitations',
+    } as RootRoute);
   }
 
   const view = page.params.view;
   const account = page.params.account;
   if (view === undefined || account === undefined) return null;
   return isRootInstallation()
-    ? panelRoutePath('', { rootView: 'installation', account, view } as RootRoute)
-    : panelRoutePath('', { account, view } as PanelRoute);
+    ? panelAddress({ rootView: 'installation', account, view } as RootRoute)
+    : panelAddress({ account, view } as PanelRoute);
 }
 
 class DialogRouter {
@@ -159,35 +161,37 @@ class DialogRouter {
     return current?.name === name ? current.params[key] : undefined;
   }
 
-  open(name: string, params: Readonly<Record<string, string>> = {}): void {
-    const replacing = this.current !== null;
+  /**
+   * Writes a dialog into the address as a shallow entry.
+   *
+   * An entry this panel pushed itself is marked as owned, which `close` reads to
+   * decide between stepping back through history and replacing the address. Pushing
+   * always owns the entry it just made; replacing inherits whatever the entry it
+   * lands on was.
+   */
+  private commit(dialog: OpenDialog, replace: boolean): void {
+    const owned = !replace || dialogState().smyklotDialogEntry === true;
     const host = dialogHostFromPage();
-    const dialog: RouteDialog = { name, params };
     const path = host === null ? null : pathForDialog(host, dialog);
     const state: DialogPageState = {
       ...page.state,
-      dialog: { name, params },
-      ...(!replacing || dialogState().smyklotDialogEntry === true
-        ? { smyklotDialogEntry: true as const }
-        : {}),
+      dialog,
+      ...(owned ? { smyklotDialogEntry: true as const } : {}),
     };
     delete state.smyklotDialogClosed;
-    const navigate = replacing ? replaceState : pushState;
-    navigate(resolve((path ?? currentPanelPath(dialogSearch(dialog))) as Pathname), state);
+    goto(path ?? currentPanelAddress(dialogSearch(dialog)), { shallow: true, replace, state });
+  }
+
+  open(name: string, params: Readonly<Record<string, string>> = {}): void {
+    // Replacing when a dialog is already open, so the pair does not leave two entries
+    // for one overlay; pushing otherwise, so Back closes it.
+    this.commit({ name, params }, this.current !== null);
   }
 
   update(name: string, params: Readonly<Record<string, string>>): void {
     if (this.current?.name !== name) return;
-    const next: OpenDialog = { name, params: { ...this.current.params, ...params } };
-    const host = dialogHostFromPage();
-    const path = host === null ? null : pathForDialog(host, next);
-    const state: DialogPageState = {
-      ...page.state,
-      dialog: next,
-      ...(dialogState().smyklotDialogEntry === true ? { smyklotDialogEntry: true } : {}),
-    };
-    delete state.smyklotDialogClosed;
-    replaceState(resolve((path ?? currentPanelPath(dialogSearch(next))) as Pathname), state);
+
+    this.commit({ name, params: { ...this.current.params, ...params } }, true);
   }
 
   close(): void {
@@ -216,8 +220,8 @@ class DialogRouter {
     const rest = page.params.rest;
     const path = bareHostPath();
     const target =
-      typeof rest === 'string' && rest !== '' && path !== null ? path : currentPanelPath('');
-    replaceState(resolve(target as Pathname), withoutDialogState());
+      rest !== undefined && rest !== '' && path !== null ? path : currentPanelAddress('');
+    goto(target, { shallow: true, replace: true, state: withoutDialogState() });
   }
 }
 

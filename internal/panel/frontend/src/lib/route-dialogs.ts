@@ -23,7 +23,12 @@
  */
 
 export const REPOSITORY_SECTIONS = ['file', 'behavior', 'commands'] as const;
-export const USER_ACTIONS = ['history', 'suspend', 'restore', 'remove'] as const;
+/* Segment spellings, like `ROOT_USER_ACTIONS` below, because that is what the parser
+   compares against. `remove-access` is the only action an installation's user table
+   offers besides suspending and restoring, and the list used to say `remove` - so the
+   address the panel wrote for it read back as nothing at all, and a reload or a pasted
+   link answered 404 for a dialog that had opened perfectly well in the session. */
+export const USER_ACTIONS = ['history', 'suspend', 'restore', 'remove-access'] as const;
 /* No `history` here, unlike an installation's user table: decisions are made
    inside an installation, so the Root table offers no history and nothing
    renders one. The grammar used to accept the segment anyway, which made
@@ -73,15 +78,20 @@ export function isDialogHost(view: string): view is DialogHost {
 }
 
 /**
- * Reads the segments that follow a view.
+ * Reads a dialog out of the segments that follow a view.
  *
- * `null` means these segments are not a dialog this view knows, which the caller
- * treats as an address that does not resolve rather than as a view with nothing
- * open - a mistyped repository name should say so, not silently show the list.
+ * `null` means these segments are not a dialog this view knows, which the caller treats
+ * as an address that does not resolve rather than as a view with nothing open - a
+ * mistyped repository name should say so, not silently show the list.
+ *
+ * The segments arrive **decoded**, because that is how the router hands them over:
+ * `page.params.rest` has already been through it. Decoding here as well would mean
+ * decoding twice, which loses a name holding a per-cent sign - and throws on one where
+ * the two characters after it are not hexadecimal. Whoever holds a raw pathname decodes
+ * it before calling, which is what `decodeSegments` is exported for.
  */
-export function parseDialogSegments(host: DialogHost, segments: string[]): RouteDialog | null {
-  const decoded = decodeSegments(segments);
-  if (decoded === null || decoded.length === 0) return null;
+export function parseDialogSegments(host: DialogHost, decoded: string[]): RouteDialog | null {
+  if (decoded.length === 0) return null;
 
   switch (host) {
     case 'repositories':
@@ -194,7 +204,8 @@ function parseInvitationDialog(
   return { name: actionName, params: { invitation, action: verb } };
 }
 
-function decodeSegments(segments: string[]): string[] | null {
+/** Decodes path segments, or `null` when one of them is not a valid escape. */
+export function decodeSegments(segments: string[]): string[] | null {
   const decoded: string[] = [];
   for (const segment of segments) {
     try {

@@ -6,7 +6,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin } from 'vite';
 
-import { rewriteMockHtml } from './mock-html.ts';
+import { mockEnabled as enabled } from './mock-html.ts';
 
 import type {
   AuditEntry,
@@ -214,10 +214,6 @@ type ShellSource = () => Promise<string>;
 
 /** Marks the error renderer's own request for a shell, so `handle` stands aside. */
 const SHELL_REQUEST_HEADER = 'x-smyklot-mock-shell';
-
-function enabled(): boolean {
-  return process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
-}
 
 /**
  * Whether starting the server should also raise a browser.
@@ -1182,16 +1178,29 @@ function recomputeRepository(target: MockTarget, repository: MockRepository): vo
   if (detail.ignore_repository_file) detail.repository.config_file_status = 'bypassed';
 }
 
+/**
+ * A path the way Go hands it to the panel server, or `null` when it is not a path at all.
+ *
+ * `net/http` fills `r.URL.Path` with the decoded form, so `%2F` arrives as a separator and
+ * `serveAsset` matches on that. Node leaves `URL.pathname` encoded, and a malformed escape
+ * throws where Go answers 400, which is the same refusal.
+ */
+function decodedPath(path: string): string | null {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return null;
+  }
+}
+
 export function mockServer(): Plugin {
   return {
     name: 'smyklot-panel-mock-server',
+    // Serve only. Nothing here has anything to say about a build.
+    apply: 'serve',
     config() {
       if (!enabled()) return;
       return { server: opensBrowser() ? { open: '/' } : {} };
-    },
-    transformIndexHtml(html) {
-      if (!enabled()) return html;
-      return rewriteMockHtml(html);
     },
     configureServer(server) {
       if (!enabled()) return;
@@ -1486,8 +1495,10 @@ async function handle(
    * this asks the router the app itself uses rather than keeping a second list in step.
    */
   if (method === 'GET' && wantsDocument(req)) {
+    const served = decodedPath(path);
     const navigable =
-      parsePanelRoute('/', path) !== null || parseInvitationToken('/', path) !== null;
+      served !== null &&
+      (parsePanelRoute('/', served) !== null || parseInvitationToken('/', served) !== null);
     if (!navigable) {
       await respondError(state, req, res, 404, 'not_found', 'panel route not found');
       return;

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Page, Request } from 'playwright-core';
 
-import { startPanel, type Panel } from './harness';
+import { startPanel, visit, type Panel } from './harness';
 
 let panel: Panel;
 
@@ -103,6 +103,49 @@ describe('Root merge-after-CI timing', () => {
       });
       await page.getByText('Effective: 30 seconds').waitFor({ state: 'visible' });
       expect(crashes).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+});
+
+/**
+ * Addresses the panel has no route for, which come in two shapes.
+ *
+ * One the server refuses, answering with its own error document. One it serves - because
+ * it decides from the decoded path, while the router matches on the raw one, so a
+ * percent-encoded separator means the console to the server and nothing to the router.
+ * The panel reads its route from the router now, so the second shape is where reading the
+ * route and reading the address disagree, and it is the reason the getters fall back.
+ */
+describe('an address that resolves to nothing', () => {
+  it('shows what happened when the server refuses it', async () => {
+    const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await visit(page, `${panel.origin}/root/definitely-not-a-page`, {
+        ready: '.error-body',
+        mount: 5_000,
+      });
+
+      expect(await page.locator('body').innerText()).toContain('Not found');
+      expect(new URL(page.url()).pathname).toBe('/root/definitely-not-a-page');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('stays put when the server serves it and no route matches', async () => {
+    const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await visit(page, `${panel.origin}/root%2Finstallations`, { mount: 5_000 });
+
+      // Without the fallback the console does not know it is the console, and the
+      // workspace resolver replaces this address with an installation.
+      expect(new URL(page.url()).pathname, 'the panel navigated away').toBe(
+        '/root%2Finstallations',
+      );
     } finally {
       await page.close();
     }

@@ -1,8 +1,9 @@
 import { normalizeBasePath } from './base.ts';
 import {
-  dialogSegments,
+  decodeSegments,
   isDialogHost,
   parseDialogSegments,
+  type DialogHost,
   type RouteDialog,
 } from './route-dialogs.ts';
 
@@ -50,6 +51,9 @@ export const ROOT_INSTALLATION_VIEWS = [
 ] as const;
 
 export const HISTORY_SECTIONS = ['audit', 'failures'] as const;
+
+/** The tables the Root console's access page is split into. */
+export const ACCESS_SECTIONS = ['users', 'invitations'] as const;
 
 export type PanelView = (typeof PANEL_VIEWS)[number];
 
@@ -175,7 +179,20 @@ function parseTrailingDialog(
 ): RouteDialog | undefined | 'invalid' {
   if (segments.length === 0 || !isDialogHost(view)) return undefined;
 
-  return parseDialogSegments(view, segments) ?? 'invalid';
+  return dialogFromPath(view, segments) ?? 'invalid';
+}
+
+/**
+ * Reads a dialog out of raw pathname segments.
+ *
+ * Everything in this module holds a pathname the router never saw, so the segments
+ * arrive encoded and are decoded here. `parseDialogSegments` takes them decoded, which
+ * is how the router hands its own over - decoding there as well would do it twice.
+ */
+function dialogFromPath(host: DialogHost, segments: string[]): RouteDialog | null {
+  const decoded = decodeSegments(segments);
+
+  return decoded === null ? null : parseDialogSegments(host, decoded);
 }
 
 export function parseInvitationToken(basePath: string, pathname: string): string | null {
@@ -190,27 +207,6 @@ export function parseInvitationToken(basePath: string, pathname: string): string
   } catch {
     return null;
   }
-}
-
-export function panelRoutePath(basePath: string, route: PanelRoute): string {
-  const base = normalizeBasePath(basePath);
-  if ('rootView' in route) return `${base}${rootRoutePath(route)}`;
-  if ('personal' in route) return `${base}/${route.personal}`;
-
-  return (
-    `${base}/i/${encodeURIComponent(route.account)}/${route.view}` +
-    sectionSuffix(route) +
-    dialogSuffix(route.view, route.dialog)
-  );
-}
-
-/** The path segments an open dialog adds, already escaped. */
-function dialogSuffix(view: string, dialog: RouteDialog | undefined): string {
-  if (dialog === undefined || !isDialogHost(view)) return '';
-  const segments = dialogSegments(view, dialog);
-  if (segments === null) return '';
-
-  return segments.map((segment) => `/${encodeURIComponent(segment)}`).join('');
 }
 
 export function panelDocumentTitle(route: PanelRoute): string {
@@ -263,11 +259,11 @@ export function rootSectionRoute(section: RootSection): RootRoute {
   return { rootView: section };
 }
 
-function isScopedPanelView(value: string): value is ScopedPanelView {
+export function isScopedPanelView(value: string | undefined): value is ScopedPanelView {
   return PANEL_VIEWS.some((view) => view === value);
 }
 
-function isRootInstallationView(value: string): value is RootInstallationView {
+export function isRootInstallationView(value: string | undefined): value is RootInstallationView {
   return ROOT_INSTALLATION_VIEWS.some((view) => view === value);
 }
 
@@ -292,10 +288,6 @@ function parseSection(
   return HISTORY_SECTIONS.find((section) => section === raw) ?? 'invalid';
 }
 
-function sectionSuffix(route: { view: ScopedPanelView; section?: HistorySection }): string {
-  return route.view === 'history' && route.section !== undefined ? `/${route.section}` : '';
-}
-
 function parseRootRoute(parts: string[]): RootRoute | null {
   if (parts.length === 1) return { rootView: 'overview' };
   if (parts.length === 2 && parts[1] === 'installations') return { rootView: 'installations' };
@@ -306,7 +298,7 @@ function parseRootRoute(parts: string[]): RootRoute | null {
     const host = parts[2] === 'users' ? 'access-users' : 'access-invitations';
     if (parts[2] === 'users' || parts[2] === 'invitations') {
       if (parts.length === 3) return { rootView: host };
-      const dialog = parseDialogSegments(host, parts.slice(3));
+      const dialog = dialogFromPath(host, parts.slice(3));
 
       return dialog === null ? null : { rootView: host, dialog };
     }
@@ -356,28 +348,6 @@ function parseRootRoute(parts: string[]): RootRoute | null {
   const route: RootRoute = { rootView: 'installation', account, view };
   if (dialog !== undefined) return { ...route, dialog };
   return section === undefined ? route : { ...route, section };
-}
-
-function rootRoutePath(route: RootRoute): string {
-  if (route.rootView === 'installation')
-    return (
-      `/root/installations/${encodeURIComponent(route.account)}/${route.view}` +
-      sectionSuffix(route) +
-      dialogSuffix(route.view, route.dialog)
-    );
-  if (route.rootView === 'overview') return '/root';
-  if (route.rootView === 'installations') return '/root/installations';
-  if (route.rootView === 'access-users')
-    return `/root/access/users${dialogSuffix('access-users', route.dialog)}`;
-  if (route.rootView === 'access-invitations')
-    return `/root/access/invitations${dialogSuffix('access-invitations', route.dialog)}`;
-  if (route.rootView === 'history-audit') return '/root/history/audit';
-  if (route.rootView === 'history-failures') return '/root/history/failures';
-  if (route.rootView === 'queue') return '/root/queue';
-  if (route.rootView === 'queue-recent') return '/root/queue/recent';
-  if (route.rootView === 'queue-request')
-    return `/root/queue/request/${encodeURIComponent(route.request)}`;
-  return '/root/settings';
 }
 
 function findAccount(accounts: readonly string[], requested: string | null): string | undefined {

@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { ROOT_USER_ACTIONS } from '../src/lib/route-dialogs';
-import { panelRoutePath, parsePanelRoute } from '../src/lib/routes';
+import { panelAddress } from '../src/lib/addresses';
+import { basePath } from '../src/lib/paths';
+import { parsePanelRoute } from '../src/lib/routes';
 
 /**
  * The addresses dialogs are read from and written to.
@@ -16,7 +18,7 @@ function roundTrip(path: string): string {
   const route = parsePanelRoute('', path);
   expect(route).not.toBeNull();
 
-  return panelRoutePath('', route!);
+  return panelAddress(route!).slice(basePath.length);
 }
 
 describe('dialog addresses on a view [Unit]', () => {
@@ -94,12 +96,15 @@ describe('dialog addresses on a view [Unit]', () => {
     });
     /* The panel's own word is `remove_access`; an address says it the way every
        other segment is written. */
-    expect(parsePanelRoute('', '/i/acme/users/octocat/remove')).toEqual({
+    expect(parsePanelRoute('', '/i/acme/users/octocat/remove-access')).toEqual({
       account: 'acme',
       view: 'users',
-      dialog: { name: 'user-action', params: { user: 'octocat', action: 'remove' } },
+      dialog: { name: 'user-action', params: { user: 'octocat', action: 'remove_access' } },
     });
     expect(roundTrip('/i/acme/users/octocat/suspend')).toBe('/i/acme/users/octocat/suspend');
+    expect(roundTrip('/i/acme/users/octocat/remove-access')).toBe(
+      '/i/acme/users/octocat/remove-access',
+    );
   });
 
   it('refuses a verb no dialog answers to', () => {
@@ -116,14 +121,24 @@ describe('dialog addresses on a view [Unit]', () => {
     expect(parsePanelRoute('', '/i/acme/history/octocat')).toBeNull();
   });
 
+  // Both halves of this module read a raw pathname, so both decode. One of them stopped
+  // when the decode moved out of `parseDialogSegments`, and the Root console's own tables
+  // were the half that stopped.
+  it('decodes a name in the Root console the same way', () => {
+    expect(parsePanelRoute('', '/root/access/users/oct%40cat/ban')).toEqual({
+      rootView: 'access-users',
+      dialog: { name: 'root-user-action', params: { user: 'oct@cat', action: 'ban' } },
+    });
+  });
+
   it('escapes a repository name that needs it', () => {
-    const path = panelRoutePath('', {
+    const path = panelAddress({
       account: 'acme',
       view: 'repositories',
       dialog: { name: 'repository-settings', params: { repository: 'a b/c', section: 'file' } },
     });
-    expect(path).toBe('/i/acme/repositories/a%20b%2Fc');
-    expect(parsePanelRoute('', path)).toEqual({
+    expect(path).toBe(`${basePath}/i/acme/repositories/a%20b%2Fc`);
+    expect(parsePanelRoute(basePath, path)).toEqual({
       account: 'acme',
       view: 'repositories',
       dialog: { name: 'repository-settings', params: { repository: 'a b/c', section: 'file' } },

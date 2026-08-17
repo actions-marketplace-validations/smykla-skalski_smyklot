@@ -6,12 +6,18 @@ import { defineConfig } from 'vitest/config';
 import { configDefaults } from 'vitest/config';
 
 import { withRouteManifest } from './build/route-manifest.ts';
+import { checkSentinels } from './build/sentinels.ts';
+import { MOCK_BASE, MOCK_VERSION, mockEnabled } from './dev/mock-html.ts';
 import { mockServer } from './dev/mock-server.ts';
 
 // In dev the mock server mounts at /, so SvelteKit's router must not enforce
 // the production base. The build keeps the sentinel so the Go server can
 // resolve it at startup.
-const isMockDev = process.env.SMYKLOT_PANEL_DEV_MOCK === '1';
+const isMockDev = mockEnabled();
+
+// The deployment version, which the Go server resolves from the sentinel in every
+// text asset it serves. The mock answers for itself - see `MOCK_VERSION`.
+const panelVersion = isMockDev ? MOCK_VERSION : '__smyklot_panel_version__';
 
 // The mock no-ops unless `SMYKLOT_PANEL_DEV_MOCK=1`, so the build and the
 // default dev server are unaffected by it being listed here.
@@ -27,7 +33,7 @@ export default defineConfig({
           assets: 'dist',
           fallback: 'index.html',
         }),
-        { out: 'dist', params: 'src/params' },
+        { out: 'dist', params: 'src/params.ts' },
       ),
       csp: {
         mode: 'hash',
@@ -46,16 +52,18 @@ export default defineConfig({
         },
       },
       paths: {
-        base: isMockDev ? '' : '/__smyklot_panel_base__',
+        base: isMockDev ? MOCK_BASE : '/__smyklot_panel_base__',
       },
       version: {
-        // The Go server resolves this in every text asset, including the
-        // generated service worker, from the runtime deployment version.
-        name: '__smyklot_panel_version__',
+        // Under the mock this is configured rather than rewritten: SvelteKit hashes
+        // the inline bootstrap carrying it into the CSP, so a rewrite afterwards
+        // would leave a hash describing a script that is no longer served.
+        name: panelVersion,
       },
     }),
     svelteTesting(),
     mockServer(),
+    checkSentinels(),
   ],
   server: {
     port: 5175,

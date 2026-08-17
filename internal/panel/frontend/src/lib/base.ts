@@ -1,4 +1,3 @@
-const BASE_META_NAME = 'smyklot-panel-base';
 const VERSION_META_NAME = 'smyklot-panel-version';
 const SERVICE_META_NAME = 'smyklot-panel-service';
 
@@ -19,28 +18,31 @@ const SERVICE_META_NAME = 'smyklot-panel-service';
  */
 const PLACEHOLDER = /^__[a-z0-9_]+__$/u;
 
+/**
+ * The part of a document this module reads.
+ *
+ * Structural rather than `Document`, because this module has to load where the DOM
+ * types do not exist: plain Node runs it for the route manifest, and the service
+ * worker's TypeScript project compiles against `WebWorker` rather than `DOM`. Naming
+ * `Document` here made both of those a type error for a pair of methods.
+ */
+export interface MetaSource {
+  querySelector(selectors: string): { getAttribute(name: string): string | null } | null;
+}
+
 export interface PanelBuild {
   version: string | null;
   serviceHost: string | null;
 }
 
-export function readBasePath(source: Document): string {
-  const meta = source.querySelector(`meta[name="${BASE_META_NAME}"]`);
-  const content = meta?.getAttribute('content');
-  if (content === null || content === undefined) {
-    throw new Error(`the panel page is missing its <meta name="${BASE_META_NAME}"> element`);
-  }
-  return normalizeBasePath(content);
-}
-
-export function readPanelBuild(source: Document): PanelBuild {
+export function readPanelBuild(source: MetaSource): PanelBuild {
   return {
     version: readInjected(source, VERSION_META_NAME),
     serviceHost: readInjected(source, SERVICE_META_NAME),
   };
 }
 
-function readInjected(source: Document, name: string): string | null {
+function readInjected(source: MetaSource, name: string): string | null {
   const content = source.querySelector(`meta[name="${name}"]`)?.getAttribute('content')?.trim();
   if (content === undefined || content === '' || PLACEHOLDER.test(content)) {
     return null;

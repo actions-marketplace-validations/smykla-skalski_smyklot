@@ -7,9 +7,8 @@
  */
 
 import { goto } from '$app/navigation';
-import { base, resolve } from '$app/paths';
+import { resolve } from '$app/paths';
 import { page } from '$app/state';
-import type { Pathname } from '$app/types';
 import { createContext } from 'svelte';
 import { MediaQuery } from 'svelte/reactivity';
 
@@ -17,14 +16,35 @@ import type { QueryClient } from '@tanstack/svelte-query';
 
 import type { PanelApi } from './api';
 import type { PanelBuild } from './base';
+import { panelAddress, panelRouteAt } from './addresses';
+import { basePath } from './paths';
+
+/**
+ * Whether the address is this segment or something below it, base and all.
+ *
+ * Decoded first, because this only ever answers for an address the router matched no route
+ * for - and the reason it matched none is that the server decided what to serve from the
+ * decoded path while the router reads the raw one. `/root%2Finstallations` is the console
+ * to the server and nothing to the router, so it has to be the console here too. Whole
+ * segments, so `/rootbeer` is not.
+ */
+function at(segment: string): boolean {
+  let pathname = page.url.pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    // A malformed escape is not an address the server would have served either.
+    return false;
+  }
+
+  return pathname === `${basePath}${segment}` || pathname.startsWith(`${basePath}${segment}/`);
+}
 import type { PanelChangeEvent } from './events';
 import type { SessionEnded } from './panel-session';
 import { DEFAULT_THEME_DISPLAY, isThemeDisplay, type ThemeDisplay } from './preferences';
 import { createPrefsSync, type PrefsSync } from './preferences-sync';
 import {
   panelDocumentTitle,
-  panelRoutePath,
-  parsePanelRoute,
   rootSection,
   rootSectionRoute,
   type HistorySection,
@@ -53,7 +73,6 @@ export class PanelSession {
   readonly api: PanelApi;
   readonly build: PanelBuild;
   readonly prefs: PrefsSync;
-  readonly base: string;
   readonly queryClient: QueryClient;
 
   loading = $state(true);
@@ -79,7 +98,6 @@ export class PanelSession {
   constructor(api: PanelApi, build: PanelBuild, queryClient: QueryClient) {
     this.api = api;
     this.build = build;
-    this.base = base;
     this.queryClient = queryClient;
     this.prefs = createPrefsSync();
     this.sidebarCollapsed = this.prefs.get('sidebar') === 'collapsed';
@@ -126,36 +144,53 @@ export class PanelSession {
     return this.theme;
   }
 
+  /**
+   * Which part of the panel is open, asked of the route rather than the address.
+   *
+   * A route id is what SvelteKit matched, so it carries no base and no trailing slash -
+   * both of which these had to spell out when they read the pathname.
+   *
+   * The address is still the answer when nothing matched. The server decides what to
+   * serve from the decoded path and the router matches on the undecoded one, so the two
+   * disagree about an address holding `%2F`: the server answers `/root%2Finstallations`
+   * with the console, the router matches no route, and the panel would otherwise wear the
+   * wrong chrome on a page the server had already named. All three ask the same way, and
+   * `at` compares whole segments so `/rootbeer` is not the console.
+   */
   get isRootMode(): boolean {
-    return page.url.pathname.startsWith(`${this.base}/root`);
+    return page.route.id?.startsWith('/root') ?? at('/root');
   }
 
   get isInbox(): boolean {
-    return (
-      page.url.pathname === `${this.base}/inbox` || page.url.pathname === `${this.base}/inbox/`
-    );
+    return page.route.id === '/inbox' || (page.route.id === null && at('/inbox'));
   }
 
   get isInvitation(): boolean {
-    return page.url.pathname.startsWith(`${this.base}/invite/`);
+    return (
+      page.route.id === '/invite/[token=invitationToken]' ||
+      (page.route.id === null && at('/invite'))
+    );
   }
 
   /**
-   * The address, read from the path rather than from the route's parameters.
+   * What is being looked at, read from the route SvelteKit matched.
    *
-   * A parameter is only there if the route that matched happens to name one, and
-   * which route matched is a detail of how `src/routes` is laid out: a view that
-   * hosts a dialog is routed with the segments after it, one that hosts none is
-   * routed without them, and history is routed by name with its section. Reading
-   * `params.view` tied these getters to that shape and broke the moment it
-   * changed - the installation's history came back as `settings`, and the
-   * console's came back as the Root console's own history page.
+   * The id and the parameters together, never the parameters alone. A parameter is only
+   * there if the matched route names one, and which route matched is a detail of how
+   * `src/routes` is laid out: a view hosting a dialog is routed with the segments after
+   * it, one hosting none is routed without them, and history is routed by name with its
+   * section. Reading `params.view` on its own tied these getters to that shape and broke
+   * the moment it changed - the installation's history came back as `settings`, and the
+   * console's came back as the Root console's own history page. The id says which shape
+   * it is, so `panelRouteAt` can read every one of them correctly.
    *
-   * The path says the same thing under every shape, and `parsePanelRoute` is the
-   * panel's one reading of it.
+   * This used to parse the pathname a second time, with the route tree written out by
+   * hand. That copy is still there for the mock server, which runs under plain Node - but
+   * the panel no longer reads it, so a renamed route cannot mean one thing to the router
+   * and another to the panel.
    */
   private get parsedRoute(): PanelRoute | null {
-    return parsePanelRoute(this.base, page.url.pathname);
+    return panelRouteAt(page.route.id, page.params);
   }
 
   get currentView(): PanelView {
@@ -172,6 +207,11 @@ export class PanelSession {
   }
 
   syncRouteContext(): void {
+    // Nothing is recorded from a page that failed to load. The address still names a view
+    // and the chrome still shows it, but a reader who pasted a broken link was never on
+    // it, so Return would otherwise take them somewhere they had not been. `page.error`
+    // covers every load failure rather than the one shape this used to test for.
+    if (page.error !== null) return;
     if (this.isRootMode || this.isInbox || this.isInvitation) return;
     const route = this.parsedRoute;
     if (route === null || !('view' in route)) return;
@@ -215,12 +255,14 @@ export class PanelSession {
       if (route.rootView === 'installation') {
         return ['repositories', 'users', 'invitations', 'history'].includes(route.view);
       }
+
       return (
         this.rootValue === 'history' ||
         this.rootValue === 'access' ||
         route.rootView === 'installations'
       );
     }
+
     return (
       this.selectedTarget !== null &&
       ['repositories', 'users', 'invitations', 'history'].includes(this.currentView)
@@ -295,8 +337,8 @@ export class PanelSession {
     await this.openTarget(target);
   }
 
-  openTarget(target: PanelTarget, replaceState = false): Promise<void> {
-    return this.navigate(this.routeFor(target, this.currentView), replaceState);
+  openTarget(target: PanelTarget, replace = false): Promise<void> {
+    return this.navigate(this.routeFor(target, this.currentView), replace);
   }
 
   selectView(nextView: PanelView): void {
@@ -377,66 +419,66 @@ export class PanelSession {
     this.resetPageScroll();
   }
 
-  returnToPanel(replaceState = false): void {
+  returnToPanel(replace = false): void {
     const target = this.returnTarget;
     if (target === null) {
-      void goto(resolve(this.returnHref() as Pathname), { replaceState: true });
+      void goto(this.returnHref(), { replace: true });
       return;
     }
-    void this.navigate(this.returnRoute(target), replaceState);
+    void this.navigate(this.returnRoute(target), replace);
   }
 
   // --- Hrefs ---
 
   targetHref(target: PanelTarget): string {
-    return panelRoutePath(this.base, this.returnRoute(target));
+    return panelAddress(this.returnRoute(target));
   }
 
   viewHref(nextView: PanelView): string {
     const target = this.selectedTarget;
-    return target === null ? '#' : panelRoutePath(this.base, this.routeFor(target, nextView));
+    return target === null ? '#' : panelAddress(this.routeFor(target, nextView));
   }
 
   rootHrefFor(section: RootSection): string {
-    return panelRoutePath(this.base, rootSectionRoute(section));
+    return panelAddress(rootSectionRoute(section));
   }
 
   rootDashboardHref(): string {
-    return panelRoutePath(this.base, { rootView: 'overview' });
+    return panelAddress({ rootView: 'overview' });
   }
 
   rootInstallationsHref(): string {
-    return panelRoutePath(this.base, { rootView: 'installations' });
+    return panelAddress({ rootView: 'installations' });
   }
 
   rootAuditHref(): string {
-    return panelRoutePath(this.base, { rootView: 'history-audit' });
+    return panelAddress({ rootView: 'history-audit' });
   }
 
   queueHref(): string {
-    return panelRoutePath(this.base, { rootView: 'queue' });
+    return panelAddress({ rootView: 'queue' });
   }
 
   queueRequestHref(request: string): string {
-    return panelRoutePath(this.base, { rootView: 'queue-request', request });
+    return panelAddress({ rootView: 'queue-request', request });
   }
 
   rootFailuresHref(): string {
-    return panelRoutePath(this.base, { rootView: 'history-failures' });
+    return panelAddress({ rootView: 'history-failures' });
   }
 
   rootInstallationHref(account: string, nextView: RootInstallationView): string {
-    return panelRoutePath(this.base, this.rootInstallationRoute(account, nextView));
+    return panelAddress(this.rootInstallationRoute(account, nextView));
   }
 
   returnHref(): string {
     return this.returnTarget === null
-      ? `${this.base}/`
-      : panelRoutePath(this.base, this.returnRoute(this.returnTarget));
+      ? resolve('/')
+      : panelAddress(this.returnRoute(this.returnTarget));
   }
 
   inboxHref(): string {
-    return panelRoutePath(this.base, { personal: 'inbox' });
+    return panelAddress({ personal: 'inbox' });
   }
 
   openInbox(): void {
@@ -556,16 +598,12 @@ export class PanelSession {
     return typeof value === 'string' && isThemeDisplay(value) ? value : DEFAULT_THEME_DISPLAY;
   }
 
-  private routePath(route: PanelRoute): string {
-    return panelRoutePath('', route);
-  }
-
   private returnRoute(target: PanelTarget): PanelRoute {
     return this.routeFor(target, this.lastScopedView, this.lastScopedHistorySection);
   }
 
-  private navigate(route: PanelRoute, replaceState = false): Promise<void> {
-    return goto(resolve(this.routePath(route) as Pathname), { replaceState });
+  private navigate(route: PanelRoute, replace = false): Promise<void> {
+    return goto(panelAddress(route), { replace });
   }
 
   invalidateTargetData(targetId: string): void {
