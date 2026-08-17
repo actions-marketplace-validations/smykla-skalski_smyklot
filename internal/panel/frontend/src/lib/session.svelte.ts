@@ -184,6 +184,14 @@ export class PanelSession {
     if (page.url.pathname === `${this.base}/root/installations`)
       return { rootView: 'installations' };
     if (page.url.pathname === `${this.base}/root/settings`) return { rootView: 'settings' };
+    /* The queue's three addresses. `params.id` alone would be enough to name the
+       request page, but every other branch here reads the path, and one of these
+       three has no parameter at all - so they are read the same way, together. */
+    if (page.url.pathname === `${this.base}/root/queue`) return { rootView: 'queue' };
+    if (page.url.pathname === `${this.base}/root/queue/recent`) return { rootView: 'queue-recent' };
+    if (page.url.pathname.startsWith(`${this.base}/root/queue/request/`)) {
+      return { rootView: 'queue-request', request: (page.params.id as string | undefined) ?? '' };
+    }
     return { rootView: 'overview' };
   }
 
@@ -317,6 +325,18 @@ export class PanelSession {
     this.resetPageScroll();
   }
 
+  selectQueueSection(section: 'waiting' | 'recent'): void {
+    const route: RootRoute = { rootView: section === 'waiting' ? 'queue' : 'queue-recent' };
+    if (this.currentRootRoute.rootView === route.rootView) return;
+    void this.navigate(route);
+  }
+
+  /** A request is a page of its own, so opening one is navigation and resets the scroll. */
+  openQueueRequest(request: string): void {
+    void this.navigate({ rootView: 'queue-request', request });
+    this.resetPageScroll();
+  }
+
   selectRootHistorySection(section: 'audit' | 'failures'): void {
     const route: RootRoute = {
       rootView: section === 'audit' ? 'history-audit' : 'history-failures',
@@ -391,6 +411,14 @@ export class PanelSession {
 
   rootAuditHref(): string {
     return panelRoutePath(this.base, { rootView: 'history-audit' });
+  }
+
+  queueHref(): string {
+    return panelRoutePath(this.base, { rootView: 'queue' });
+  }
+
+  queueRequestHref(request: string): string {
+    return panelRoutePath(this.base, { rootView: 'queue-request', request });
   }
 
   rootFailuresHref(): string {

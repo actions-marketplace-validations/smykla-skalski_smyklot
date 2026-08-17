@@ -36,6 +36,7 @@
   import RootInvitations from './RootInvitations.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
+  import TableToolsMenu from './TableToolsMenu.svelte';
   import NavigationTabs from './NavigationTabs.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
@@ -522,6 +523,31 @@
         value={search}
         onInput={(value) => (search = value)}
       />
+      <!-- Both filters live in column headings, and the heading band is hidden
+           once this table becomes a stack of cards. Without this the page
+           offered a search field and nothing else. -->
+      <TableToolsMenu
+        label="Filter Root users"
+        sorts={[]}
+        filters={[
+          {
+            label: 'System role',
+            hint: 'Filter application-level privileges',
+            sections: ROLE_FILTERS,
+            selected: systemRoles,
+            multiple: true,
+            onChange: selectRoles,
+          },
+          {
+            label: 'Status',
+            hint: 'Filter account lifecycle state',
+            sections: STATUS_FILTERS,
+            selected: statuses,
+            multiple: true,
+            onChange: selectStatuses,
+          },
+        ]}
+      />
     </div>
 
     <div class:loading class="user-results" aria-busy={loading}>
@@ -550,7 +576,12 @@
       {:else}
         <!-- Keyboard focus lets users scroll columns that overflow the viewport. -->
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div class="table-scroll" role="region" tabindex="0" aria-label="Root users table">
+        <div
+          class="table-scroll table-card"
+          role="region"
+          tabindex="0"
+          aria-label="Root users table"
+        >
           <table>
             <caption class="visually-hidden">Application accounts</caption>
             <thead>
@@ -589,7 +620,7 @@
                 </th>
                 <th scope="col">
                   <div class="heading-layout">
-                    <span class="heading-label">Status</span>
+                    <span class="heading-label band-trim">Status</span>
                     <FilterMenu
                       label="Status"
                       summary={statuses.length === 0
@@ -640,7 +671,7 @@
                       >{statusLabel(user.status)}</Chip
                     >
                   </td>
-                  <td data-label="Installations">
+                  <td class="band-trim-stack" data-label="Installations">
                     <span class="relationship-count">{installationSummary(user)}</span>
                     <span class="relationship-meta"
                       >{user.owned_installations} owned · {user.assigned_installations} assigned</span
@@ -649,11 +680,12 @@
                   <td data-label="Last login">
                     {#if user.last_login_at !== undefined}
                       <time
+                        class="band-trim"
                         datetime={user.last_login_at}
                         title={formatTimestamp(user.last_login_at)}
                         >{formatRelative(user.last_login_at, now)}</time
                       >
-                    {:else}<span class="dim">Never</span>{/if}
+                    {:else}<span class="dim band-trim">Never</span>{/if}
                   </td>
                   <td class="row-actions" data-label="Actions">
                     {#if userActions(user).length > 0}
@@ -1030,15 +1062,18 @@
     position: relative;
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
   .table-scroll {
-    background: var(--surface-base);
     flex: 1;
     max-width: 100%;
     min-height: 0;
-    overflow-x: auto;
   }
 
   table {
+    /* Named once: the row height below is derived from it, and a padding changed
+       in one place and not the other would silently un-state the row height. */
+    --cell-pad-block: 0.625rem;
+
     background: var(--surface-base);
     /* Separated, not collapsed: a collapsed border is shared between adjacent
        rows, so each cell owns half of it and every row box lands on a .5. */
@@ -1049,12 +1084,29 @@
     width: 100%;
   }
 
-  th,
+  /* The header's rule comes from `thead th` in `app.css`; this is the row
+     separator. */
   td {
     border-bottom: 1px solid var(--rule);
-    padding: 0.625rem 0.75rem;
+  }
+
+  th,
+  td {
+    padding: var(--cell-pad-block) 0.75rem;
     text-align: left;
     vertical-align: middle;
+  }
+
+  /* Stated, not inherited from whatever the tallest cell happens to hold.
+     It used to come out at 61px because the row menu is 40px tall, and at 60.9px
+     on the viewer's own row - which has no menu, since nobody may act on
+     themselves - where two lines of untrimmed leading happened to measure the
+     same. Trimming those lines to their band, which is what centres them, took
+     that row to 54px and left one short row in the middle of the table. A row's
+     height is a decision: the tallest control it has to hold, plus its own
+     padding and rule. */
+  tbody tr {
+    height: calc(var(--control-height) + 2 * var(--cell-pad-block) + 1px);
   }
 
   th:first-child,
@@ -1066,12 +1118,10 @@
     padding-left: var(--space-4);
   }
 
+  /* Typography and ground come from `thead th` in `app.css`, shared with the
+     other five tables. Only the band's height is this table's own. */
   th {
-    background: var(--table-header-bg);
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
     height: 2.5rem;
-    letter-spacing: 0.02em;
   }
 
   th:has(.table-sort-button) {
@@ -1336,7 +1386,17 @@
     }
   }
 
+  /* Only where the column headings are not: they carry the same two filters while
+     the table is a table. */
+  .access-toolbar :global(.tools-trigger) {
+    display: none;
+  }
+
   @media (max-width: 64rem) {
+    .access-toolbar :global(.tools-trigger) {
+      display: inline-flex;
+    }
+
     table {
       min-width: 0;
     }

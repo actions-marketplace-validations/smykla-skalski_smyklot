@@ -200,7 +200,7 @@
     <!-- Keyboard focus lets users scroll columns that overflow the viewport. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div
-      class="installation-table-shell"
+      class="installation-table-shell table-card"
       role="region"
       tabindex="0"
       aria-label="Installation catalog table"
@@ -231,7 +231,7 @@
                       {monogram(installation.account.display_name, installation.account.login)}
                     </span>
                   </span>
-                  <span>
+                  <span class="band-trim-stack">
                     <a
                       class="installation-link"
                       href={hrefFor(installation.account.login, 'settings')}
@@ -245,9 +245,9 @@
               </th>
               <td class="count-cell">
                 {#if installation.repository_counts.total === 0}
-                  <span class="cell-dash" aria-label="No repositories">—</span>
+                  <span class="cell-dash band-trim" aria-label="No repositories">—</span>
                 {:else}
-                  <span class="repo-count">
+                  <span class="repo-count band-trim">
                     <b>{installation.repository_counts.enabled}</b>
                     of {installation.repository_counts.enabled +
                       installation.repository_counts.disabled} enabled
@@ -275,9 +275,9 @@
               </td>
               <td>
                 {#if installation.ownership.owner_count === 0}
-                  <span class="cell-dash" aria-label="No owners">—</span>
+                  <span class="cell-dash band-trim" aria-label="No owners">—</span>
                 {:else}
-                  <span class="owners-line">
+                  <span class="owners-line band-trim">
                     {installation.ownership.owner_count} ·
                     {installation.ownership.source === 'personal' ? 'Account owner' : 'Org admins'}
                   </span>
@@ -355,11 +355,10 @@
     color: var(--stop);
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css` -
+     this was the only table drawing them, and the other five were bare. */
   .installation-table-shell {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-surface);
-    overflow: auto;
+    overflow-y: auto;
   }
 
   /* `separate`, not `collapse`: a collapsed border is shared between adjacent
@@ -373,10 +372,19 @@
     width: 100%;
   }
 
-  th,
-  td {
+  /* The header's rule and its type come from `thead th` in `app.css`. A
+     `font-size` on `th` here would outrank it - a class selector beats two
+     element ones - and this table's heading would be the only 13px one. */
+  /* `tbody th` as well as `td`: the identity cell is a row header, and without
+     the separator it is a pixel taller than the cells beside it. */
+  td,
+  tbody th {
     border-bottom: 1px solid var(--rule);
     font-size: var(--font-size-meta);
+  }
+
+  th,
+  td {
     padding: var(--space-2) var(--space-3);
     text-align: left;
     vertical-align: middle;
@@ -402,11 +410,7 @@
      widths, and under content-box the header's percentages stop including its
      24px of padding, so the two grids drift apart by a whole cell. */
   thead th {
-    background: var(--table-header-bg);
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
     height: calc(2.5rem + 1px);
-    letter-spacing: 0.02em;
     padding-block: 0;
   }
 

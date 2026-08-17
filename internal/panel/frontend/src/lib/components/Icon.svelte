@@ -20,6 +20,7 @@
     | 'file-missing'
     | 'file-valid'
     | 'filter'
+    | 'github'
     | 'globe'
     | 'history'
     | 'info'
@@ -93,6 +94,10 @@
     'file-missing': 6,
     'file-valid': 6,
     filter: 3.5,
+    /* Octicons draw to the edge of the box where this set keeps a margin, so the
+       mark is nearly full-bleed. Left as it is: another product's logo is
+       reproduced or it is not used. */
+    github: 0.5,
     globe: 3,
     history: [4, 3.48],
     info: 3.5,
@@ -194,13 +199,28 @@
     <path d="M5.4 15.5A8 8 0 1 0 6 7.2L4 10" />
     <path d="M12 8v4l2.75 1.75" />
   {:else if name === 'system'}
-    <rect x="3" y="4" width="18" height="13" rx="2" />
-    <path d="M8 21h8M12 17v4" />
+    <!-- Lifted half a unit: the screen and its stand ran 4 to 21, so the middle
+         sat at 12.5 in a box whose middle is 12. Same correction, and the same
+         reason, as `repositories` above. `tests/browser/icon-geometry.test.ts`
+         measures the whole set now, so this stays true. -->
+    <rect x="3" y="3.5" width="18" height="13" rx="2" />
+    <path d="M8 20.5h8M12 16.5v4" />
   {:else if name === 'search'}
     <circle cx="11" cy="11" r="7" />
     <path d="m20 20-3.5-3.5" />
   {:else if name === 'filter'}
     <path d="M3.5 5h17l-6.7 7.3v5.4l-3.6 1.8v-7.2z" />
+  {:else if name === 'github'}
+    <!-- primer/octicons `mark-github-24`, verbatim: another product's mark is
+         reproduced or it is not used, and an approximation of this one is
+         recognisably wrong. It is a filled shape, so it carries its own fill and
+         cancels the stroke this component sets - without that the svg's
+         `fill="none" stroke="currentColor"` would draw it as an empty outline. -->
+    <path
+      fill="currentColor"
+      stroke="none"
+      d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943"
+    />
   {:else if name === 'globe'}
     <circle cx="12" cy="12" r="8.5" />
     <path
@@ -210,8 +230,9 @@
     <path d="M4 21V7l8-4 8 4v14M8 21v-4h8v4" />
     <path d="M8 9h1M11.5 9h1M15 9h1M8 13h1M11.5 13h1M15 13h1" />
   {:else if name === 'user'}
-    <circle cx="12" cy="8" r="4" />
-    <path d="M4.5 21c.6-4.3 3.1-6.5 7.5-6.5s6.9 2.2 7.5 6.5" />
+    <!-- Lifted half a unit, like `system`: head and shoulders ran 4 to 21. -->
+    <circle cx="12" cy="7.5" r="4" />
+    <path d="M4.5 20.5c.6-4.3 3.1-6.5 7.5-6.5s6.9 2.2 7.5 6.5" />
   {:else if name === 'branch'}
     <circle cx="7" cy="5" r="2" />
     <circle cx="17" cy="8" r="2" />
@@ -226,8 +247,9 @@
     <path d="m5.17 11.75-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71" />
     <path d="M8 2v3M2 8h3M16 19v3M19 16h3" />
   {:else if name === 'lock'}
-    <rect x="5" y="10" width="14" height="10" rx="2" />
-    <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    <!-- Dropped half a unit: shackle and body ran 3 to 20. -->
+    <rect x="5" y="10.5" width="14" height="10" rx="2" />
+    <path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" />
   {:else if name === 'user-plus'}
     <circle cx="9" cy="8" r="3.5" />
     <path d="M2.5 20c.7-3.2 3.3-5 6.5-5s5.8 1.8 6.5 5" />
@@ -283,9 +305,15 @@
       d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"
     />
   {:else if name === 'moon'}
-    <path d="M20 15.2A8 8 0 0 1 8.8 4a8.1 8.1 0 1 0 11.2 11.2Z" />
+    <!-- Dropped 0.55: the crescent's own extrema, not its endpoints, put the
+         middle at 11.45. Only the two absolute coordinates move; the arc after
+         them is relative and follows. -->
+    <path d="M20 15.75A8 8 0 0 1 8.8 4.55a8.1 8.1 0 1 0 11.2 11.2Z" />
   {:else if name === 'check'}
-    <path d="M20 6 9 17l-5-5" />
+    <!-- Dropped half a unit: the tick ran 6 to 17, so it rode half a unit high
+         of every word beside it - and it is the mark on every selected menu row
+         and every confirmation in the product. -->
+    <path d="M20 6.5 9 17.5l-5-5" />
   {:else if name === 'success'}
     <circle cx="12" cy="12" r="8.5" />
     <path d="m8 12 2.5 2.5L16.5 9" />
@@ -296,8 +324,9 @@
     <path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 6.5 2.5 6.5h-17S6 15 6 9" />
     <path d="M9.5 19a2.8 2.8 0 0 0 5 0" />
   {:else if name === 'warning'}
-    <path d="M12 3 2.8 20h18.4z" />
-    <path d="M12 9v4M12 17h.01" />
+    <!-- Dropped half a unit: the triangle ran 3 to 20. -->
+    <path d="M12 3.5 2.8 20.5h18.4z" />
+    <path d="M12 9.5v4M12 17.5h.01" />
   {:else if name === 'alert'}
     <circle cx="12" cy="12" r="8.5" />
     <path d="M12 8v4.5M12 15.8h.01" />
@@ -342,7 +371,8 @@
     <circle cx="8" cy="12" r="4" />
     <path d="M12 12h9M17 12v3M20 12v2" />
   {:else if name === 'editor'}
-    <path d="m4 20 4.2-1 10.9-10.9-3.2-3.2L5 15.8zM14.8 6l3.2 3.2" />
+    <!-- Lifted 0.45: the pencil ran 4.35 to 20.55, tip to nib. -->
+    <path d="m4 19.55 4.2-1 10.9-10.9-3.2-3.2L5 15.35zM14.8 5.55l3.2 3.2" />
   {:else if name === 'viewer'}
     <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6" />
     <circle cx="12" cy="12" r="2.5" />

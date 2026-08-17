@@ -24,6 +24,7 @@
   import Modal from './Modal.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import SearchField from './SearchField.svelte';
+  import TableToolsMenu from './TableToolsMenu.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
   type SortColumn = 'name' | 'created' | 'expiry';
@@ -365,6 +366,23 @@
       value={search}
       onInput={(value) => (search = value)}
     />
+    <!-- The status filter lives in a column heading, and the heading band is
+         hidden once this table becomes a stack of cards. Without this the page
+         offered a search field and nothing else. -->
+    <TableToolsMenu
+      label="Filter invitations"
+      sorts={[]}
+      filters={[
+        {
+          label: 'Status',
+          hint: 'Filter invitation lifecycle',
+          sections: STATUS_FILTERS,
+          selected: statuses,
+          multiple: true,
+          onChange: selectStatuses,
+        },
+      ]}
+    />
   </div>
 
   <div class:loading class="invitation-results" aria-busy={loading}>
@@ -392,7 +410,12 @@
       </div>
     {:else}
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <div class="table-scroll" role="region" tabindex="0" aria-label="Root invitations table">
+      <div
+        class="table-scroll table-card"
+        role="region"
+        tabindex="0"
+        aria-label="Root invitations table"
+      >
         <table>
           <caption class="visually-hidden">Root role invitations</caption>
           <thead>
@@ -405,7 +428,7 @@
               <th scope="col">System role</th>
               <th scope="col">
                 <div class="heading-layout">
-                  <span>Status</span>
+                  <span class="heading-label band-trim">Status</span>
                   <FilterMenu
                     label="Invitation status"
                     summary={statuses.length === 0 ? 'All statuses' : `${statuses.length} selected`}
@@ -445,7 +468,7 @@
                 <td data-label="User">
                   <span class="identity">
                     <Avatar account={invitation.account} size={32} />
-                    <span
+                    <span class="band-trim-stack"
                       ><strong>{invitation.account.display_name}</strong><span class="mono"
                         >@{invitation.account.login}</span
                       ></span
@@ -698,12 +721,11 @@
     position: relative;
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
   .table-scroll {
-    background: var(--surface-base);
     flex: 1;
     max-width: 100%;
     min-height: 0;
-    overflow-x: auto;
   }
 
   table {
@@ -717,9 +739,14 @@
     width: 100%;
   }
 
-  th,
+  /* The header's rule comes from `thead th` in `app.css`; this is the row
+     separator. */
   td {
     border-bottom: 1px solid var(--rule);
+  }
+
+  th,
+  td {
     padding: 0.625rem 0.75rem;
     text-align: left;
     vertical-align: middle;
@@ -734,12 +761,9 @@
     padding-left: var(--space-4);
   }
 
+  /* Typography and ground come from `thead th` in `app.css`. */
   th {
-    background: var(--table-header-bg);
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
     height: 2.5rem;
-    letter-spacing: 0.02em;
   }
 
   th:has(.table-sort-button) {
@@ -997,7 +1021,17 @@
     }
   }
 
+  /* Only where the column headings are not: the Status heading carries the same
+     filter while the table is a table. */
+  .invitation-tools :global(.tools-trigger) {
+    display: none;
+  }
+
   @media (max-width: 64rem) {
+    .invitation-tools :global(.tools-trigger) {
+      display: inline-flex;
+    }
+
     .invitation-tools {
       grid-template-columns: 1fr;
     }

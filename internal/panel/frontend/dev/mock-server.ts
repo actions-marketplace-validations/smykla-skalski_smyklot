@@ -2433,9 +2433,9 @@ function rootOverviewValue(state: MockState): RootOverview {
     ).length,
     recent_failures: recentFailures,
     pending_ci: {
-      active: state.pendingCI.filter(
-        (request) => request.lifecycle === 'armed' && request.schedule === 'active',
-      ),
+      active: state.pendingCI
+        .filter((request) => request.lifecycle === 'armed' && request.schedule === 'active')
+        .map(liveQuietPeriod),
       deferred: state.pendingCI.filter(
         (request) => request.lifecycle === 'armed' && request.schedule === 'deferred',
       ),
@@ -2446,6 +2446,29 @@ function rootOverviewValue(state: MockState): RootOverview {
 
 function pendingCISeeds(iso: (offsetMs: number) => string): PendingCIRequest[] {
   return [
+    /* Passing and inside its quiet period, which is the one row whose next event
+       is the merge itself rather than another look at the checks. Without one of
+       these seeded, the countdown and its ring - the whole point of the Next
+       column - never appear in development. */
+    {
+      id: 'pending-ci-0',
+      repository_full_name: 'smykla-skalski/panel',
+      pull_request: 204,
+      head_sha: '2bb2221374c1a9ee4f8b0d3c6a5e9017cc41ab8e',
+      merge_method: 'squash',
+      required_checks_only: false,
+      requester: 'lin',
+      lifecycle: 'armed',
+      schedule: 'active',
+      next_check_at: iso(24_000),
+      next_check_trigger: 'quiet_period',
+      last_observed_state: 'passing',
+      reason: '',
+      requested_at: iso(-6 * 60_000),
+      updated_at: iso(-6_000),
+      cleanup_pending: false,
+      revision: 2,
+    },
     {
       id: 'pending-ci-1',
       repository_full_name: 'smykla-skalski/smyklot',
@@ -2484,6 +2507,70 @@ function pendingCISeeds(iso: (offsetMs: number) => string): PendingCIRequest[] {
       cleanup_pending: false,
       revision: 7,
     },
+    /* Three that have finished, so `/root/queue/recent` has its own rows: one of
+       each way a request can end, and one with cleanup still outstanding so the
+       column that reports it has something to report. */
+    {
+      id: 'pending-ci-3',
+      repository_full_name: 'smykla-skalski/smyklot',
+      pull_request: 196,
+      head_sha: '2bb22213f0a94c7e1d8b6e5f3a20c7419de88b03',
+      merge_method: 'squash',
+      required_checks_only: false,
+      requester: 'bart',
+      lifecycle: 'merged',
+      schedule: 'active',
+      next_check_at: iso(-2 * 3_600_000),
+      next_check_trigger: 'cleanup',
+      last_observed_state: 'passing',
+      reason: 'Checks passed and stayed quiet for 30 s',
+      requested_at: iso(-3 * 3_600_000),
+      updated_at: iso(-2 * 3_600_000),
+      finished_at: iso(-2 * 3_600_000),
+      cleanup_pending: false,
+      revision: 5,
+    },
+    {
+      id: 'pending-ci-4',
+      repository_full_name: 'smykla-skalski/infra',
+      pull_request: 70,
+      head_sha: '91ee4c0287d3a5b1f6c0e94a72d5183be6f0c7a9',
+      merge_method: 'rebase',
+      required_checks_only: false,
+      requester: 'operator',
+      lifecycle: 'cancelled',
+      schedule: 'active',
+      next_check_at: iso(-4 * 3_600_000),
+      next_check_trigger: 'manual',
+      last_observed_state: 'pending',
+      reason: 'Head commit changed after the command',
+      requested_at: iso(-5 * 3_600_000),
+      updated_at: iso(-4 * 3_600_000),
+      finished_at: iso(-4 * 3_600_000),
+      cleanup_pending: true,
+      revision: 4,
+    },
+    {
+      id: 'pending-ci-5',
+      repository_full_name: 'smykla-skalski/panel',
+      pull_request: 41,
+      head_sha: 'a1c9e004b7f2153ce8a09d4b6172fe3d05c8a71b',
+      merge_method: 'squash',
+      required_checks_only: true,
+      requester: 'lin',
+      lifecycle: 'superseded',
+      schedule: 'active',
+      next_check_at: iso(-6 * 3_600_000),
+      next_check_trigger: 'command',
+      last_observed_state: 'passing',
+      reason: 'Replaced by a later /merge after ci',
+      requested_at: iso(-7 * 3_600_000),
+      updated_at: iso(-6 * 3_600_000),
+      finished_at: iso(-6 * 3_600_000),
+      cleanup_pending: false,
+      cleanup_error: 'the head branch was already gone',
+      revision: 9,
+    },
   ];
 }
 
@@ -2493,7 +2580,23 @@ function findPendingCI(state: MockState, encodedID: string): PendingCIRequest {
   if (request === undefined) {
     throw new MockApiError(404, 'not_found', 'pending CI request not found');
   }
-  return request;
+  return liveQuietPeriod(request);
+}
+
+/**
+ * Keeps a seeded quiet period from having expired before anybody could look at it.
+ *
+ * The seed is written once when the process starts and the period is 30 seconds long, so by the
+ * time a page opens it has always run out and the countdown sits at 0:00 for ever. Only the mock
+ * does this: a real deadline in the past means the merge is happening.
+ */
+export function liveQuietPeriod(request: PendingCIRequest): PendingCIRequest {
+  if (request.lifecycle !== 'armed' || request.next_check_trigger !== 'quiet_period') {
+    return request;
+  }
+  if (Date.parse(request.next_check_at) > Date.now()) return request;
+
+  return { ...request, next_check_at: new Date(Date.now() + 30_000).toISOString() };
 }
 
 function requirePendingCIRevision(request: PendingCIRequest, revision: number): void {
@@ -2502,19 +2605,60 @@ function requirePendingCIRevision(request: PendingCIRequest, revision: number): 
   }
 }
 
+/**
+ * A record with enough in it to be a record.
+ *
+ * One event drew a timeline with no rail, no second mark and nothing to align - which is most of
+ * what the page is. These are the events a passing request actually accumulates, in the order the
+ * reconciler writes them.
+ */
 function pendingCIDetail(request: PendingCIRequest): PendingCIDetail {
+  const armedAt = Date.parse(request.requested_at);
+  const at = (offsetMs: number): string => new Date(armedAt + offsetMs).toISOString();
+
   return {
     request: structuredClone(request),
     events: [
+      {
+        id: `${request.id}:armed`,
+        kind: 'armed',
+        trigger: 'command',
+        summary: `@${request.requester} commented /${request.merge_method} after ci and holds merge permission through CODEOWNERS`,
+        created_at: request.requested_at,
+      },
       {
         id: `${request.id}:wake`,
         kind: 'wake_received',
         trigger: 'webhook',
         event_name: 'check_suite',
-        event_key: `check_suite:${request.head_sha}:completed:success`,
-        delivery_id: 'mock-delivery-id',
-        summary: 'Received a CI state webhook and scheduled an immediate reconciliation',
-        created_at: request.updated_at,
+        event_key: `check_suite:${request.head_sha.slice(0, 8)}:completed:success`,
+        delivery_id: '8f3a1c7e-2b40-4d19-9a5e-71c0d2f4b8aa',
+        summary:
+          'A check_suite delivery reported completed checks and scheduled an immediate reconciliation',
+        created_at: at(3 * 60_000),
+      },
+      {
+        id: `${request.id}:reconcile`,
+        kind: 'reconciliation_started',
+        trigger: 'webhook',
+        summary: 'Lease taken, pull request and check state read from GitHub',
+        created_at: at(3 * 60_000 + 1_000),
+      },
+      {
+        id: `${request.id}:observed`,
+        kind: 'checks_observed',
+        trigger: 'webhook',
+        state: request.last_observed_state,
+        event_key: `check_suite:${request.head_sha.slice(0, 8)}:completed:success`,
+        summary: `All 11 checks green on ${request.head_sha.slice(0, 8)}; the previous observation was pending`,
+        created_at: at(3 * 60_000 + 2_000),
+      },
+      {
+        id: `${request.id}:quiet`,
+        kind: 'reconciliation_started',
+        trigger: 'quiet_period',
+        summary: 'Quiet period started; merging unless a new check or commit arrives first',
+        created_at: at(3 * 60_000 + 2_500),
       },
     ],
   };

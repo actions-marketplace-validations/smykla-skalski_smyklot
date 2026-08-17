@@ -933,7 +933,7 @@
       </div>
       <p class="visually-hidden" role="status">Loading repositories</p>
     {:else}
-      <div class="repository-table-scroll">
+      <div class="repository-table-scroll table-card">
         <table class="repositories">
           <thead>
             <tr>
@@ -1080,7 +1080,7 @@
                     datetime={repository.updated_at}
                     title={formatTimestamp(repository.updated_at)}
                   >
-                    {formatRelative(repository.updated_at, now)}
+                    <span class="cap-trim">{formatRelative(repository.updated_at, now)}</span>
                   </time>
                 </td>
                 <td data-label="Enablement">
@@ -1432,9 +1432,9 @@
     }
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
   .repository-table-scroll {
-    background: var(--surface-base);
-    overflow-x: auto;
+    max-width: 100%;
   }
 
   .repositories {
@@ -1448,22 +1448,25 @@
     width: 100%;
   }
 
+  /* Padding is shared; the rule under the header and the header's own type are
+     not. A `th, td` font-size here outranks `thead th` in `app.css` - a class
+     selector beats two element ones - so this table's heading was rendering at
+     13px while the other five were at 11. */
   th,
   td {
-    border-bottom: 1px solid var(--border-subtle);
-    font-size: var(--font-size-meta);
     padding: var(--space-2) var(--space-3);
     text-align: left;
     vertical-align: middle;
   }
 
-  th {
-    background: var(--table-header-bg);
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-weight: 650;
-    letter-spacing: 0.02em;
+  td {
+    border-bottom: 1px solid var(--rule);
+    font-size: var(--font-size-meta);
   }
+
+  /* Typography and ground come from `thead th` in `app.css`. This one used
+     `--text-muted` where the other five used `--dim`, which is the drift the
+     shared rule exists to end. */
 
   th:first-child {
     width: 27%;

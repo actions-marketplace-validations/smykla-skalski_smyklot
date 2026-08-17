@@ -61,8 +61,12 @@
   ] as const satisfies readonly PanelView[];
 
   const visibleViews = $derived(NAVIGATION_VIEWS.filter((view) => view !== 'users' || showUsers));
+  /* Queue sits under Overview: it is the one section that is about what the
+     service is going to do rather than about what it is configured with, so it
+     reads as the console's second answer to "what is happening". */
   const ROOT_SECTIONS = [
     'overview',
+    'queue',
     'installations',
     'access',
     'history',
@@ -140,6 +144,10 @@
 
   function rootIcon(section: RootSection): IconName {
     if (section === 'overview') return 'system';
+    /* The clock face, not the arrow-and-clock `history` uses: a queue is what has
+       not happened yet, and the two sections sit four rows apart in the same
+       list. */
+    if (section === 'queue') return 'pending';
     if (section === 'installations') return 'organization';
     if (section === 'access') return 'users';
     if (section === 'history') return 'history';
@@ -418,7 +426,9 @@
           {#if unreadCount > 0}<span class="unread-dot" aria-hidden="true"></span>{/if}
         </span>
         <span class="navigation-label">Inbox</span>
-        {#if unreadCount > 0}<span class="unread-count" aria-hidden="true">{unreadLabel}</span>{/if}
+        {#if unreadCount > 0}<span class="unread-count" aria-hidden="true"
+            ><span class="cap-trim">{unreadLabel}</span></span
+          >{/if}
         <span class="navigation-tooltip">{inboxLabel}</span>
       </a>
     </div>

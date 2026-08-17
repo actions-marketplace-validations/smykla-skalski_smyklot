@@ -755,7 +755,12 @@
     {:else if historyType === 'audit'}
       <!-- Keyboard focus lets users scroll columns that overflow the viewport. -->
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <div class="table-scroll" role="region" tabindex="0" aria-label="Audit history table">
+      <div
+        class="table-scroll table-card"
+        role="region"
+        tabindex="0"
+        aria-label="Audit history table"
+      >
         <table class="history-table audit-table">
           <caption class="visually-hidden">Audit history</caption>
           <colgroup>
@@ -920,12 +925,12 @@
                     {#if entry.category !== undefined}
                       <span class="category-tag" aria-hidden="true">{entry.category}</span>
                     {/if}
-                    <span class="cell-primary">{auditSummary(entry.summary)}</span>
+                    <span class="cell-primary band-trim">{auditSummary(entry.summary)}</span>
                   </span>
                 </td>
                 <td data-label="When">
                   <time
-                    class="table-time"
+                    class="table-time band-trim"
                     datetime={entry.created_at}
                     title={formatTimestamp(entry.created_at)}
                   >
@@ -954,7 +959,7 @@
       <!-- Keyboard focus lets users scroll columns that overflow the viewport. -->
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
-        class="table-scroll"
+        class="table-scroll table-card"
         role="region"
         tabindex="0"
         aria-label="Delivery failure history table"
@@ -1182,10 +1187,9 @@
     cursor: progress;
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
   .table-scroll {
-    background: var(--surface-base);
     max-width: 100%;
-    overflow-x: auto;
   }
 
   .history-table {
@@ -1199,7 +1203,8 @@
     width: 100%;
   }
 
-  .history-table th,
+  /* The header's own rule comes from `thead th` in `app.css`, so every table in
+     the product draws it the same. This is the separator between rows. */
   .history-table td {
     border-bottom: 1px solid var(--rule);
     font-size: var(--font-size-meta);
@@ -1227,10 +1232,6 @@
      on the th instead would fold the border into it and leave the band 1px
      shallower than the other four tables. */
   .history-table th {
-    background: var(--table-header-bg);
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
-    letter-spacing: 0.02em;
     padding: 0;
   }
 
@@ -1567,31 +1568,43 @@
     font: 650 0.65rem / 1 var(--sans);
     letter-spacing: 0.04em;
     padding: 0.2rem 0.35rem;
+    /* Symmetric about its own band, so the equal padding above and below is the
+       whole of what centres the word on the tag. */
+    text-box: trim-both cap alphabetic;
     text-transform: uppercase;
   }
 
-  /* One rule, not two. These were declared separately and the second undid the
-     first: `white-space: nowrap` leaves `overflow-wrap` nothing to do, so the
-     line could only ever be cut short. It earns its place again on a phone,
-     where the card lets the text wrap and a long name has to break somewhere. */
+  /* One rule, not the two that had grown here - the second quietly replaced the
+     first's `overflow-wrap` reasoning with `nowrap` and an ellipsis.
+     `overflow: clip` rather than `hidden`, with a margin: the trim ends this box
+     on the baseline, so `hidden` would shave the tail off every g, p and y in the
+     table. The margin is vertical room the clip gives back; horizontally there is
+     nothing to give back, since the ellipsis truncates inside the box.
+     `overflow-wrap` does nothing against `nowrap` here, and earns its place on a
+     phone, where the card lets the text wrap and a long name has to break. */
   .cell-primary {
     display: block;
     font-size: var(--font-size-meta);
     line-height: 1.5;
-    overflow: hidden;
+    overflow: clip;
+    overflow-clip-margin: 0.35em;
     overflow-wrap: anywhere;
+    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* Block-level, so `.band-trim` has line boxes to trim and the cell has a box to
+     centre. As an inline-flex it had neither: the trim was a no-op on a flex
+     container, and inline it rode the row's strut instead of the cell's middle,
+     which put the timestamp 0.59px below every other column. */
   .table-time {
-    align-items: center;
     color: var(--dim);
-    display: inline-flex;
+    display: block;
     font-size: var(--font-size-meta);
     line-height: 1.5;
-    vertical-align: middle;
     white-space: nowrap;
+    width: fit-content;
   }
 
   .empty-cell {

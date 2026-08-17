@@ -1301,7 +1301,7 @@
 {#snippet roleValue(role: InstallationRole)}
   <span class="role-value role-{role}">
     <span class="role-value-icon" aria-hidden="true"><Icon name={roleIcon(role)} size={14} /></span>
-    <span>{roleLabel(role)}</span>
+    <span class="band-trim">{roleLabel(role)}</span>
   </span>
 {/snippet}
 
@@ -1382,7 +1382,12 @@
               />
             {/if}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <div class="user-table-wrap" role="region" aria-label="Panel users" tabindex="0">
+            <div
+              class="user-table-wrap table-card"
+              role="region"
+              aria-label="Panel users"
+              tabindex="0"
+            >
               <table class="user-table">
                 <caption class="visually-hidden">
                   Panel users. Select a sortable column header to change the sort order
@@ -1485,14 +1490,17 @@
                       <th scope="row">
                         <span class="user-identity">
                           <Avatar account={user.account} size={32} />
-                          <span>
+                          <!-- The hint sits outside the stack, not at the end of it:
+                               `.band-trim-stack` trims the last line's descender space, and a
+                               clipped span is a last child with no line to trim. -->
+                          {#if hasDecisionHistory(user)}
+                            <span class="visually-hidden">
+                              Select this row to review access decision history
+                            </span>
+                          {/if}
+                          <span class="band-trim-stack">
                             <strong>{user.account.display_name}</strong>
                             <span class="user-login mono">@{user.account.login}</span>
-                            {#if hasDecisionHistory(user)}
-                              <span class="visually-hidden">
-                                Select this row to review access decision history
-                              </span>
-                            {/if}
                           </span>
                         </span>
                       </th>
@@ -1514,13 +1522,17 @@
                       </td>
                       <td class="last-login" data-label="Last login">
                         {#if user.last_login_at === undefined}
-                          <span class="dim">Never</span>
+                          <span class="dim"><span class="cap-trim">Never</span></span>
                         {:else}
                           <time
                             datetime={user.last_login_at}
                             title={formatTimestamp(user.last_login_at)}
                           >
-                            {formatRelative(user.last_login_at, now)}
+                            <!-- Wrapped so there is a box to trim. These cells keep the control
+                                 height so a row does not shrink, and a bare text node inside a
+                                 34px flex box centres by its em box, which is 0.34px above the
+                                 words - the whole column sat there. -->
+                            <span class="cap-trim">{formatRelative(user.last_login_at, now)}</span>
                           </time>
                         {/if}
                       </td>
@@ -1610,7 +1622,12 @@
               />
             {/if}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <div class="user-table-wrap" role="region" aria-label="Panel invitations" tabindex="0">
+            <div
+              class="user-table-wrap table-card"
+              role="region"
+              aria-label="Panel invitations"
+              tabindex="0"
+            >
               <table class="user-table invitation-table">
                 <caption class="visually-hidden">
                   Panel invitations. Select a sortable column header to change the sort order
@@ -1708,7 +1725,7 @@
                       <th scope="row">
                         <span class="user-identity">
                           <Avatar account={invitation.account} size={32} />
-                          <span>
+                          <span class="band-trim-stack">
                             <strong>{invitation.account.display_name}</strong>
                             <span class="user-login mono">@{invitation.account.login}</span>
                           </span>
@@ -1725,7 +1742,7 @@
                           datetime={invitation.created_at}
                           title={formatTimestamp(invitation.created_at)}
                         >
-                          {formatRelative(invitation.created_at, now)}
+                          <span class="cap-trim">{formatRelative(invitation.created_at, now)}</span>
                         </time>
                       </td>
                       <td class="last-login" data-label="Expires">
@@ -1735,18 +1752,20 @@
                             datetime={invitation.expires_at}
                             title={formatTimestamp(invitation.expires_at)}
                           >
-                            {formatUntil(invitation.expires_at, now)}
+                            <span class="cap-trim">{formatUntil(invitation.expires_at, now)}</span>
                           </time>
                         {:else if invitation.status === 'expired'}
                           <time
                             datetime={invitation.expires_at}
                             title={formatTimestamp(invitation.expires_at)}
                           >
-                            {formatDateTime(invitation.expires_at)}
+                            <span class="cap-trim">{formatDateTime(invitation.expires_at)}</span>
                           </time>
                         {:else}
                           <!-- Expiry stops meaning anything once the invitation is resolved. -->
-                          <span class="cell-dash" aria-hidden="true">—</span>
+                          <span class="cell-dash" aria-hidden="true"
+                            ><span class="cap-trim">—</span></span
+                          >
                         {/if}
                       </td>
                       <td class="row-actions" data-label="Actions">
@@ -2119,12 +2138,11 @@
     padding-bottom: var(--space-3);
   }
 
-  .button-label {
-    align-items: center;
-    display: inline-flex;
-    height: 100%;
-    line-height: 1;
-  }
+  /* `.button-label` is trimmed to its band in `app.css`, which is what puts the
+     word on the icon's centre. This used to stretch it to the button's full
+     height and centre inside it instead - box centring, which is what left the
+     label 0.47px above the icon, and being a flex container it also made the trim
+     a no-op. */
 
   .stable-feedback {
     color: var(--clear);
@@ -2214,12 +2232,11 @@
     }
   }
 
+  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
   .user-table-wrap {
-    background: var(--surface-base);
     display: flex;
     flex: 1;
     min-height: 0;
-    overflow-x: auto;
   }
 
   .user-table-wrap:focus-visible {
@@ -2238,10 +2255,21 @@
     width: 100%;
   }
 
-  .user-table th,
-  .user-table td {
+  /* The header's rule and its type come from `thead th` in `app.css`. A
+     `font-size` on `th` here would outrank it - a class selector beats two
+     element ones - and this table's heading would be 13px against everyone
+     else's 11. */
+  /* `tbody th` as well as `td`: the identity cell is a row header, and without
+     the separator it is a pixel taller than the cells beside it - which centres
+     its contents half a pixel lower than the rest of the row. */
+  .user-table td,
+  .user-table tbody th {
     border-bottom: 1px solid var(--rule);
     font-size: var(--font-size-meta);
+  }
+
+  .user-table th,
+  .user-table td {
     padding: var(--space-2) var(--space-3);
     text-align: left;
     vertical-align: middle;
@@ -2257,12 +2285,9 @@
     padding-right: var(--space-3);
   }
 
+  /* Typography and ground come from `thead th` in `app.css`. */
   .user-table thead th {
-    background: var(--table-header-bg);
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
     height: 2.5rem;
-    letter-spacing: 0.02em;
   }
 
   .user-table thead th:has(.sort-button) {
