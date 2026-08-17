@@ -1,12 +1,15 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
+  import { useDebounce, useInterval } from 'runed';
+  import { untrack } from 'svelte';
+  import { flip } from 'svelte/animate';
+  import { MediaQuery } from 'svelte/reactivity';
+  import { fade } from 'svelte/transition';
 
   import type { PanelApi } from '#lib/api.js';
   import type { FilterSection } from '#lib/filter-menu.js';
   import { formatTimestamp } from '#lib/format.js';
   import {
-    byMostRecent,
-    bySoonest,
     cleanupState,
     endReason,
     outcomeState,
@@ -20,10 +23,12 @@
   import Chip from './Chip.svelte';
   import FilterMenu from './FilterMenu.svelte';
   import Icon from './Icon.svelte';
+  import IconButton from './IconButton.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
+  import SortIndicator from './SortIndicator.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
   import TableToolsMenu from './TableToolsMenu.svelte';
 
@@ -33,6 +38,35 @@
      From `internal/pendingci/policy.go`; a request that has passed waits this
      long without anything changing, and then it merges. */
   const QUIET_SECONDS = 30;
+
+  /**
+   * How the rows move when the reconciler moves them.
+   *
+   * This table is the one place in the panel that changes while it is being read: a deadline runs
+   * out, the service acts, the stream says so and the rows re-sort under the reader's eyes. Without
+   * this they teleport, and a row that has merged is indistinguishable from a row that was never
+   * there - which is the one thing the reader needed to see.
+   *
+   * `flip` returns a `css` animation, so it plays as a web animation off the main thread rather
+   * than as a per-frame callback. That matters more here than anywhere else: whatever the queue is
+   * doing, it is doing it while a countdown ticks every second beside it.
+   *
+   * Under `prefers-reduced-motion` the duration goes to zero rather than the directive coming off:
+   * the row still lands where it belongs, it just gets there at once.
+   */
+  const stillness = new MediaQuery('prefers-reduced-motion: reduce');
+  const rowMotion = $derived({ duration: stillness.current ? 0 : 220 });
+  /* Leaving is quicker than arriving, and quicker than the re-sort that follows it: a row that has
+     merged should be out of the way before the rows below it start closing the gap, or the two
+     movements read as one confused one. */
+  const rowLeaving = $derived({ duration: stillness.current ? 0 : 140 });
+  const rowArriving = $derived({
+    duration: stillness.current ? 0 : 260,
+    delay: stillness.current ? 0 : 80,
+  });
+  /* The chip, when the reconciler changes what a row says. Slower than the row's own motion,
+     because it is a different fact arriving in a place the eye is already resting on. */
+  const stateChange = $derived({ duration: stillness.current ? 0 : 300 });
 
   const {
     api,
@@ -50,16 +84,26 @@
 
   /* Each value carries the glyph its column carries, so the menu and the table
      say the same state the same way - and so no state here is told apart by hue
-     alone, which three of these five pairs cannot survive under one dichromacy or
-     another. */
+     alone, which three of these six pairs cannot survive under one dichromacy or
+     another.
+
+     Every state the column can DRAW is offered, which is what the last entry is
+     for: a request carries no observed state between the command and its first
+     reconciliation, the column reads that as "Scheduled", and the menu offered
+     five values while the table showed six. `tests/queue-vocabulary.test.ts`
+     compares the two lists so they cannot part again. Filtering is on the value
+     the service sent, so the empty string is the value here - a state the panel
+     does not recognise draws as Scheduled too, and is not reachable from this
+     menu, which is the honest answer: there is nothing to name it by. */
   const STATE_FILTERS = [
     {
       options: [
         { value: 'passing', label: 'Passing', tone: 'valid', icon: 'success' },
-        { value: 'pending', label: 'Running', tone: 'default', icon: 'pending' },
+        { value: 'pending', label: 'Running', tone: 'neutral', icon: 'pending' },
         { value: 'failing', label: 'Failing', tone: 'invalid', icon: 'failure' },
         { value: 'indeterminate', label: 'Unreadable', tone: 'bypassed', icon: 'alert' },
-        { value: 'no_checks', label: 'No checks', tone: 'missing', icon: 'circle-dashed' },
+        { value: 'no_checks', label: 'No checks', tone: 'missing', icon: 'minus-circle' },
+        { value: '', label: 'Scheduled', tone: 'neutral', icon: 'circle-dashed' },
       ],
     },
   ] satisfies readonly FilterSection[];
@@ -71,7 +115,7 @@
     {
       options: [
         { value: 'merged', label: 'Merged', tone: 'valid', icon: 'success' },
-        { value: 'cancelled', label: 'Cancelled', tone: 'default', icon: 'circle-dashed' },
+        { value: 'cancelled', label: 'Cancelled', tone: 'neutral', icon: 'circle-dashed' },
         { value: 'superseded', label: 'Superseded', tone: 'bypassed', icon: 'alert' },
       ],
     },
@@ -114,25 +158,156 @@
           ? overviewQuery.error.message
           : String(overviewQuery.error)),
   );
+  /* Chips, because the Cleanup column draws chips, and the same three words. */
+  const CLEANUP_FILTERS = [
+    {
+      options: [
+        { value: 'done', label: 'Done', tone: 'valid', icon: 'check' },
+        { value: 'pending', label: 'Pending', tone: 'bypassed', icon: 'pending' },
+        { value: 'failed', label: 'Failed', tone: 'invalid', icon: 'alert' },
+      ],
+    },
+  ] satisfies readonly FilterSection[];
+
+  /**
+   * What each section can be ordered by, and what each column means as an order.
+   *
+   * Only the columns whose values HAVE an order: a repository name sorts as well as any string
+   * and says nothing, and the reason a request ended is a sentence. The two the table opens on -
+   * what happens soonest, and what finished last - are the two the mock marks as sorted.
+   */
+  const ORDERS = {
+    checks: (request: PendingCIRequest) => queueState(request).label,
+    next: (request: PendingCIRequest) => request.next_check_at,
+    armed: (request: PendingCIRequest) => request.requested_at,
+    outcome: (request: PendingCIRequest) => outcomeState(request).label,
+    cleanup: (request: PendingCIRequest) => cleanupState(request).label,
+    finished: (request: PendingCIRequest) => request.finished_at ?? request.updated_at,
+  } as const;
+
+  type SortColumn = keyof typeof ORDERS;
+
+  interface SectionOrder {
+    columns: readonly SortColumn[];
+    opens: SortColumn;
+    ascending: boolean;
+  }
+
+  /** Which of them each section actually draws, and the one it opens on. */
+  const SECTION_ORDERS: Record<QueueSection, SectionOrder> = {
+    waiting: { columns: ['checks', 'next', 'armed'], opens: 'next', ascending: true },
+    recent: { columns: ['outcome', 'cleanup', 'finished'], opens: 'finished', ascending: false },
+  };
+
   let search = $state('');
   let query = $state('');
   let states = $state<string[]>([]);
   let schedules = $state<string[]>([]);
+  let pullRequests = $state<string[]>([]);
+  let cleanups = $state<string[]>([]);
+  /* The order each section opens on: soonest first for what is still to happen, newest first for
+     what already has. Reading the waiting order onto the past puts the oldest outcome at the top,
+     which is the opposite of what somebody scanning for "what just happened" wants. */
+  let sortColumn = $state<SortColumn>('next');
+  let ascending = $state(true);
   let pendingAction = $state<string | null>(null);
   /* Ticks so a countdown counts. One second, because the last ten of a merge are
      the point of the column and a minute's granularity would miss them. */
   let now = $state(Date.now());
 
-  const rows = $derived.by(() => {
-    const source = section === 'waiting' ? waiting : recent;
+  /** What this section is holding, which is what the section's own filters offer. */
+  const section_rows = $derived<PendingCIRequest[]>(section === 'waiting' ? waiting : recent);
+
+  /**
+   * The four things a Pull request cell says, filtered from where they are drawn.
+   *
+   * The cell is not one value: it is the repository and the number on the first line, then the
+   * merge contract, the commit and whoever armed it on the second. A menu on that heading that
+   * offered only the repository could not find "everything @lin has rebasing", which is the
+   * question the cell is laid out to answer.
+   *
+   * The values are namespaced because one menu carries one selection, and the facets have to AND
+   * across while OR-ing within: two repositories and one author means either repository, by that
+   * author. Everything except the contract is taken from the data, so nothing is offered that
+   * selects nothing, and no list needs keeping the day a workspace gains a repository.
+   */
+  function facet(prefix: string, values: readonly string[], label?: string): FilterSection {
+    return {
+      ...(label === undefined ? {} : { label }),
+      options: [...new Set(values)]
+        .sort((first, second) => first.localeCompare(second))
+        .map((value) => ({ value: `${prefix}:${value}`, label: value })),
+    };
+  }
+
+  const PULL_REQUEST_FILTERS = $derived<readonly FilterSection[]>([
+    facet(
+      'repository',
+      section_rows.map((request) => request.repository_full_name),
+      'Repository',
+    ),
+    facet(
+      'method',
+      section_rows.map(
+        (request) =>
+          `${request.merge_method.slice(0, 1).toUpperCase()}${request.merge_method.slice(1)}`,
+      ),
+      'Merge method',
+    ),
+    facet(
+      'author',
+      section_rows.map((request) => `@${request.requester}`),
+      'Armed by',
+    ),
+    facet(
+      'checks',
+      section_rows.map((request) =>
+        request.required_checks_only ? 'Required only' : 'All checks',
+      ),
+      'Checks it waits on',
+    ),
+  ]);
+
+  /** What a request answers for each facet, in the same words the menu offers. */
+  function facetsOf(request: PendingCIRequest): string[] {
+    const method = `${request.merge_method.slice(0, 1).toUpperCase()}${request.merge_method.slice(1)}`;
+    return [
+      `repository:${request.repository_full_name}`,
+      `method:${method}`,
+      `author:@${request.requester}`,
+      `checks:${request.required_checks_only ? 'Required only' : 'All checks'}`,
+    ];
+  }
+
+  /**
+   * Selected within a facet is OR, across facets is AND.
+   *
+   * A flat `includes` would have made every facet an OR of everything, so choosing a repository and
+   * an author would widen the table rather than narrow it.
+   */
+  function matchesPullRequest(request: PendingCIRequest): boolean {
+    if (pullRequests.length === 0) return true;
+    const answers = facetsOf(request);
+    const prefixes = [...new Set(pullRequests.map((one) => one.slice(0, one.indexOf(':'))))];
+
+    return prefixes.every((prefix) =>
+      pullRequests
+        .filter((one) => one.startsWith(`${prefix}:`))
+        .some((one) => answers.includes(one)),
+    );
+  }
+
+  const live = $derived.by(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return source
+    return section_rows
       .filter(
         (request) =>
           states.length === 0 ||
           states.includes(section === 'recent' ? request.lifecycle : request.last_observed_state),
       )
       .filter((request) => schedules.length === 0 || schedules.includes(request.schedule))
+      .filter(matchesPullRequest)
+      .filter((request) => cleanups.length === 0 || cleanups.includes(cleanupState(request).value))
       .filter(
         (request) =>
           needle === '' ||
@@ -140,22 +315,115 @@
             (field) => field.toLocaleLowerCase().includes(needle),
           ),
       )
-      .sort(section === 'recent' ? byMostRecent : bySoonest);
+      .sort((first, second) => {
+        const read = ORDERS[sortColumn];
+        const order = read(first).localeCompare(read(second));
+        /* A stable tie-break, so two requests that share an order do not swap places on every
+           tick of the countdown clock. */
+        return (ascending ? order : -order) || first.id.localeCompare(second.id);
+      });
   });
 
-  const hasFilters = $derived(query !== '' || states.length > 0 || schedules.length > 0);
+  /**
+   * The table holds still while it is being read.
+   *
+   * A row that re-sorts or leaves under the pointer takes the button the reader was reaching for
+   * with it. That is not a nuisance here, it is a wrong action: the kebab beside a merged request
+   * offers Cancel, and the row that slid into its place is a different pull request. So while a
+   * pointer is inside the table - or a row holds focus, which is the keyboard's version of the same
+   * thing - the ORDER and the MEMBERSHIP of the list are pinned to what the reader is looking at.
+   *
+   * What is pinned is only the arrangement. Every row's contents come from the live record, so a
+   * request that merges while it is being read says Merged where it stands, and its Next column
+   * says where it is going rather than counting down to something that has happened. Held rows say
+   * something true; they just say it without moving.
+   *
+   * It releases on the way out, and everything that accumulated arrives at once with the animations
+   * it would have had.
+   */
+  let pointerInside = $state(false);
+  let focusInside = $state(false);
+  let menuOpen = $state(false);
+  /** Every request the queue knows about, whichever section it now belongs to. */
+  const everything = $derived(
+    new Map([...waiting, ...recent].map((request) => [request.id, request])),
+  );
+  /* Three ways a row can be in use, and all three have to hold it. The menu is the one that cannot
+     be inferred: it opens in a portal, so by the time it is showing, neither the pointer nor focus
+     is anywhere near the row it belongs to. */
+  const reading = $derived(pointerInside || focusInside || menuOpen || pendingAction !== null);
 
+  /* The arrangement as it stood the moment reading began, and `null` the rest of the time.
+     `untrack` on the list, because what is wanted is a snapshot rather than a subscription: read
+     plainly, this would recompute on every tick of the clock and the table would never be held at
+     all. It reads `live` rather than `rows` so that `rows` can read this - the two would otherwise
+     each be waiting on the other. */
+  const held = $derived.by(() =>
+    reading ? untrack(() => live.map((request) => request.id)) : null,
+  );
+
+  const rows = $derived.by(() => {
+    if (held === null) return live;
+
+    const kept = held
+      .map((id) => everything.get(id))
+      .filter((request): request is PendingCIRequest => request !== undefined);
+    /* Anything that arrived while the table was held goes on the END, in the order it would have
+       sorted into. Held back entirely it would be invisible for as long as somebody kept reading -
+       a queue that hides new work is worse than one that moves - and sorted into place it would
+       push the row under the pointer down, which is the whole thing being prevented. Appended, it
+       is on screen, it is countable, and it displaces nothing. It takes its proper place when the
+       reader looks away. */
+    const already = new Set(held);
+
+    return [...kept, ...live.filter((request) => !already.has(request.id))];
+  });
+
+  /** Whether a row is only still on this screen because somebody is reading it. */
+  function passingThrough(request: PendingCIRequest): boolean {
+    return section === 'waiting' ? request.lifecycle !== 'armed' : request.lifecycle === 'armed';
+  }
+
+  /* Focus has to be checked rather than assumed: `focusout` fires as focus moves BETWEEN two rows,
+     and letting go there would re-sort the table under the very key press moving through it. */
+  function focusLeft(event: FocusEvent): void {
+    const leaving = event.currentTarget as HTMLElement;
+    const next = event.relatedTarget;
+    if (next instanceof Node && leaving.contains(next)) return;
+    focusInside = false;
+  }
+
+  const hasFilters = $derived(
+    query !== '' ||
+      states.length > 0 ||
+      schedules.length > 0 ||
+      pullRequests.length > 0 ||
+      cleanups.length > 0,
+  );
+
+  /* The two sections carry different columns, so an order set on one can be an order the other
+     does not draw - and a table sorted by a heading that is not on it has no way back. Switching
+     sections therefore returns to that section's own opening order, and only when the current one
+     is not among its columns: a reader who sorted Recent by Outcome and stepped away keeps it. */
   $effect(() => {
-    const tick = setInterval(() => {
-      now = Date.now();
-    }, 1000);
-    return () => clearInterval(tick);
+    const own = SECTION_ORDERS[section];
+    if (own.columns.includes(untrack(() => sortColumn))) return;
+    sortColumn = own.opens;
+    ascending = own.ascending;
   });
+
+  /* Every second, because the ring beside a waiting request counts one down. The
+     tables the panel already had tick at thirty - see `RepositoryList` - which is the
+     right rate for "4 minutes ago" and the wrong one for a clock running out. */
+  useInterval(1000, { callback: () => (now = Date.now()) });
+
+  const applySearch = useDebounce((next: string) => {
+    query = next;
+  }, 180);
 
   $effect(() => {
     const next = search.trim();
-    const timeout = window.setTimeout(() => (query = next), 180);
-    return () => window.clearTimeout(timeout);
+    untrack(() => void applySearch(next));
   });
 
   async function load(): Promise<void> {
@@ -185,15 +453,28 @@
     return `https://github.com/${request.repository_full_name}/pull/${request.pull_request}`;
   }
 
+  /**
+   * Whether a request can still be acted on.
+   *
+   * Held while a mutation is in flight, because every action carries the revision it was drawn
+   * with. A second Cancel sends the same one, the row has already moved past it, and the store
+   * answers 409 - so the reader is shown a red banner over a cancel that worked.
+   */
+  function actionable(request: PendingCIRequest): boolean {
+    return request.lifecycle === 'armed' && pendingAction === null;
+  }
+
+  /** The key `pendingAction` holds while this request's own check is in flight. */
+  function checkKey(request: PendingCIRequest): string {
+    return `check:${request.id}`;
+  }
+
   /* Destructive weight is inverted from the old panel: a filled danger button
      appears once, on the confirmation, and never in a row. Here Cancel is a menu
      item like any other, and it is simply not offered on a request that has
      already finished. */
   function actionsFor(request: PendingCIRequest): ActionMenuItem[] {
-    /* Held while a mutation is in flight, because both of these carry the revision they were
-       drawn with. A second Cancel sends the same one, the row has already moved past it, and the
-       store answers 409 - so the reader is shown a red banner over a cancel that worked. */
-    const armed = request.lifecycle === 'armed' && pendingAction === null;
+    const armed = actionable(request);
     return [
       {
         id: 'open',
@@ -224,7 +505,7 @@
       onOpenRequest(request.id);
       return;
     }
-    const key = `${action}:${request.id}`;
+    const key = action === 'check' ? checkKey(request) : `${action}:${request.id}`;
     pendingAction = key;
     actionProblem = null;
     try {
@@ -253,11 +534,35 @@
     onOpenRequest(request.id);
   }
 
+  /**
+   * A press on the column already sorted turns it round; a press on another takes it over.
+   *
+   * A new column starts ascending except where descending is what the column is for: the last
+   * thing to finish is what somebody scanning the past is looking for, and offering it oldest-first
+   * makes them press twice to get there.
+   */
+  function toggleSort(column: SortColumn): void {
+    if (sortColumn === column) {
+      ascending = !ascending;
+      return;
+    }
+    sortColumn = column;
+    ascending = column !== 'finished';
+  }
+
+  function sortDirection(column: SortColumn): 'ascending' | 'descending' | undefined {
+    if (sortColumn !== column) return undefined;
+
+    return ascending ? 'ascending' : 'descending';
+  }
+
   function clearFilters(): void {
     search = '';
     query = '';
     states = [];
     schedules = [];
+    pullRequests = [];
+    cleanups = [];
   }
 </script>
 
@@ -286,6 +591,16 @@
     value={search}
     onInput={(next) => (search = next)}
   />
+  {#if hasFilters}
+    <!-- Only while there is something to clear, and quiet while it is there: the
+         way out of a narrowed table should be beside the thing that narrowed it,
+         not somewhere in the headings, and it should not compete with the search
+         for attention. `btn-quiet` is the product's own no-fill, no-border
+         variant - it is a word until it is hovered. -->
+    <button class="btn btn-quiet btn-row" type="button" onclick={clearFilters}>
+      <span class="button-label">Clear filters</span>
+    </button>
+  {/if}
   <!-- The same two filters the headings carry, for the widths where there are no
        headings to carry them. Below 48rem the table is a stack of cards and the
        band is hidden, and both menus live inside it - so the page offered a
@@ -323,18 +638,6 @@
   >
 </div>
 
-{#if problem !== null}
-  <!-- Over the table rather than in place of it: a refresh that fails has not
-       made the rows already on screen wrong. -->
-  <ResultProblem
-    title="The queue could not be read"
-    {problem}
-    onRetry={() => void load()}
-    busy={loading}
-    overContent={rows.length > 0}
-  />
-{/if}
-
 <div class="table-card queue-card">
   <table
     class="queue-table"
@@ -343,11 +646,16 @@
   >
     <thead>
       <tr>
-        <th scope="col">
-          <div class="heading-layout">
-            <span class="heading-label band-trim"
-              >{section === 'recent' ? 'Outcome' : 'Checks'}</span
+        <th scope="col" aria-sort={sortDirection(section === 'recent' ? 'outcome' : 'checks')}>
+          <div class="table-heading">
+            <button
+              class="table-sort-button"
+              type="button"
+              onclick={() => toggleSort(section === 'recent' ? 'outcome' : 'checks')}
             >
+              <span class="table-heading-label">{section === 'recent' ? 'Outcome' : 'Checks'}</span>
+              <SortIndicator />
+            </button>
             <FilterMenu
               label={section === 'recent' ? 'Outcome' : 'Checks'}
               summary={states.length === 0 ? 'All states' : `${states.length} selected`}
@@ -362,17 +670,69 @@
             />
           </div>
         </th>
-        <th scope="col"><span class="heading-label band-trim">Pull request</span></th>
+        <th scope="col">
+          <div class="table-heading">
+            <span class="table-heading-label">Pull request</span>
+            <!-- Everything the cell under it says, in four sections: the
+                 repository, the merge contract, whoever armed it and what it is
+                 waiting on. A menu here that offered only the repository could not
+                 answer "everything @lin has rebasing", which is what having all of
+                 it on one line is for. `wide`, because four sections of full
+                 repository names do not fit the narrow layer. -->
+            <FilterMenu
+              label="Pull request"
+              summary={pullRequests.length === 0 ? 'Everything' : `${pullRequests.length} selected`}
+              hint="Only what this queue is holding"
+              sections={PULL_REQUEST_FILTERS}
+              selected={pullRequests}
+              multiple
+              wide
+              align="start"
+              onChange={(values) => (pullRequests = values)}
+            />
+          </div>
+        </th>
         {#if section === 'recent'}
-          <th scope="col" class="cleanup-column"
-            ><span class="heading-label band-trim">Cleanup</span></th
-          >
-          <th scope="col"><span class="heading-label band-trim">Why it ended</span></th>
-          <th scope="col"><span class="heading-label band-trim">Finished</span></th>
-        {:else}
+          <th scope="col" class="cleanup-column" aria-sort={sortDirection('cleanup')}>
+            <div class="table-heading">
+              <button class="table-sort-button" type="button" onclick={() => toggleSort('cleanup')}>
+                <span class="table-heading-label">Cleanup</span>
+                <SortIndicator />
+              </button>
+              <FilterMenu
+                label="Cleanup"
+                summary={cleanups.length === 0 ? 'Any state' : `${cleanups.length} selected`}
+                hint="The label and the reactions the bot leaves behind"
+                sections={CLEANUP_FILTERS}
+                selected={cleanups}
+                multiple
+                align="start"
+                onChange={(values) => (cleanups = values)}
+              />
+            </div>
+          </th>
           <th scope="col">
-            <div class="heading-layout">
-              <span class="heading-label band-trim">Next</span>
+            <div class="table-heading"><span class="table-heading-label">Why it ended</span></div>
+          </th>
+          <th scope="col" aria-sort={sortDirection('finished')}>
+            <div class="table-heading">
+              <button
+                class="table-sort-button"
+                type="button"
+                onclick={() => toggleSort('finished')}
+              >
+                <span class="table-heading-label">Finished</span>
+                <SortIndicator />
+              </button>
+            </div>
+          </th>
+        {:else}
+          <th scope="col" aria-sort={sortDirection('next')}>
+            <div class="table-heading">
+              <button class="table-sort-button" type="button" onclick={() => toggleSort('next')}>
+                <span class="table-heading-label">Next</span>
+                <SortIndicator />
+              </button>
               <FilterMenu
                 label="Schedule"
                 summary={schedules.length === 0 ? 'Any schedule' : `${schedules.length} selected`}
@@ -385,23 +745,80 @@
               />
             </div>
           </th>
-          <th scope="col"><span class="heading-label band-trim">Armed</span></th>
+          <!-- Sorted but not filtered: this column draws an age, which has an
+               order and no values worth listing. Who armed it is filtered where
+               the name is written, on the Pull request heading - the mock put it
+               here, which would have been the same values behind a second trigger
+               in a column that never shows them. -->
+          <th scope="col" aria-sort={sortDirection('armed')}>
+            <div class="table-heading">
+              <button class="table-sort-button" type="button" onclick={() => toggleSort('armed')}>
+                <span class="table-heading-label">Armed</span>
+                <SortIndicator />
+              </button>
+            </div>
+          </th>
         {/if}
         <th scope="col"><span class="visually-hidden">Actions</span></th>
       </tr>
     </thead>
-    <tbody>
+    <!-- While a pointer or focus is in here the list holds its arrangement - see `held` above.
+         `pointerenter`/`pointerleave` rather than `mouseover`: they do not fire for the crossings
+         between one cell and the next, so this asks the question once at each edge of the table
+         rather than on every cell boundary inside it. -->
+    <tbody
+      data-held={held === null ? undefined : held.length}
+      onpointerenter={() => (pointerInside = true)}
+      onpointerleave={() => (pointerInside = false)}
+      onfocusin={() => (focusInside = true)}
+      onfocusout={focusLeft}
+    >
+      {#if problem !== null && rows.length > 0}
+        <!-- A row of the table, under its headings: a refresh that fails has not
+             made the rows already on screen wrong, so the failure belongs over
+             them rather than above the whole table where it reads as a banner
+             about the page. -->
+        <tr class="notice-row">
+          <td colspan={section === 'recent' ? 6 : 5}>
+            <ResultProblem
+              title="The queue could not be read"
+              {problem}
+              onRetry={() => void load()}
+              busy={loading}
+              overContent
+            />
+          </td>
+        </tr>
+      {/if}
       {#each rows as request (request.id)}
-        {@const state = section === 'waiting' ? queueState(request) : outcomeState(request)}
+        <!-- A row that has changed section while it was being read keeps its place and stops
+             pretending: `outcomeState` is what a finished request is, whichever table it is
+             standing in, and `queueState` is what an armed one is. Neither table asks the other's
+             question of it. -->
+        {@const leaving = passingThrough(request)}
+        {@const state =
+          section === 'waiting' && !leaving ? queueState(request) : outcomeState(request)}
         {@const next = queueNext(request, now)}
         <tr
-          class="queue-row"
+          class="queue-row data-row"
+          class:leaving
           tabindex="0"
+          animate:flip={rowMotion}
+          in:fade={rowArriving}
+          out:fade={rowLeaving}
           onclick={(event) => openRow(event, request)}
           onkeydown={(event) => openFromKeyboard(event, request)}
         >
           <td data-label={section === 'recent' ? 'Outcome' : 'Checks'}>
-            <Chip tone={state.tone} icon={state.icon}>{state.label}</Chip>
+            <!-- Keyed on the words, so a state the reconciler changed arrives
+                 rather than being swapped: the chip is the whole answer this
+                 column gives, and a silent substitution is the one change a
+                 reader watching the row can miss. -->
+            {#key state.label}
+              <span class="state-chip" in:fade={stateChange} out:fade={stateChange}>
+                <Chip tone={state.tone} icon={state.icon}>{state.label}</Chip>
+              </span>
+            {/key}
           </td>
           <td data-label="Pull request">
             <a
@@ -441,11 +858,16 @@
             </AppTooltip>
             <td data-label="Why it ended"><div class="reason">{endReason(request)}</div></td>
             <td data-label="Finished">
-              <span
-                class="age band-trim"
-                title={formatTimestamp(request.finished_at ?? request.updated_at)}
-                >{shortAge(request.finished_at ?? request.updated_at, now)}</span
-              >
+              {#if request.finished_at === undefined}
+                <!-- Armed again while this table was being held still, so it has
+                     no finish to report. The age of its last update would read as
+                     one, which is the column's own question answered wrongly. -->
+                <span class="age band-trim" title="Armed again, and running now">Running</span>
+              {:else}
+                <span class="age band-trim" title={formatTimestamp(request.finished_at)}
+                  >{shortAge(request.finished_at, now)}</span
+                >
+              {/if}
             </td>
           {:else}
             <td data-label="Next">
@@ -495,21 +917,53 @@
             </td>
           {/if}
           <td class="row-actions" data-label="Actions">
-            <ActionMenu
-              label={`Actions for ${request.repository_full_name} #${request.pull_request}`}
-              items={actionsFor(request)}
-              onSelect={(action) => void choose(request, action)}
-            />
+            <div class="row-action-group">
+              <!-- The one action worth a press of its own. Reading the checks
+                   again is what a reader comes to this table to do when a run
+                   has just finished and the queue has not noticed yet, and
+                   burying it under a menu costs two presses for the thing they
+                   came for. It stays in the menu as well, where it can say what
+                   it does. Only on a waiting request: nothing on the Recent
+                   table has checks left to read. -->
+              {#if section === 'waiting'}
+                <IconButton
+                  icon="refresh"
+                  label={`Check ${request.repository_full_name} #${request.pull_request} now`}
+                  disabled={!actionable(request)}
+                  busy={pendingAction === checkKey(request)}
+                  onclick={() => void choose(request, 'check')}
+                />
+              {/if}
+              <ActionMenu
+                label={`Actions for ${request.repository_full_name} #${request.pull_request}`}
+                items={actionsFor(request)}
+                onSelect={(action) => void choose(request, action)}
+                onOpenChange={(open) => (menuOpen = open)}
+              />
+            </div>
           </td>
         </tr>
       {:else}
         <tr class="empty-row">
           <td class="empty-cell" colspan={section === 'recent' ? 6 : 5}>
-            <!-- Qualified with `!loaded`: a refresh that is in flight over rows
+            <!-- One of three, never two. A queue that could not be read used to
+                 put its failure above the card AND "Nothing has finished yet"
+                 inside it, which are contradictory answers to the same question -
+                 the reader was told both that the table is empty and that the
+                 table is unknown.
+
+                 Qualified with `!loaded`: a refresh that is in flight over rows
                  already on screen must not replace them with a placeholder, and
                  an empty queue that HAS loaded is a real answer rather than a
                  wait. `tests/loading-placeholders.test.ts` asks for this. -->
-            {#if loading && !loaded}
+            {#if problem !== null}
+              <ResultProblem
+                title="The queue could not be read"
+                {problem}
+                onRetry={() => void load()}
+                busy={loading}
+              />
+            {:else if loading && !loaded}
               Reading the queue…
             {:else}
               <TableEmptyState
@@ -575,9 +1029,20 @@
     width: 100%;
   }
 
+  /* The shape of a heading - no padding on the cell, the button carrying it, the
+     filter riding over the target - is `thead th` and `.table-heading` in
+     `app.css`, shared with the five other tables. All this table states is the
+     band's height and the wider inset its outermost columns take. */
   .queue-table th {
     height: 2.5rem;
-    padding: 0 var(--space-3);
+  }
+
+  .queue-table th:first-child {
+    --heading-pad-start: var(--space-4);
+  }
+
+  .queue-table th:last-child {
+    --heading-pad-end: var(--space-4);
   }
 
   /* Column widths as rules rather than a `<colgroup>`: a `style` attribute in
@@ -585,62 +1050,79 @@
      table would have laid itself out however it liked in production while
      looking right in development. `tests/csp-safety.test.ts` catches it.
 
-     The pull request takes what is left - it is the one column whose content
-     has no bound - and every other column is the width of its own worst case.
-     The two sections carry different columns, so each states its own. */
-  .queue-table :is(th, td):first-child {
-    width: 9.5rem;
+     The pull request takes what is left - it is the one column whose content has
+     no bound - and every other column is the wider of what its heading needs
+     with its own controls and what the widest value the SERVICE can produce
+     needs, plus the cell's padding, rounded up to the next quarter rem. Every
+     number below was measured that way in the browser rather than chosen, with
+     each column's whole vocabulary put through it; `tests/browser/
+     queue-columns.test.ts` measures the same thing again and fails if a value
+     stops fitting.
+
+     The two sections carry different columns AND different worst cases, so each
+     states its own: 8.25rem where the widest state is "Unreadable", 8.5rem where
+     the widest outcome is "Superseded". Holding them equal would put the
+     difference at the front of every row of whichever section did not need it,
+     which is the defect these numbers exist to end. */
+  .waiting-table :is(th, td):first-child {
+    width: 8.5rem;
   }
 
+  .recent-table :is(th, td):first-child {
+    width: 9.25rem;
+  }
+
+  /* "Checks again in 59 minutes" over "First look since it was armed". */
   .waiting-table :is(th, td):nth-child(3) {
-    width: 13.5rem;
+    width: 12.25rem;
   }
 
+  /* "just now" is wider than any age this abbreviates to, and this heading has
+     no controls of its own. */
   .waiting-table :is(th, td):nth-child(4) {
-    width: 6.5rem;
+    width: 5.75rem;
   }
 
+  /* Two 1.75rem buttons, the gap between them, and the cell's own 12px and 16px:
+     88px exactly. The mock states 5rem here and flex-shrinks its two buttons to
+     24.8px wide to fit them, which leaves a pair of rounded rectangles where two
+     squares were drawn. Better to give the column the 8px than to keep the
+     number and lose the shape. */
   .waiting-table :is(th, td):nth-child(5) {
-    width: 5rem;
+    width: 5.5rem;
   }
 
+  /* The heading with its filter, wider than any of Done, Pending or Failed. */
   .recent-table :is(th, td):nth-child(3) {
-    width: 9.5rem;
+    width: 8.75rem;
   }
 
+  /* The one column here whose text has no bound, so it is sized like the
+     repository name is: a floor with a stated reason rather than a worst case.
+     12rem is where every reason the service can write today fits inside the two
+     lines the row already has - the longest, "pull request merged outside
+     pending CI reconciliation", needs 160px of content and gets 164px. One line
+     for all of them would have taken 20.75rem. */
   .recent-table :is(th, td):nth-child(4) {
-    width: 15rem;
+    width: 12rem;
   }
 
+  /* The heading again: "Finished" is wider than "just now". */
   .recent-table :is(th, td):nth-child(5) {
     width: 6.5rem;
   }
 
+  /* One button, and the same 12px and 16px the waiting table's pair get. */
   .recent-table :is(th, td):nth-child(6) {
     width: 3.5rem;
   }
 
-  .queue-table th:first-child,
   .queue-table td:first-child {
     padding-left: var(--space-4);
   }
 
-  .queue-table th:last-child,
   .queue-table td:last-child {
     padding-right: var(--space-4);
-  }
-
-  /* A block-level flex row, so the cell holds no anonymous line box and the
-     table's own font cannot place the baseline. An inline label in a 15px cell
-     sat 1.81px below where its 13px box said it was. */
-  .heading-layout {
-    align-items: center;
-    display: flex;
-    gap: 0.3rem;
-  }
-
-  .heading-layout :global(.header-filter) {
-    margin-inline-start: auto;
   }
 
   /* The row height is stated, and the content is centred in it. Padding is the
@@ -659,10 +1141,6 @@
   .queue-row {
     cursor: pointer;
     transition: background-color var(--duration-fast) var(--ease-out);
-  }
-
-  .queue-row:hover {
-    background: var(--table-row-hover);
   }
 
   .queue-row:active {
@@ -867,6 +1345,15 @@
     font-size: var(--font-size-meta);
   }
 
+  /* Not clamped, and that is the measured answer rather than the lazy one. A
+     `-webkit-line-clamp` needs `overflow: clip` with a clip margin, because
+     `text-box: trim-both` ends this box at the baseline and a bare `hidden`
+     shaves the descenders off - and the margin then inflates the box unevenly
+     enough to put the cell 2.50px off the cells beside it, which
+     `tests/browser/vertical-alignment.test.ts` reports in every row of this
+     table. Nothing needs the clamp: the column is 12rem because that is where
+     every reason the service writes fits inside two lines, so the cap is the
+     WIDTH, and it is enforced by `tests/browser/queue-columns.test.ts`. */
   .reason {
     color: var(--dim);
     font-size: var(--font-size-compact);
@@ -946,7 +1433,8 @@
 
     /* Every column width above is stated against a band that is gone; left
        standing they would size the cards instead. */
-    .queue-table :is(th, td):first-child,
+    .waiting-table :is(th, td):first-child,
+    .recent-table :is(th, td):first-child,
     .waiting-table :is(th, td):nth-child(3),
     .waiting-table :is(th, td):nth-child(4),
     .waiting-table :is(th, td):nth-child(5),
@@ -1009,9 +1497,64 @@
     text-align: right;
   }
 
-  .empty-cell {
+  /* Block-level and pushed over, not inline: an inline-flex inside a cell rides
+     the table's own strut rather than the cell's centre, which is the trap the
+     whole alignment sweep exists to close. */
+  .row-action-group {
+    display: flex;
+    gap: var(--space-1);
+    margin-left: auto;
+    width: fit-content;
+  }
+
+  /* No vertical padding: what fills this cell brings its own air now, and the
+     cell's own on top of it was room the empty state did not ask for. Qualified
+     with the table, because `.queue-table td` sets the padding every cell shares
+     and a bare `.empty-cell` loses to it. */
+  .queue-table td.empty-cell {
     color: var(--dim);
-    padding: var(--space-6) var(--space-4);
+    padding: 0 var(--space-4);
     text-align: center;
+  }
+
+  /* Except for the waiting line, which is a bare string with no component of its
+     own to bring any. */
+  .queue-table td.empty-cell:not(:has(*)) {
+    padding-block: var(--space-8);
+  }
+
+  /* The failed-refresh band is a row of the table, under the headings and over
+     the rows it is about - so it takes none of a row's furniture: no stated
+     height, no rule under it, and no cell padding, because the notice inside
+     brings its own. */
+  .queue-table .notice-row td {
+    border-bottom: 0;
+    height: auto;
+    padding: 0 0 var(--space-3);
+  }
+
+  /* The two chips of a state change share one cell, so the one arriving and the
+     one leaving cross rather than queue. Keyed alone they did queue - the old
+     chip was gone before the new one started - and the column sat empty for the
+     length of the fade, which is the one moment a reader watching that column is
+     actually looking at it. A grid rather than a stack of absolutes: the cell
+     keeps its own height from the row, and the chip keeps its place in it. */
+  .queue-table td:has(> .state-chip) {
+    align-items: center;
+    display: grid;
+    grid-template-areas: 'state';
+    justify-items: start;
+  }
+
+  .queue-table .state-chip {
+    grid-area: state;
+  }
+
+  /* A row that finished while it was being read. It is on its way out and is
+     staying only because the reader has hold of it, so it says so quietly rather
+     than dressing up as one of the rows that belong here. The ink stays: what it
+     now says is the thing worth reading, and a faded row would hide it. */
+  .queue-table .queue-row.leaving {
+    background-image: linear-gradient(var(--strip-lift), var(--strip-lift));
   }
 </style>

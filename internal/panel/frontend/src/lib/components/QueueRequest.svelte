@@ -1,10 +1,12 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
+  import { useInterval } from 'runed';
 
   import type { PanelApi } from '#lib/api.js';
   import { formatTimestamp } from '#lib/format.js';
   import { cleanupState, outcomeState, queueNext, queueState, sinceLabel } from '#lib/queue.js';
   import type { PendingCIEvent } from '#lib/types.js';
+  import BackLink from './BackLink.svelte';
   import Chip from './Chip.svelte';
   import Icon, { type IconName } from './Icon.svelte';
   import ResultProblem from './ResultProblem.svelte';
@@ -57,12 +59,10 @@
   );
   const next = $derived(request === null ? null : queueNext(request, now));
 
-  $effect(() => {
-    const tick = setInterval(() => {
-      now = Date.now();
-    }, 1000);
-    return () => clearInterval(tick);
-  });
+  /* Every second, because the countdown beside a waiting request is drawn in them.
+     The tables the panel already had tick at thirty - see `RepositoryList` - which is
+     the right rate for "4 minutes ago" and the wrong one for a clock running out. */
+  useInterval(1000, { callback: () => (now = Date.now()) });
 
   async function load(): Promise<void> {
     actionProblem = null;
@@ -153,18 +153,7 @@
   }
 </script>
 
-<a
-  class="back"
-  href={queueHref}
-  onclick={(event) => {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
-    event.preventDefault();
-    onBack();
-  }}
->
-  <Icon name="chevron-left" size={14} strokeWidth={2} />
-  <span class="cap-trim">Queue</span>
-</a>
+<BackLink href={queueHref} label="Queue" onNavigate={onBack} />
 
 {#if request === null}
   <RootPageHeader role={rootRole} title="Request" subtitle="Reading the record" />
@@ -374,29 +363,6 @@
 {/if}
 
 <style>
-  .back {
-    align-items: center;
-    align-self: start;
-    border-radius: var(--r-ctl);
-    color: var(--text-soft);
-    display: inline-flex;
-    font-size: var(--font-size-meta);
-    gap: 0.35rem;
-    margin-bottom: var(--space-2);
-    text-decoration: none;
-    width: fit-content;
-  }
-
-  .back:hover {
-    color: var(--accent);
-  }
-
-  .back:active {
-    color: var(--brand-action-hover);
-    transform: scale(var(--press-scale-compact));
-    transform-origin: left center;
-  }
-
   /* No bottom margin: `.plate` carries one for a stack of cards, and the heading
      under this one states its own gap. The two were adding up to 40px where the
      approved design has 24. */

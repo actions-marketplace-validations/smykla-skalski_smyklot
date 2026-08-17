@@ -17,6 +17,7 @@
 
   import { PanelApiError } from '../api';
   import { dialogRoute } from '../dialog-route.svelte';
+  import { pressableRow } from '../table-row';
   import { formatDateTime, formatRelative, formatTimestamp, formatUntil } from '../format';
   import { monogram } from '../identity';
   import type { FilterSection } from '../filter-menu';
@@ -46,6 +47,7 @@
     UpdateTargetUserInput,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
+  import SortIndicator from './SortIndicator.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
   import CopyReceipt from './CopyReceipt.svelte';
@@ -108,10 +110,10 @@
     {
       label: 'Status',
       options: [
-        { value: 'pending', label: 'Pending', tone: 'default' },
+        { value: 'pending', label: 'Pending', tone: 'signal' },
         { value: 'accepted', label: 'Accepted', tone: 'valid' },
         { value: 'expired', label: 'Expired', tone: 'bypassed' },
-        { value: 'declined', label: 'Declined', tone: 'default' },
+        { value: 'declined', label: 'Declined', tone: 'neutral' },
         { value: 'revoked', label: 'Revoked', tone: 'invalid' },
       ],
     },
@@ -1017,21 +1019,6 @@
     return user.status === 'banned' || user.target_access?.suspended === true;
   }
 
-  /* Which row is being held down. `:active` on a `<tr>` matches but does not
-     repaint it - the row stayed on its hover colour with `matches(':active')`
-     already true - so the state is carried as a class the row can be styled by
-     like anything else. */
-  let pressedRow = $state<string | null>(null);
-
-  function holdRow(user: PanelUser): void {
-    if (!hasDecisionHistory(user)) return;
-    pressedRow = user.account.id;
-  }
-
-  function releaseRow(): void {
-    pressedRow = null;
-  }
-
   function openHistory(user: PanelUser, trigger: HTMLElement): void {
     if (!hasDecisionHistory(user)) return;
     historyTrigger = trigger;
@@ -1284,17 +1271,10 @@
   }
 </script>
 
-{#snippet sortButton(label: string, direction: SortDirection | undefined, onSelect: () => void)}
-  <button class="sort-button table-sort-button" type="button" onclick={onSelect}>
-    <span class="cap-trim">{label}</span>
-    <span
-      class:ascending={direction === 'ascending'}
-      class:descending={direction === 'descending'}
-      class="sort-indicator"
-      aria-hidden="true"
-    >
-      <Icon name="sort" size={14} />
-    </span>
+{#snippet sortButton(label: string, onSelect: () => void)}
+  <button class="table-sort-button" type="button" onclick={onSelect}>
+    <span class="table-heading-label">{label}</span>
+    <SortIndicator />
   </button>
 {/snippet}
 
@@ -1397,15 +1377,13 @@
                 <thead>
                   <tr>
                     <th aria-sort={userSortDirection('name')}>
-                      {@render sortButton('User', userSortDirection('name'), () =>
-                        selectUserSort('name'),
-                      )}
+                      <div class="table-heading">
+                        {@render sortButton('User', () => selectUserSort('name'))}
+                      </div>
                     </th>
                     <th aria-sort={userSortDirection('role')}>
-                      <div class="table-heading-layout">
-                        {@render sortButton('Role', userSortDirection('role'), () =>
-                          selectUserSort('role'),
-                        )}
+                      <div class="table-heading">
+                        {@render sortButton('Role', () => selectUserSort('role'))}
                         <FilterMenu
                           label="Role"
                           summary={filterSummary(userRoles.length)}
@@ -1419,8 +1397,8 @@
                       </div>
                     </th>
                     <th class="filterable-heading">
-                      <div class="table-heading-layout">
-                        <span class="cap-trim">Status</span>
+                      <div class="table-heading">
+                        <span class="table-heading-label">Status</span>
                         <FilterMenu
                           label="Status"
                           summary={filterSummary(userStatuses.length)}
@@ -1435,9 +1413,9 @@
                       </div>
                     </th>
                     <th aria-sort={userSortDirection('last_login')}>
-                      {@render sortButton('Last login', userSortDirection('last_login'), () =>
-                        selectUserSort('last_login'),
-                      )}
+                      <div class="table-heading">
+                        {@render sortButton('Last login', () => selectUserSort('last_login'))}
+                      </div>
                     </th>
                     <th><span class="visually-hidden">Actions</span></th>
                   </tr>
@@ -1478,16 +1456,13 @@
                     <tr
                       class:virtual-row={virtualRow.virtual}
                       class:history-row={hasDecisionHistory(user)}
-                      class:pressing={pressedRow === user.account.id}
+                      class:data-row={hasDecisionHistory(user)}
                       style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
                       style:--row-y={virtualRow.virtual ? `${virtualRow.start}px` : '0px'}
                       tabindex={hasDecisionHistory(user) ? 0 : undefined}
                       onclick={(event) => clickHistoryRow(event, user)}
                       onkeydown={(event) => keyHistoryRow(event, user)}
-                      onpointerdown={() => holdRow(user)}
-                      onpointerup={releaseRow}
-                      onpointercancel={releaseRow}
-                      onpointerleave={releaseRow}
+                      {@attach pressableRow}
                     >
                       <th scope="row">
                         <span class="user-identity">
@@ -1552,19 +1527,23 @@
                             title="No actions available"
                             aria-hidden="true"
                           >
-                            <Icon name="more" size={22} />
+                            <Icon name="more" size={14} strokeWidth={2} />
                           </span>
                         {/if}
                         <!-- After the actions rather than before, and always
                              drawn: it points out of the row, and it is what says
                              this row opens something where its neighbours do
                              not. Revealing it on hover only told a reader that
-                             after they had already guessed. -->
-                        {#if hasDecisionHistory(user)}
-                          <span class="row-go" aria-hidden="true">
+                             after they had already guessed.
+
+                             The SLOT is always here even when the arrow is not,
+                             so the menu beside it lands at the same x in every
+                             row - see `.row-go`. -->
+                        <span class="row-go" aria-hidden="true">
+                          {#if hasDecisionHistory(user)}
                             <Icon name="chevron-right" size={14} />
-                          </span>
-                        {/if}
+                          {/if}
+                        </span>
                       </td>
                     </tr>
                   {/each}
@@ -1637,15 +1616,13 @@
                 <thead>
                   <tr>
                     <th aria-sort={invitationSortDirection('name')}>
-                      {@render sortButton('Invitee', invitationSortDirection('name'), () =>
-                        selectInvitationSort('name'),
-                      )}
+                      <div class="table-heading">
+                        {@render sortButton('Invitee', () => selectInvitationSort('name'))}
+                      </div>
                     </th>
                     <th aria-sort={invitationSortDirection('role')}>
-                      <div class="table-heading-layout">
-                        {@render sortButton('Role', invitationSortDirection('role'), () =>
-                          selectInvitationSort('role'),
-                        )}
+                      <div class="table-heading">
+                        {@render sortButton('Role', () => selectInvitationSort('role'))}
                         <FilterMenu
                           label="Role"
                           summary={filterSummary(invitationRoles.length)}
@@ -1660,8 +1637,8 @@
                       </div>
                     </th>
                     <th class="filterable-heading">
-                      <div class="table-heading-layout">
-                        <span class="cap-trim">Status</span>
+                      <div class="table-heading">
+                        <span class="table-heading-label">Status</span>
                         <FilterMenu
                           label="Status"
                           summary={filterSummary(invitationStatuses.length)}
@@ -1676,12 +1653,12 @@
                       </div>
                     </th>
                     <th class="sent-heading">
-                      <div class="table-heading-layout"><span class="cap-trim">Sent</span></div>
+                      <div class="table-heading"><span class="table-heading-label">Sent</span></div>
                     </th>
                     <th aria-sort={invitationSortDirection('expires')}>
-                      {@render sortButton('Expires', invitationSortDirection('expires'), () =>
-                        selectInvitationSort('expires'),
-                      )}
+                      <div class="table-heading">
+                        {@render sortButton('Expires', () => selectInvitationSort('expires'))}
+                      </div>
                     </th>
                     <th><span class="visually-hidden">Actions</span></th>
                   </tr>
@@ -1784,7 +1761,7 @@
                             title="No actions available"
                             aria-hidden="true"
                           >
-                            <Icon name="more" size={22} />
+                            <Icon name="more" size={14} strokeWidth={2} />
                           </span>
                         {/if}
                       </td>
@@ -2260,106 +2237,36 @@
 
   .user-table th,
   .user-table td {
-    padding: var(--space-2) var(--space-3);
     text-align: left;
     vertical-align: middle;
   }
 
-  .user-table th:first-child,
-  .user-table td:first-child {
-    padding-left: var(--space-3);
+  /* `tbody` rather than `td`: a heading's padding belongs to what fills it - see
+     `thead th` in `app.css` - and a class selector here would quietly take it
+     back. Saying `td` said that too, and said something else besides: the first
+     cell of every row in this table is a `th scope="row"`, so it kept no padding
+     at all and started its words 15px left of the heading's. The line is thead
+     against tbody, never th against td. */
+  .user-table tbody :is(th, td) {
+    padding: var(--space-2) var(--space-3);
   }
 
-  .user-table th:last-child,
-  .user-table td:last-child {
+  .user-table tbody :is(th, td):first-child {
+    padding-left: var(--space-4);
+  }
+
+  .user-table tbody :is(th, td):last-child {
     padding-right: var(--space-3);
   }
 
-  /* Typography and ground come from `thead th` in `app.css`. */
+  /* Typography, ground and the heading's whole shape come from `app.css`. Only
+     the band's height and the first column's wider inset are this table's. */
   .user-table thead th {
     height: 2.5rem;
   }
 
-  .user-table thead th:has(.sort-button) {
-    padding: 0;
-  }
-
-  .user-table thead th:first-child .sort-button {
-    padding-left: var(--space-4);
-  }
-
-  .filterable-heading {
-    padding-block: 0 !important;
-  }
-
-  .table-heading-layout {
-    align-items: center;
-    display: flex;
-    height: 100%;
-    justify-content: space-between;
-    min-width: 0;
-  }
-
-  .table-heading-layout :global(.header-filter) {
-    margin-inline: var(--space-1);
-  }
-
-  .sort-button {
-    align-items: center;
-    background: transparent;
-    border: 0;
-    color: inherit;
-    display: flex;
-    font: inherit;
-    gap: 0.45rem;
-    height: 100%;
-    justify-content: flex-start;
-    letter-spacing: inherit;
-    padding: var(--space-2) var(--space-3);
-    text-align: left;
-    text-transform: inherit;
-    transition:
-      background-color 120ms ease-out,
-      color 120ms ease-out;
-    min-width: 0;
-    overflow: hidden;
-    width: 100%;
-  }
-
-  .table-heading-layout .sort-button {
-    flex: 1;
-    width: auto;
-  }
-
-  .sent-heading {
-    padding-block: 0 !important;
-  }
-
-  .sort-indicator {
-    color: var(--text-muted);
-    display: grid;
-    opacity: 0;
-    place-items: center;
-    transition: opacity 120ms ease-out;
-  }
-
-  .sort-button:hover .sort-indicator,
-  .sort-button:focus-visible .sort-indicator {
-    opacity: 0.55;
-  }
-
-  .sort-indicator.ascending,
-  .sort-indicator.descending {
-    color: var(--brand-action-text);
-    opacity: 1;
-  }
-
-  .sort-indicator.descending {
-    transform: rotate(180deg);
-  }
-
-  .user-table tbody tr:hover {
-    background: var(--table-row-hover);
+  .user-table thead th:first-child {
+    --heading-pad-start: var(--space-4);
   }
 
   .user-table tbody tr.history-row {
@@ -2367,10 +2274,6 @@
     transition:
       background-color var(--duration-fast) var(--ease-standard),
       transform var(--duration-press) var(--ease-standard);
-  }
-
-  .user-table tbody tr.history-row:hover {
-    background: var(--table-row-hover);
   }
 
   /* A row that can be pressed acknowledges the press the way every other control
@@ -2381,11 +2284,6 @@
   .user-table tbody tr.history-row {
     transform: translateY(var(--row-y, 0px));
     transform-origin: center;
-  }
-
-  .user-table tbody tr.history-row.pressing {
-    background: var(--table-row-pressed);
-    transform: translateY(var(--row-y, 0px)) scale(var(--press-scale-surface));
   }
 
   .user-table tbody tr.history-row:focus-visible {
@@ -2425,7 +2323,7 @@
       display: grid;
       grid-template-columns:
         minmax(16rem, 1.55fr) minmax(10rem, 1fr) minmax(8rem, 0.8fr) minmax(9rem, 0.9fr)
-        4.25rem;
+        var(--row-action-column);
       width: 100%;
     }
 
@@ -2433,7 +2331,7 @@
     .invitation-table tbody tr {
       grid-template-columns:
         minmax(13rem, 1.4fr) minmax(7.5rem, 0.9fr) minmax(7.5rem, 0.8fr) minmax(6.5rem, 0.7fr)
-        minmax(7.5rem, 0.8fr) 4.25rem;
+        minmax(7.5rem, 0.8fr) var(--row-action-column);
     }
 
     /* The last row keeps its separator - see the note on the same spot in
@@ -2455,18 +2353,10 @@
          `:hover` rule outside this block, so the pointer state has to be restated here or it never
          reaches the screen. */
     /* Not the empty state - see the same rule in RepositoryList. */
-    .user-table tbody tr:not(.virtual-spacer, .empty-row):hover {
-      background: var(--table-row-hover);
-    }
-
     /* And the press with it, for the same reason and one more: the rule above is
        later in the sheet than the one that paints a held row, and carries the same
        specificity, so without this the row kept its hover colour under the pointer
        while the scale went ahead - which reads as the press half working. */
-    .user-table tbody tr.history-row.pressing {
-      background: var(--table-row-pressed);
-    }
-
     .user-table tbody tr:not(.virtual-spacer) {
       background: var(--surface-base);
       /* Pin the grid track to the row's fixed height: auto-sizing would take
@@ -2592,10 +2482,37 @@
     width: 1.125rem;
   }
 
+  /*
+   * The action column is sized for the widest a cell in it gets, which is not
+   * the same in both tables - so each one says what its widest is and this reads
+   * it. A column of controls that changes width row to row is a column of
+   * controls that does not line up, and the eye follows the ragged edge rather
+   * than the values beside it.
+   *
+   * A user row can carry the menu AND the chevron; at 4.25rem - room for the
+   * menu alone - the pair pushed the menu 18px left and 2px outside its own
+   * cell, so the menus zig-zagged wherever a row could be opened. An invitation
+   * row never carries a chevron, and giving it room for one would be 14px of
+   * nothing at the end of every row.
+   */
+  .user-table {
+    /* The 14px chevron. Written once because two things measure it: the slot it
+       sits in, and the column that has to be wide enough to hold that slot
+       beside the menu. */
+    --row-go-width: 0.875rem;
+    --row-action-column: calc(
+      var(--space-3) + 2.5rem + var(--space-1) + var(--row-go-width) + var(--space-3)
+    );
+  }
+
+  .invitation-table {
+    --row-action-column: 4.25rem;
+  }
+
   .row-actions {
     gap: var(--space-1);
     text-align: right !important;
-    width: 4.25rem;
+    width: var(--row-action-column);
   }
 
   .row-actions :global(.action-menu) {
@@ -2606,11 +2523,16 @@
      you cannot, so hiding it until hover answered the question only for people who
      had already asked it. Quiet enough at rest that a column of them reads as a
      margin rather than as a column of arrows, and it leans out on hover. */
+  /* The slot is in every row; the arrow is only in the rows that open something.
+     Reserving the width is what puts the menu above it at the same x down the
+     whole column - the arrow's presence is the signal, its absence must not move
+     anything. */
   .row-go {
     color: var(--text-muted);
     display: inline-grid;
     opacity: 0.55;
     place-items: center;
+    width: var(--row-go-width);
     transition:
       opacity var(--duration-fast) var(--ease-standard),
       transform var(--duration-fast) var(--ease-standard);
@@ -2622,14 +2544,20 @@
     transform: translateX(2px);
   }
 
+  /* The same box as the trigger it stands in for, because that is the whole job:
+     a row with no actions still has to put its mark where every other row puts
+     one. At 2.5rem against the trigger's 1.75rem it was 12px wider and started
+     12px further left, so the owner's row broke the column of dots it was meant
+     to keep. The glyph matches too - 22px beside everyone else's 14 read as a
+     different symbol rather than the same one, quieted. */
   .action-slot-empty {
     align-items: center;
     color: var(--text-muted);
     display: inline-flex;
-    height: 2.5rem;
+    height: 1.75rem;
     justify-content: center;
     opacity: 0.3;
-    width: 2.5rem;
+    width: 1.75rem;
   }
 
   .cell-dash {
@@ -3019,7 +2947,7 @@
        has no sort button, only a funnel, and hiding it took the funnel with it
        - on a phone there was no way to filter users or invitations by status at
        all. The control was still in the page, focusable, in a 1px box. */
-    .user-table thead th:not(:has(.sort-button)):not(:has(.filter-trigger)) {
+    .user-table thead th:not(:has(.table-sort-button)):not(:has(.filter-trigger)) {
       clip-path: inset(50%);
       height: 1px;
       overflow: hidden;
@@ -3028,28 +2956,48 @@
       width: 1px;
     }
 
+    /* A heading is a chip here, not a band, so there is no cell for the funnel to
+       ride and it goes back into the flow beside the words. This is the one place
+       the shared full-cell target does not apply - see `.table-heading` in
+       `app.css` - because the chip IS the control. */
+    .user-table thead .table-heading,
+    .user-table thead .table-sort-button {
+      height: var(--control-height-compact);
+      width: auto;
+    }
+
+    .user-table thead :global(.filter-trigger) {
+      inset: auto;
+      margin-block: 0;
+      position: relative;
+    }
+
+    /* The chip carries the inset now, so the label inside it must not carry it
+       twice. */
+    .user-table thead .table-heading > .table-heading-label {
+      padding-inline: 0;
+    }
+
     /* Dressed as the sort chips beside it: it does the same job in the same row,
        and the border is what makes either read as something to press. */
-    .user-table thead th.filterable-heading .table-heading-layout {
+    .user-table thead th.filterable-heading .table-heading {
       background: var(--control-bg);
       border: 1px solid var(--control-border);
       border-radius: var(--radius-control);
       gap: var(--space-1);
-      height: var(--control-height-compact);
       padding-inline: var(--space-3) var(--space-1);
     }
 
-    .user-table thead .sort-button {
+    .user-table thead .table-sort-button {
       background: var(--control-bg);
       border: 1px solid var(--control-border);
       border-radius: var(--radius-control);
       color: var(--dim);
-      height: var(--control-height-compact);
-      padding: 0 var(--space-3);
+      padding-inline: var(--space-3);
     }
 
-    .user-table thead .sort-button:hover,
-    .user-table thead .sort-button:focus-visible {
+    .user-table thead .table-sort-button:hover,
+    .user-table thead .table-sort-button:focus-visible {
       background: var(--control-bg-hover);
       color: var(--text);
     }

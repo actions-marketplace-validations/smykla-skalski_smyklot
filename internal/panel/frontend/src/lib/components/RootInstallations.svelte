@@ -219,7 +219,7 @@
         <tbody data-panel-scroll>
           {#each visibleInstallations as installation (installation.id)}
             <tr
-              class="installation-row"
+              class="installation-row data-row"
               tabindex="0"
               onclick={(event) => clickRow(event, installation)}
               onkeydown={(event) => keyRow(event, installation)}
@@ -424,10 +424,6 @@
     transition: background-color var(--duration-fast) var(--ease-standard);
   }
 
-  .installation-row:hover {
-    background: var(--table-row-hover);
-  }
-
   .installation-row:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
@@ -457,10 +453,22 @@
   /* Mono, like every other handle and id in the product: the login and the
      installation number are values to read character by character, and in sans
      the pair measured a fifth narrower than the approved row. */
+  /* Clipped past the edge rather than at it.
+     ----------------------------------------
+     `.band-trim-stack` ends this line's box on its baseline, which is what centres
+     the pair against the monogram beside them. The trim moves the box and not the
+     glyphs, so the `y` in a login and the tail of the `@` still paint below it, and
+     `overflow: hidden` cut them off along the bottom of every row. Chrome is the
+     only engine that implements the trim, so it was the only one showing it.
+
+     A little room outside the box, not an open block axis: this is a table row, and
+     ink that escaped it would land in the row underneath. 0.4em is what the queue's
+     pull-request names already ask for, and the deepest descender here is 0.18em. */
   .installation-identity small {
     color: var(--text-muted);
     font: 400 var(--font-size-compact) / 1.2 var(--mono);
-    overflow: hidden;
+    overflow: clip;
+    overflow-clip-margin: 0.4em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

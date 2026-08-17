@@ -18,7 +18,7 @@ import type { PendingCIRequest, PendingCITrigger } from './types';
 /** How a state is drawn: a tone, a distinct shape, and a word. Never the tone alone. */
 export interface QueueState {
   tone: 'clear' | 'stop' | 'neutral' | 'warning' | 'absent';
-  icon: 'success' | 'failure' | 'pending' | 'alert' | 'circle-dashed';
+  icon: 'success' | 'failure' | 'pending' | 'alert' | 'circle-dashed' | 'minus-circle';
   label: string;
 }
 
@@ -40,10 +40,28 @@ export function queueState(request: PendingCIRequest): QueueState {
       return { tone: 'neutral', icon: 'pending', label: 'Running' };
     case 'indeterminate':
       return { tone: 'warning', icon: 'alert', label: 'Unreadable' };
+    /* A circle with a bar through it: nothing to wait for, said as a closed
+       shape. It used to be the dashed circle, which is the shape below - two
+       states drawn identically in one column, which is the exact thing the note
+       at the top of this function forbids. The mock names this glyph here too. */
     case 'no_checks':
-      return { tone: 'absent', icon: 'circle-dashed', label: 'No checks' };
+      return { tone: 'absent', icon: 'minus-circle', label: 'No checks' };
+    /* A request between the command and its first reconciliation. Not a fallback
+       for a value nobody expects: `last_observed_state` is `NOT NULL DEFAULT ''`
+       and `sqlstore.Arm` does not set it, so every request wears this until the
+       reconciler first looks. One word, because it is the widest label the column
+       carries and the column is sized for its widest label - "Awaiting first
+       check" cost 2.75rem in every row of the table, for a state that lasts
+       minutes. "Scheduled" is a check that is coming rather than one that is
+       missing, which is what "No checks" beside it already means.
+
+       Drawn as an outline not yet filled in, and toned like Running rather than
+       like No checks - a look is coming, so it belongs with the state that has
+       one in flight. Every pair in this column now differs in at least two of the
+       three the note above requires: this one shares a tone with Running and
+       nothing else, and no two share a glyph. */
     default:
-      return { tone: 'absent', icon: 'circle-dashed', label: 'Awaiting first check' };
+      return { tone: 'neutral', icon: 'circle-dashed', label: 'Scheduled' };
   }
 }
 
@@ -58,6 +76,19 @@ export interface QueueNext {
 }
 
 export function queueNext(request: PendingCIRequest, nowMs: number): QueueNext {
+  /* A request that has finished has no next look, and a countdown on one is a lie about something
+     that has already happened. It can still be on the waiting table: the queue holds its
+     arrangement while somebody is reading it, so a request that merges under the pointer keeps its
+     place until the pointer leaves. What it says there has to be what it now is. */
+  if (request.lifecycle !== 'armed') {
+    return {
+      lead: 'Moves to Recent',
+      sub: 'It finished while you were reading it',
+      merging: false,
+      seconds: null,
+    };
+  }
+
   const left = remainingMs(request.next_check_at, nowMs);
   const seconds = left === null ? null : Math.max(0, Math.round(left / 1000));
 
@@ -156,8 +187,10 @@ export function byMostRecent(first: PendingCIRequest, second: PendingCIRequest):
   return at(second).localeCompare(at(first));
 }
 
-/** Whether the branch and the reaction were tidied up after the merge. */
+/** Whether the label and the reactions have come off since the request finished. */
 export interface CleanupState {
+  /** What the column's filter selects on, so the menu and the chip cannot part over a word. */
+  value: 'done' | 'pending' | 'failed';
   tone: 'clear' | 'warning' | 'stop';
   icon: 'check' | 'pending' | 'alert';
   label: string;
@@ -169,26 +202,46 @@ export interface CleanupState {
  * The label says the outcome and not the subject: the column is headed "Cleanup", so a chip
  * reading "Cleanup failed" says the word twice. The whole sentence is on the tooltip, which is
  * where it is needed - on a narrow screen the label goes and the mark is all that is left.
+ *
+ * What is being tidied is the LABEL and the REACTIONS, on every lifecycle - the pending-CI label,
+ * the service's handoff fence, and the bot's reaction on the comment that armed it
+ * (`cleanupArtifactsExclusive` in `cmd/github-action/pending_ci_github.go`). It said "the branch
+ * and the reaction", and nothing in this path has ever touched a branch: deleting one is a
+ * repository setting the org sync manages, a different subsystem entirely. So the sentence named a
+ * side effect the service does not have, and a reader watching a cancelled request sit at "Pending"
+ * was told the bot was about to delete their branch.
+ *
+ * "Pending" on a cancelled request is right, and that is worth stating because it looks wrong: a
+ * request that never merged still put a label and two reactions on the pull request when it was
+ * armed, and those come off the same way a merged one's do.
  */
 export function cleanupState(request: PendingCIRequest): CleanupState {
   if (request.cleanup_error !== undefined && request.cleanup_error !== '') {
     return {
+      value: 'failed',
       tone: 'stop',
       icon: 'alert',
       label: 'Failed',
-      detail: `Cleanup failed: ${request.cleanup_error}`,
+      detail: `The label and the reactions could not be taken off: ${request.cleanup_error}`,
     };
   }
   if (request.cleanup_pending) {
     return {
+      value: 'pending',
       tone: 'warning',
       icon: 'pending',
       label: 'Pending',
-      detail: 'The branch and the reaction are still being tidied up',
+      detail: 'The label and the reactions are still to come off the pull request',
     };
   }
 
-  return { tone: 'clear', icon: 'check', label: 'Done', detail: 'Tidied up' };
+  return {
+    value: 'done',
+    tone: 'clear',
+    icon: 'check',
+    label: 'Done',
+    detail: 'The label and the reactions have been taken off',
+  };
 }
 
 /**
@@ -198,6 +251,11 @@ export function cleanupState(request: PendingCIRequest): CleanupState {
  * lifecycle means, since a row with an empty cell says nothing about what happened to it.
  */
 export function endReason(request: PendingCIRequest): string {
+  /* Armed again, which is what a new commit on the same pull request does. It can be read here for
+     as long as somebody is holding the Recent table still - and "Still waiting" over a row whose
+     Outcome column says Scheduled reads as a stall rather than as a fresh start. Checked before the
+     stored reason, because that reason belongs to the run that ENDED and this is the next one. */
+  if (request.lifecycle === 'armed') return 'Armed again by a new commit';
   if (request.reason !== '') return request.reason;
   if (request.lifecycle === 'merged') return 'Checks passed and stayed quiet for 30 s';
   if (request.lifecycle === 'cancelled') return 'Cancelled before it could merge';

@@ -25,6 +25,7 @@
     UpdateRootUserInput,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
+  import SortIndicator from './SortIndicator.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
   import FilterMenu from './FilterMenu.svelte';
@@ -68,7 +69,7 @@
       options: [
         { value: 'active', label: 'Active', tone: 'valid' },
         { value: 'banned', label: 'Banned', tone: 'invalid' },
-        { value: 'removed', label: 'Removed', tone: 'default' },
+        { value: 'removed', label: 'Removed', tone: 'neutral' },
       ],
     },
   ] satisfies readonly FilterSection[];
@@ -589,22 +590,24 @@
             <thead>
               <tr>
                 <th scope="col" aria-sort={sortDirection('name')}>
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('name')}
-                  >
-                    <span>User</span><Icon name="sort" size={14} />
-                  </button>
+                  <div class="table-heading">
+                    <button
+                      class="table-sort-button"
+                      type="button"
+                      onclick={() => toggleSort('name')}
+                    >
+                      <span class="table-heading-label">User</span><SortIndicator />
+                    </button>
+                  </div>
                 </th>
                 <th scope="col" aria-sort={sortDirection('role')}>
-                  <div class="heading-layout">
+                  <div class="table-heading">
                     <button
                       class="table-sort-button"
                       type="button"
                       onclick={() => toggleSort('role')}
                     >
-                      <span>System role</span><Icon name="sort" size={14} />
+                      <span class="table-heading-label">System role</span><SortIndicator />
                     </button>
                     <FilterMenu
                       label="System role"
@@ -621,8 +624,8 @@
                   </div>
                 </th>
                 <th scope="col">
-                  <div class="heading-layout">
-                    <span class="heading-label band-trim">Status</span>
+                  <div class="table-heading">
+                    <span class="table-heading-label">Status</span>
                     <FilterMenu
                       label="Status"
                       summary={statuses.length === 0
@@ -637,15 +640,21 @@
                     />
                   </div>
                 </th>
-                <th scope="col">Installations</th>
+                <th scope="col">
+                  <div class="table-heading">
+                    <span class="table-heading-label">Installations</span>
+                  </div>
+                </th>
                 <th scope="col" aria-sort={sortDirection('last_login')}>
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('last_login')}
-                  >
-                    <span>Last login</span><Icon name="sort" size={14} />
-                  </button>
+                  <div class="table-heading">
+                    <button
+                      class="table-sort-button"
+                      type="button"
+                      onclick={() => toggleSort('last_login')}
+                    >
+                      <span class="table-heading-label">Last login</span><SortIndicator />
+                    </button>
+                  </div>
                 </th>
                 <th scope="col"><span class="visually-hidden">Actions</span></th>
               </tr>
@@ -1087,9 +1096,16 @@
 
   th,
   td {
-    padding: var(--cell-pad-block) 0.75rem;
     text-align: left;
     vertical-align: middle;
+  }
+
+  /* `td` alone: a heading's padding belongs to whatever fills it - see `thead th`
+     in `app.css` - and a class-scoped rule here takes it back without saying so,
+     which is how this table's sort target came out 24px narrower and 20px
+     shorter than the cell it lights up. */
+  td {
+    padding: var(--cell-pad-block) 0.75rem;
   }
 
   /* Stated, not inherited from whatever the tallest cell happens to hold.
@@ -1104,23 +1120,19 @@
     height: calc(var(--control-height) + 2 * var(--cell-pad-block) + 1px);
   }
 
-  th:first-child,
   td:first-child {
     padding-left: var(--space-4);
   }
 
-  thead th:first-child .table-sort-button {
-    padding-left: var(--space-4);
-  }
-
-  /* Typography and ground come from `thead th` in `app.css`, shared with the
-     other five tables. Only the band's height is this table's own. */
-  th {
+  /* Typography, ground and the heading's whole shape come from `app.css`, shared
+     with the other five tables. Only the band's height and the first column's
+     wider inset are this table's own. */
+  thead th {
     height: 2.5rem;
   }
 
-  th:has(.table-sort-button) {
-    padding: 0;
+  thead th:first-child {
+    --heading-pad-start: var(--space-4);
   }
 
   th:first-child,
@@ -1149,8 +1161,13 @@
     width: 16%;
   }
 
+  /* An end-aligned column: the words meet the same edge the values below them do,
+     and the arrow leads rather than trails, which is what keeps it off that edge.
+     Every design system states this rule the same way - a heading follows its
+     column's alignment, and the sort mark moves to the other side to let it. */
   th:nth-child(5) .table-sort-button {
-    justify-content: flex-end;
+    flex-direction: row-reverse;
+    justify-content: flex-start;
   }
 
   th:last-child,
@@ -1159,62 +1176,11 @@
     width: 3rem;
   }
 
-  .table-sort-button,
-  .heading-layout {
-    align-items: center;
-    display: flex;
-    height: 100%;
-  }
-
-  .table-sort-button {
-    background: transparent;
-    border: 0;
-    color: inherit;
-    font: inherit;
-    gap: var(--space-2);
-    justify-content: flex-start;
-    padding: 0.625rem 0.75rem;
-    width: 100%;
-  }
-
-  .table-sort-button :global(svg) {
-    opacity: 0;
-    transition:
-      opacity var(--duration-fast) var(--ease-standard),
-      transform var(--duration-fast) var(--ease-standard);
-  }
-
-  .table-sort-button:hover :global(svg),
-  .table-sort-button:focus-visible :global(svg) {
-    opacity: 0.55;
-  }
-
-  th[aria-sort='ascending'] .table-sort-button :global(svg),
-  th[aria-sort='descending'] .table-sort-button :global(svg) {
-    opacity: 1;
-  }
-
-  th[aria-sort='descending'] .table-sort-button :global(svg) {
-    transform: rotate(180deg);
-  }
-
-  .heading-layout {
-    justify-content: space-between;
-  }
-
-  .heading-layout .table-sort-button {
-    flex: 1;
-    min-width: 0;
-    width: auto;
-  }
-
-  .heading-layout :global(.header-filter) {
-    margin-inline: var(--space-1);
-  }
-
-  .heading-label {
-    padding-left: 0;
-  }
+  /* The heading's row, its button and its arrow are shared - see `.table-heading`,
+     `.table-sort-button` and `.sort-indicator` in `app.css`. What was here was a
+     second copy of the button's reset, a fourth copy of the arrow's rules written
+     against a raw `<svg>`, and a `:global(.header-filter)` addressed to a class
+     the popover stopped rendering. */
 
   .identity {
     align-items: center;
@@ -1370,10 +1336,6 @@
     tbody tr {
       background: var(--surface-base);
       transition: background-color var(--duration-fast) var(--ease-standard);
-    }
-
-    tbody tr:not(.empty-row):hover {
-      background: var(--table-row-hover);
     }
   }
 

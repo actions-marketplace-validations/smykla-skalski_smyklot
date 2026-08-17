@@ -23,8 +23,51 @@ export interface Panel {
   close: () => Promise<void>;
 }
 
+/**
+ * Every shape of page the panel has, addressed the way its own router spells it: a workspace view
+ * under `/i/<account>`, the console under `/root`, and the inbox under neither, since it belongs
+ * to the reader.
+ *
+ * Here rather than in one of the files that walks it, because more than one does and a second copy
+ * is a list that goes stale: a route added to one sweep and not the other is a page that looks
+ * checked and is not.
+ */
+export const PANEL_ROUTES = [
+  'i/settings',
+  'i/repositories',
+  /* One repository's own page, which is a route in its own right and was in none
+     of these sweeps: it has a header, a switch, a way back and three panes, and
+     every rule the others are held to applies to it too. */
+  'i/repositories/api-gateway',
+  'i/sync',
+  'i/users',
+  'i/invitations',
+  'i/history',
+  'root/settings',
+  'root/queue',
+  'root/queue/recent',
+  'root/queue/request/pending-ci-0',
+  'root/installations',
+  'root/access/users',
+  'root/access/invitations',
+  'root/history/audit',
+  'inbox',
+] as const;
+
+/** One of those routes as an address, filling in the workspace that signing in found. */
+export function addressOf(panel: Panel, route: string): string {
+  return route.startsWith('i/')
+    ? `${panel.origin}/i/${panel.account}/${route.slice(2)}`
+    : `${panel.origin}/${route}`;
+}
+
 export async function startPanel(): Promise<Panel> {
   process.env.SMYKLOT_PANEL_DEV_MOCK = '1';
+  /* The mock's queue runs its own reconciler, so that a deadline in development expires the way it
+     expires in production and the merge can be watched. A sweep that measures a table cannot also
+     have the table re-sort itself half way through the measurement, so it asks for the queue to
+     hold still. Nothing else about the mock changes. */
+  process.env.SMYKLOT_PANEL_DEV_MOCK_FROZEN = '1';
   // Bound to the address the browser is told to use. Vite's default host resolves to the IPv6
   // loopback on some machines and the IPv4 one on others, and it reports the same port either way,
   // so naming one is the difference between a measurement and a connection refused.
