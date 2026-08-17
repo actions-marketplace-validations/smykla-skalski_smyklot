@@ -643,21 +643,45 @@ export interface SyncConfig {
   updated_at: string;
   digest: string;
   /**
+   * The stored configuration as it is, whatever kind it belongs to. The typed
+   * fields above describe labels, which is the kind this panel has a form for;
+   * every other kind travels here untouched.
+   */
+  document: Record<string, unknown>;
+  /**
    * The stored document could not be read, so the lists above are empty because
    * nothing came out of them - not because nothing is configured. Saving over
    * this would send back the emptiness rather than the labels the row holds, so
    * the view refuses.
    */
   unreadable: boolean;
+  /**
+   * What this kind needs and the installation has not granted, or empty. A
+   * switch that is on means nothing without the permission behind it: the sweep
+   * leaves the kind out, nothing is planned and nothing fails, and an empty
+   * plan list looks exactly like a sweep that has not come round yet.
+   */
+  unavailable: string;
 }
 
 /** What a save sends. The revision is what it believes it is replacing. */
 export interface SyncConfigInput {
   enabled: boolean;
-  labels: SyncLabel[];
-  allow_removal: boolean;
-  excludes: string[];
   expected_revision: number;
+  /**
+   * The label set and what may be done to it, for the labels kind. Optional
+   * because they describe that kind alone: a settings save that had to send
+   * empty ones would be sending three values nothing reads.
+   */
+  labels?: SyncLabel[];
+  allow_removal?: boolean;
+  excludes?: string[];
+  /**
+   * The kind's own document, for every kind but labels. Labels travel in the
+   * typed fields above because the panel has a form built out of them; anything
+   * else is sent as it is, so a kind is configurable before it has one.
+   */
+  document?: Record<string, unknown>;
 }
 
 /** One change a plan would make. */

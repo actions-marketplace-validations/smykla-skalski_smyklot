@@ -43,6 +43,54 @@ type Installation struct {
 
 	// AvatarURL is the public avatar of the installation owner.
 	AvatarURL string
+
+	// Permissions is what this installation has granted, keyed by GitHub's own
+	// name for each - "administration", "issues", "contents" - against the level
+	// granted.
+	//
+	// Read from the installation listing, which already carries it, so knowing
+	// whether the App may do something costs no request. That matters because
+	// the alternative is finding out by being refused: an installation that has
+	// not approved a new permission is the ordinary state during a rollout, and
+	// discovering it one 403 at a time would fill an operator's history with
+	// failures that are really a question nobody has been asked yet.
+	//
+	// Empty means GitHub answered without the field. That is not a legitimate
+	// "granted nothing" - the field is required on the installation object - so
+	// it means the answer was malformed, and Grants says nothing was granted.
+	Permissions map[string]string
+}
+
+// Permission levels that let Smyklot write, as GitHub spells them.
+//
+// Read is not among them and is not named: every other level answers the same
+// way, so a constant for one of them would suggest a list that has to be kept
+// complete.
+const (
+	PermissionWrite = "write"
+
+	// PermissionAdmin is a level GitHub returns for a handful of permissions -
+	// repository and organization projects among them - and never for the four
+	// Smyklot reads, which are only ever read or write. It is accepted anyway,
+	// because a permission added here later may use it and a silent false would
+	// be the wrong direction to be wrong in.
+	PermissionAdmin = "admin"
+)
+
+// Grants reports whether an installation may write through a permission.
+//
+// An installation whose permissions are unknown grants nothing. GitHub marks
+// the field required, so its absence means a malformed or degraded answer
+// rather than an installation that granted none - and proceeding on an answer
+// that could not be read means writing to somebody's repositories on a guess.
+// A 403 is a smaller problem than that.
+func (i Installation) Grants(permission string) bool {
+	switch i.Permissions[permission] {
+	case PermissionWrite, PermissionAdmin:
+		return true
+	default:
+		return false
+	}
 }
 
 // Repository identifies a repository an installation can reach

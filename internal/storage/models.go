@@ -394,6 +394,34 @@ type Target struct {
 	RepositoryCounts         RepositoryCounts
 	DeliveryHealth           DeliveryHealth
 	Ownership                TargetOwnership
+
+	// Permissions is what the installation has granted. Kept here rather than
+	// asked of GitHub, because the two callers that need it cannot ask: the
+	// executor holds an installation token and the panel is rendering a page.
+	Permissions map[string]string
+}
+
+// Grants reports whether the installation may write through a permission.
+//
+// The same rule as github.Installation.Grants, deliberately spelled the same
+// way: an installation whose permissions are unknown grants nothing. GitHub
+// marks the field required, so its absence is a malformed answer rather than an
+// installation that granted none, and writing to somebody's repositories on an
+// answer that could not be read is worse than a 403.
+//
+// Two spellings of one rule is how the planner and the executor come to
+// disagree about whether an installation may act, so the two are held together
+// by a test rather than by a comment: see grants_test.go. Sharing the code
+// instead would mean pkg/github importing this side to borrow four lines, and
+// the client knowing nothing about what Smyklot does with GitHub is worth more
+// than the duplication.
+func (t Target) Grants(permission string) bool {
+	switch t.Permissions[permission] {
+	case "write", "admin":
+		return true
+	default:
+		return false
+	}
 }
 
 // RepositoryFileStatus is the most recently observed state of the repository
@@ -513,6 +541,11 @@ type InstallationSnapshot struct {
 	Repositories   []RepositorySnapshot
 	Ownership      OwnershipSnapshot
 	SyncedAt       time.Time
+
+	// Permissions is what the installation has granted, keyed by GitHub's own
+	// name against "read", "write" or "admin". Empty means the listing reported
+	// none, which is not the same as granting none.
+	Permissions map[string]string
 }
 
 // TargetSettingsChange atomically changes target defaults and records audit.

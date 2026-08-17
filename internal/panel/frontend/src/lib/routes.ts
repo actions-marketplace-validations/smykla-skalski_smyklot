@@ -8,8 +8,14 @@ import {
 
 export type { RouteDialog };
 
-export const PANEL_VIEWS = ['settings', 'repositories', 'users', 'invitations', 'history'] as const;
-const SCOPED_PANEL_VIEWS = ['settings', 'repositories', 'users', 'invitations', 'history'] as const;
+export const PANEL_VIEWS = [
+  'settings',
+  'repositories',
+  'sync',
+  'users',
+  'invitations',
+  'history',
+] as const;
 
 /**
  * The views that belong to the reader rather than to a workspace or the console.
@@ -24,10 +30,40 @@ const SCOPED_PANEL_VIEWS = ['settings', 'repositories', 'users', 'invitations', 
  */
 export const PERSONAL_VIEWS = ['inbox'] as const;
 
+/**
+ * The views the Root console renders for one installation, which is not every
+ * view an installation has.
+ *
+ * Sync is the difference. Configuring what an organization's repositories
+ * should carry is the installation's own business, reached by elevating into
+ * it, and the console reads through its own Root-scoped endpoints rather than
+ * the ones an installation's members use. Accepting the address without
+ * rendering anything is worse than refusing it: a bookmark that answers "this
+ * view is unavailable" looks like a fault rather than a boundary.
+ */
+export const ROOT_INSTALLATION_VIEWS = [
+  'settings',
+  'repositories',
+  'users',
+  'invitations',
+  'history',
+] as const;
+
 export const HISTORY_SECTIONS = ['audit', 'failures'] as const;
 
 export type PanelView = (typeof PANEL_VIEWS)[number];
-export type ScopedPanelView = (typeof SCOPED_PANEL_VIEWS)[number];
+
+/**
+ * A view in an installation's own address, which is every view there is.
+ *
+ * The name is kept because it says which surface an address belongs to - the
+ * console's subset is `RootInstallationView` - but it is the same list rather
+ * than a second copy of it. It used to be a copy, and a copy is what the
+ * router's own list turned out to be too: sync was added to every list but
+ * that one, and the row led to the not-found page.
+ */
+export type ScopedPanelView = PanelView;
+export type RootInstallationView = (typeof ROOT_INSTALLATION_VIEWS)[number];
 export type PersonalView = (typeof PERSONAL_VIEWS)[number];
 /** History's two tables are addressable, so a reload lands where you left off. */
 export type HistorySection = (typeof HISTORY_SECTIONS)[number];
@@ -54,7 +90,7 @@ export type RootRoute =
   | {
       rootView: 'installation';
       account: string;
-      view: ScopedPanelView;
+      view: RootInstallationView;
       section?: HistorySection;
       dialog?: RouteDialog;
     };
@@ -228,7 +264,11 @@ export function rootSectionRoute(section: RootSection): RootRoute {
 }
 
 function isScopedPanelView(value: string): value is ScopedPanelView {
-  return SCOPED_PANEL_VIEWS.some((view) => view === value);
+  return PANEL_VIEWS.some((view) => view === value);
+}
+
+function isRootInstallationView(value: string): value is RootInstallationView {
+  return ROOT_INSTALLATION_VIEWS.some((view) => view === value);
 }
 
 function routeTitleSegments(route: PanelRoute): string[] {
@@ -294,11 +334,11 @@ function parseRootRoute(parts: string[]): RootRoute | null {
      through to the installation default. */
   if (parts.length === 2 && parts[1] === 'history') return { rootView: 'history-audit' };
   if (parts.length === 2 && parts[1] === 'access') return { rootView: 'access-users' };
-  if (parts.length < 4 || parts[1] !== 'installations' || !isScopedPanelView(parts[3] ?? '')) {
+  if (parts.length < 4 || parts[1] !== 'installations' || !isRootInstallationView(parts[3] ?? '')) {
     return null;
   }
 
-  const view = parts[3] as ScopedPanelView;
+  const view = parts[3] as RootInstallationView;
   const trailing = parts.slice(4);
   const dialog = parseTrailingDialog(view, trailing);
   if (dialog === 'invalid') return null;

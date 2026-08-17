@@ -27,7 +27,9 @@ const (
 	panelInvitationsPath       = "invitations"
 	panelInstallationsResource = "installations"
 	panelRepositoriesPath      = "repositories"
+	panelRootPath              = "root"
 	panelSettingsPath          = "settings"
+	panelSyncPath              = "sync"
 )
 
 // The documents the panel serves by name rather than as plain static files.
@@ -311,7 +313,7 @@ func isPanelNavigationPath(relative string) bool {
 // the view has to be a view, and a dialog is one segment or two.
 func isPanelViewPath(view string, trailing []string) bool {
 	switch view {
-	case panelSettingsPath:
+	case panelSettingsPath, panelSyncPath:
 		return len(trailing) == 0
 	case panelHistoryPath:
 		return len(trailing) == 0 || (len(trailing) == 1 && isPanelHistorySection(trailing[0]))
@@ -336,7 +338,7 @@ func isDialogSegments(trailing []string) bool {
 }
 
 func isRootNavigationPath(parts []string) bool {
-	if parts[0] != "root" {
+	if parts[0] != panelRootPath {
 		return false
 	}
 	if len(parts) == 1 {
@@ -362,6 +364,15 @@ func isRootNavigationPath(parts []string) bool {
 			return true
 		}
 		if len(parts) < 4 || parts[2] == "" {
+			return false
+		}
+
+		// The console renders a subset of an installation's views: what an
+		// organization's repositories should carry is configured by elevating
+		// into the installation, through the endpoints its own members use. An
+		// address the console has no page for is refused here rather than
+		// served a shell that says the view is unavailable.
+		if parts[3] == panelSyncPath {
 			return false
 		}
 

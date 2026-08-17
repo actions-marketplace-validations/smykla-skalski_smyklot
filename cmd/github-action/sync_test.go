@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,8 +26,12 @@ var _ = Describe("Label sync [Unit]", func() {
 
 	BeforeEach(func() {
 		stub = newGitHubStub()
+		// With the permission label sync needs, which GitHub always reports:
+		// the field is required on the installation object, so a listing
+		// without it is a malformed answer rather than a real installation.
 		stub.installations = `[{"id":411,"account":` +
-			`{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+			`{"id":7,"login":"smykla-skalski","type":"Organization"},` +
+			`"permissions":{"issues":"write"}}]`
 		stub.repos = `{"repositories":[{"id":41,"name":"smyklot",` +
 			`"full_name":"smykla-skalski/smyklot","default_branch":"main",` +
 			`"owner":{"login":"smykla-skalski"}}]}`
@@ -73,18 +78,26 @@ var _ = Describe("Label sync [Unit]", func() {
 		return target
 	}
 
-	configure := func(target storage.Target, document string) orgsync.Config {
+	configureKind := func(
+		target storage.Target, kind orgsync.Kind, document string,
+	) orgsync.Config {
 		GinkgoHelper()
 
 		config, err := service.store.SetSyncConfig(
 			GinkgoT().Context(), orgsync.ConfigChange{
-				TargetID: target.ID, Kind: orgsync.KindLabels, Enabled: true,
+				TargetID: target.ID, Kind: kind, Enabled: true,
 				Document: []byte(document), ActorID: target.Account.ID,
 				Now: time.Now().UTC(),
 			})
 		Expect(err).NotTo(HaveOccurred())
 
 		return config
+	}
+
+	configure := func(target storage.Target, document string) orgsync.Config {
+		GinkgoHelper()
+
+		return configureKind(target, orgsync.KindLabels, document)
 	}
 
 	client := func() *github.Client {
@@ -94,6 +107,36 @@ var _ = Describe("Label sync [Unit]", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		return client
+	}
+
+	// granting re-lists the installation with the permissions given and
+	// reconciles, which is how a grant or a revocation actually reaches the
+	// service: GitHub reports it and the sweep stores it.
+	granting := func(permissions string) storage.Target {
+		GinkgoHelper()
+
+		stub.installations = `[{"id":411,"account":` +
+			`{"id":7,"login":"smykla-skalski","type":"Organization"},` +
+			`"permissions":` + permissions + `}]`
+
+		return seed()
+	}
+
+	// override is a repository's own answer for one kind, which is the layer a
+	// person uses to leave one repository out.
+	override := func(target storage.Target, kind orgsync.Kind, enabled bool) {
+		GinkgoHelper()
+
+		repositories, err := service.store.ListRepositories(GinkgoT().Context(), target.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repositories).NotTo(BeEmpty())
+
+		_, err = service.store.SetSyncRepositoryOverride(
+			GinkgoT().Context(), orgsync.RepositoryOverrideChange{
+				RepositoryID: repositories[0].ID, Kind: kind, Enabled: &enabled,
+				ActorID: target.Account.ID, Now: time.Now().UTC(),
+			})
+		Expect(err).NotTo(HaveOccurred())
 	}
 
 	plan := func(target storage.Target) {
@@ -155,6 +198,53 @@ var _ = Describe("Label sync [Unit]", func() {
 			Expect(err).To(MatchError(storage.ErrNotFound))
 		})
 
+		// An installation that has not approved a newly requested permission is
+		// the ordinary state during a rollout, not a fault. Planning anyway
+		// would produce a plan whose every action 403s, once per repository,
+		// every tick - a history full of refusals that are really one question
+		// nobody has been asked
+		It("plans nothing for a kind the installation has not permitted", func() {
+			target := granting(`{"issues":"read"}`)
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			// And it asked GitHub nothing, rather than finding out by refusal
+			Expect(stub.countCalls(
+				http.MethodGet, "/repos/smykla-skalski/smyklot/labels")).To(BeZero())
+		})
+
+		// Not a level GitHub returns for the permissions Smyklot reads, but one
+		// it returns elsewhere - so this is what stops a permission added here
+		// later being read as refused
+		It("plans for an installation that granted admin", func() {
+			target := granting(`{"issues":"admin"}`)
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+		})
+
+		// GitHub marks the permissions field required on the installation
+		// object, so an answer without it is malformed rather than an
+		// installation that granted nothing. Proceeding would mean writing to
+		// somebody's repositories on an answer that could not be read, and a
+		// 403 is the smaller problem
+		It("plans nothing for an installation whose permissions could not be read", func() {
+			target := granting(`{}`)
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
 		It("plans nothing when the repository already matches", func() {
 			target := seed()
 			stub.repoLabels = `[{"name":"bug","color":"d73a4a","description":""}]`
@@ -187,6 +277,115 @@ var _ = Describe("Label sync [Unit]", func() {
 			plan(target)
 			Expect(stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/labels")).
 				To(Equal(reads))
+		})
+
+		// Each kind settles on its own, against its own digest and its own
+		// record. Reading another kind's rows here answers the question with
+		// the wrong kind's answer, and a settings sync that never settles asks
+		// GitHub about every repository on every tick for ever
+		It("stops asking GitHub about a repository whose settings already match", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki":true}`
+			configureKind(target, orgsync.KindSettings, `{"has_wiki":true}`)
+
+			plan(target)
+
+			reads := stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot")
+			Expect(reads).NotTo(BeZero())
+
+			plan(target)
+			Expect(stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot")).
+				To(Equal(reads))
+		})
+
+		// The record says what a repository looked like when it was read, which
+		// is a fact about the past. Nothing on GitHub stops somebody renaming a
+		// label by hand afterwards, and a record with no horizon means the one
+		// thing a reconcile exists to correct is the one thing it cannot see
+		It("looks again at a repository it has not read for a while", func() {
+			target := seed()
+			stub.repoLabels = `[{"name":"bug","color":"d73a4a","description":""}]`
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+
+			plan(target)
+			reads := stub.countCalls(
+				http.MethodGet, "/repos/smykla-skalski/smyklot/labels")
+			Expect(reads).NotTo(BeZero())
+
+			// The same record, written as though the read behind it were older
+			// than the horizon. Nothing else changes: the configuration is the
+			// same and so is its digest.
+			settled, err := service.store.ListSyncRepositoryState(
+				GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(settled).To(HaveLen(1))
+			settled[0].AppliedAt = time.Now().UTC().Add(-syncRecheckInterval - time.Minute)
+			Expect(service.store.RecordSyncRepositoryState(
+				GinkgoT().Context(), settled)).To(Succeed())
+
+			// Somebody has been at it by hand in the meantime
+			stub.repoLabels = `[{"name":"bug","color":"ffffff","description":""}]`
+
+			plan(target)
+
+			Expect(stub.countCalls(
+				http.MethodGet, "/repos/smykla-skalski/smyklot/labels")).
+				To(BeNumerically(">", reads))
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationUpdate))
+			Expect(actions[0].Subject).To(Equal("bug"))
+		})
+
+		// A repository decides each kind on its own: somebody may want their
+		// labels left alone and their settings kept in step
+		It("leaves out a repository that turned this kind off", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki":true}`
+			configureKind(target, orgsync.KindSettings, `{"has_wiki":false}`)
+			override(target, orgsync.KindSettings, false)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
+		// And the other direction, which is the one that silently does too
+		// little: turning labels off for a repository must not take its
+		// settings with it
+		It("keeps syncing the kinds a repository did not turn off", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki":true}`
+			configureKind(target, orgsync.KindSettings, `{"has_wiki":false}`)
+			override(target, orgsync.KindLabels, false)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Kind).To(Equal(orgsync.KindSettings))
+		})
+
+		// The panel refuses this at the keyboard, but a row written before a
+		// rule existed - or by a hand on the database - reaches the planner
+		// anyway, and a plan holding work GitHub is going to refuse asks
+		// somebody to approve a promise it cannot keep
+		It("plans nothing from a stored document GitHub would refuse", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki":true}`
+			configureKind(target, orgsync.KindSettings,
+				`{"has_wiki":false,"merge_commit_title":"NONSENSE"}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			// And it asked GitHub nothing, rather than finding out by refusal
+			Expect(stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot")).
+				To(BeZero())
 		})
 
 		// A reconcile that changed nothing is not an event, and one row a tick
@@ -358,6 +557,117 @@ var _ = Describe("Label sync [Unit]", func() {
 			Expect(again.ID).NotTo(Equal(computed.ID))
 			Expect(actions).To(HaveLen(1))
 			Expect(actions[0].Subject).To(Equal("bug"))
+		})
+
+		// A plan is approved by a person and applied later, and a permission can
+		// be revoked in between - that is what revoking one is for. Without a
+		// second check the plan's every action would be refused one at a time,
+		// and the revocation would read as a repository that failed rather than
+		// as a decision somebody made
+		It("refuses to apply a plan whose permission was revoked", func() {
+			target := seed()
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+			plan(target)
+			computed, _ := livePlan(target)
+			approve(computed)
+
+			// The installation withdraws the permission, which the next catalog
+			// reconcile records.
+			stub.installations = `[{"id":411,"account":` +
+				`{"id":7,"login":"smykla-skalski","type":"Organization"},` +
+				`"permissions":{"issues":"read"}}]`
+			_, err := service.SyncCatalog(GinkgoT().Context())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(HaveOccurred())
+
+			// Nothing was written to GitHub, and the plan keeps its lease rather
+			// than being closed: granting the permission back is all it needs
+			Expect(stub.labelWrites).To(BeEmpty())
+			held, _, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(held.State).To(Equal(orgsync.PlanApplying))
+		})
+
+		It("changes the settings the plan named, and only those", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki": true, "has_issues": true,
+				"delete_branch_on_merge": false, "allow_squash_merge": true}`
+			configureKind(target, orgsync.KindSettings,
+				`{"has_wiki":false,"delete_branch_on_merge":true}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Kind).To(Equal(orgsync.KindSettings))
+			approve(computed)
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.settingsWrites).To(HaveLen(1))
+
+			var sent map[string]any
+			Expect(json.Unmarshal([]byte(stub.settingsWrites[0]), &sent)).To(Succeed())
+			Expect(sent).To(HaveKeyWithValue("has_wiki", false))
+			Expect(sent).To(HaveKeyWithValue("delete_branch_on_merge", true))
+
+			// Nothing about the settings nobody configured. Against an endpoint
+			// that replaces what it is sent, writing those back is how a sync
+			// undoes somebody else's change
+			Expect(sent).NotTo(HaveKey("has_issues"))
+			Expect(sent).NotTo(HaveKey("allow_squash_merge"))
+			Expect(sent).To(HaveLen(2))
+		})
+
+		// The security features travel nested, with a status string, and a
+		// feature the repository does not have is absent from GitHub's answer
+		// rather than reported off - so this is the one place the whole shape
+		// is proved against something that parses it back
+		It("switches on the security features, and leaves the missing one", func() {
+			target := granting(`{"issues":"write","administration":"write"}`)
+			stub.repoSettings = `{"has_wiki":true,"security_and_analysis":{
+				"secret_scanning":{"status":"disabled"},
+				"secret_scanning_push_protection":{"status":"disabled"}}}`
+			configureKind(target, orgsync.KindSettings,
+				`{"advanced_security":true,"secret_scanning":true,`+
+					`"secret_scanning_push_protection":true}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			approve(computed)
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.settingsWrites).To(HaveLen(1))
+
+			var sent map[string]any
+			Expect(json.Unmarshal([]byte(stub.settingsWrites[0]), &sent)).To(Succeed())
+			Expect(sent).To(HaveKeyWithValue("security_and_analysis", map[string]any{
+				"secret_scanning":                 map[string]any{"status": "enabled"},
+				"secret_scanning_push_protection": map[string]any{"status": "enabled"},
+			}))
+
+			// Advanced security was never mentioned by GitHub, so this
+			// repository does not have it - and asking for it would have been a
+			// 422 that took the two features beside it down as well
+			Expect(actions[0].After).To(ContainSubstring("advanced_security"))
+		})
+
+		// An installation may have approved one kind and not another, and the
+		// one it approved should still run
+		It("plans the permitted kind and leaves the other", func() {
+			target := granting(`{"issues":"write"}`)
+			configure(target, `{"labels":[{"name":"bug","color":"d73a4a"}]}`)
+			configureKind(target, orgsync.KindSettings, `{"has_wiki":false}`)
+			stub.repoSettings = `{"has_wiki": true}`
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Kind).To(Equal(orgsync.KindLabels))
 		})
 
 		It("does nothing for a plan nobody approved", func() {

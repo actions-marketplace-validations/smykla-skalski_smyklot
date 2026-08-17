@@ -12,6 +12,8 @@
 
   import type { SyncAction, SyncConfig, SyncConfigInput, SyncPlan } from '$lib/types';
 
+  import SyncSettingsForm from './SyncSettingsForm.svelte';
+
   const {
     targetId,
     readOnly,
@@ -22,17 +24,31 @@
   }: {
     targetId: string;
     readOnly: boolean;
-    fetchConfig: (targetId: string) => Promise<SyncConfig>;
-    saveConfig: (targetId: string, input: SyncConfigInput) => Promise<SyncConfig>;
+    fetchConfig: (targetId: string, kind: string) => Promise<SyncConfig>;
+    saveConfig: (targetId: string, kind: string, input: SyncConfigInput) => Promise<SyncConfig>;
     fetchPlan: (targetId: string) => Promise<{ plan: SyncPlan | null }>;
     approvePlan: (targetId: string, planId: string, digest: string) => Promise<{ plan: SyncPlan }>;
   } = $props();
 
+  // The kinds this view has a form for. Rulesets and files are configurable
+  // through the API and have none here yet, so naming the ones this page means
+  // is better than a parameter nothing varies.
+  const LABELS = 'labels';
+  const SETTINGS = 'settings';
+
   let config = $state<SyncConfig | null>(null);
+  let settings = $state<SyncConfig | null>(null);
   let plan = $state<SyncPlan | null>(null);
   let saving = $state(false);
+  let savingSettings = $state(false);
   let approving = $state(false);
+
+  /* One failure per thing that can fail, because the two forms are saved
+     independently and neither disables the other. A single field let a settings
+     save clear a labels failure the moment it started - the label switch had
+     already sprung back and nothing on the page said why. */
   let error = $state<string | null>(null);
+  let settingsError = $state<string | null>(null);
 
   /* Both documents, because the second is only meaningful beside the first: a
      plan says what would change, and what it would change to is what the
@@ -45,9 +61,15 @@
 
   async function load(id: string): Promise<void> {
     error = null;
+    settingsError = null;
     try {
-      const [loadedConfig, loadedPlan] = await Promise.all([fetchConfig(id), fetchPlan(id)]);
+      const [loadedConfig, loadedSettings, loadedPlan] = await Promise.all([
+        fetchConfig(id, LABELS),
+        fetchConfig(id, SETTINGS),
+        fetchPlan(id),
+      ]);
       config = loadedConfig;
+      settings = loadedSettings;
       plan = loadedPlan.plan;
     } catch (cause) {
       error = messageOf(cause);
@@ -61,7 +83,7 @@
     saving = true;
     error = null;
     try {
-      config = await saveConfig(targetId, {
+      config = await saveConfig(targetId, LABELS, {
         enabled,
         labels: current.labels,
         allow_removal: current.allow_removal,
@@ -76,6 +98,32 @@
       error = messageOf(cause);
     } finally {
       saving = false;
+    }
+  }
+
+  /**
+   * The settings are saved whole, unlike the labels switch beside them: a
+   * repository's settings are one request that succeeds or fails together, so
+   * a control that saved on every click would send a dozen half-formed
+   * policies and compute a plan for each.
+   */
+  async function onSaveSettings(wanted: boolean, document: Record<string, unknown>): Promise<void> {
+    const current = settings;
+    if (current === null) return;
+
+    savingSettings = true;
+    settingsError = null;
+    try {
+      settings = await saveConfig(targetId, SETTINGS, {
+        enabled: wanted,
+        document,
+        expected_revision: current.revision,
+      });
+      plan = (await fetchPlan(targetId)).plan;
+    } catch (cause) {
+      settingsError = messageOf(cause);
+    } finally {
+      savingSettings = false;
     }
   }
 
@@ -105,6 +153,14 @@
    * label set nobody was ever shown, so nothing here is editable.
    */
   const unreadable = $derived(config?.unreadable === true);
+
+  /**
+   * What labels sync needs and this installation has not granted. Empty for
+   * nearly every installation - labelling is what the bot was let in to do -
+   * but the answer carries it for every kind, and a page that read it for one
+   * kind and not the other would go quiet on whichever one was missed next.
+   */
+  const unavailable = $derived(config?.unavailable ?? '');
 
   /**
    * A plan is only worth approving while it is waiting for somebody. The other
@@ -178,6 +234,15 @@
     </p>
   {/if}
 
+  <!-- Only while the switch is on: a kind nobody asked for is not waiting on
+       anything, and the permission is somebody else's to grant. -->
+  {#if unavailable !== '' && enabled}
+    <p class="sync-notice" role="status">
+      {unavailable}. Nothing here will be planned or changed until an owner grants it on the
+      installation's page on GitHub.
+    </p>
+  {/if}
+
   <div class="sync-switch">
     <label>
       <input
@@ -211,13 +276,34 @@
       {/each}
     </ul>
   {/if}
+</section>
 
+{#if settings !== null}
+  <SyncSettingsForm
+    stored={settings.document}
+    enabled={settings.enabled}
+    unreadable={settings.unreadable}
+    unavailable={settings.unavailable}
+    problem={settingsError}
+    {readOnly}
+    saving={savingSettings}
+    onSave={onSaveSettings}
+  />
+{/if}
+
+<section class="sync" aria-labelledby="sync-plan-heading">
   <header class="sync-header">
-    <h3 id="sync-plan-heading">What would change</h3>
+    <h2 id="sync-plan-heading">What would change</h2>
   </header>
 
   {#if plan === null}
-    <p class="sync-empty">Nothing to do. Every repository already carries what is listed above.</p>
+    <!-- Deliberately not "nothing to do". Nothing is waiting, which is also
+         what it looks like a moment after saving, before any reconcile has
+         read a repository - and telling somebody their new configuration
+         needs no changes would be a claim nothing here has checked. -->
+    <p class="sync-empty">
+      Nothing waiting. A reconcile runs on a timer and proposes whatever differs.
+    </p>
   {:else}
     <p class="sync-note">{planNote}</p>
     <p class="sync-counts">
@@ -228,6 +314,9 @@
       {#each plan.actions as action (action.repository + action.kind + action.subject)}
         <li class="sync-action" class:sync-removal={action.operation === 'delete'}>
           <span class="sync-operation">{operationLabel(action)}</span>
+          <!-- Which of the sections above this row came from. One list covers
+               them all, and "change repository" says nothing on its own. -->
+          <span class="sync-kind">{action.kind}</span>
           <span class="sync-subject">{action.subject}</span>
           {#if action.after}
             <span class="sync-after">{action.after}</span>
@@ -275,7 +364,8 @@
     margin: 0;
   }
 
-  .sync-error {
+  .sync-error,
+  .sync-notice {
     background: var(--surface-inset);
     border-radius: var(--radius-control);
     color: var(--text-strong);
@@ -316,7 +406,8 @@
 
   .sync-description,
   .sync-after,
-  .sync-counts {
+  .sync-counts,
+  .sync-kind {
     color: var(--text-muted);
   }
 
