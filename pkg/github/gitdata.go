@@ -187,17 +187,27 @@ func (c *Client) CreateTree(
 	return tree.GetSHA(), nil
 }
 
-// CreateCommit records a tree on top of one parent.
+// CreateCommit records a tree on top of the parents it is given.
+//
+// More than one where a branch has to be moved to a commit that does not
+// descend from where it is: naming the old tip as a second parent is what makes
+// the move a fast-forward, and a fast-forward is the only move made here.
 func (c *Client) CreateCommit(
 	ctx context.Context,
-	owner, repo, message, tree, parent string,
+	owner, repo, message, tree string,
+	parents ...string,
 ) (string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo)
+
+	carried := make([]*gogithub.Commit, 0, len(parents))
+	for _, parent := range parents {
+		carried = append(carried, &gogithub.Commit{SHA: gogithub.Ptr(parent)})
+	}
 
 	commit, _, err := c.gh.Git.CreateCommit(ctx, owner, repo, gogithub.Commit{
 		Message: gogithub.Ptr(message),
 		Tree:    &gogithub.Tree{SHA: gogithub.Ptr(tree)},
-		Parents: []*gogithub.Commit{{SHA: gogithub.Ptr(parent)}},
+		Parents: carried,
 	}, nil)
 	if err != nil {
 		return "", wrapError(ErrAPIRequest, http.MethodPost, path, err)
@@ -236,13 +246,20 @@ func (c *Client) CreatePullRequest(
 // "nobody has asked yet" and ask forever.
 func (c *Client) FindPullRequestByHead(
 	ctx context.Context,
-	owner, repo, branch string,
+	owner, repo, branch, base string,
 ) (*PullRequest, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s:%s&state=all", owner, repo, owner, branch)
+	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s:%s&base=%s&state=all",
+		owner, repo, owner, branch, base)
 
 	pulls, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gogithub.PullRequestListOptions{
-		State:       "all",
-		Head:        owner + ":" + branch,
+		State: "all",
+		Head:  owner + ":" + branch,
+
+		// Narrowed to where the proposal was made, because a pull request from
+		// the same branch to somewhere else is somebody else's: read as this
+		// one, closing it would be read as the repository refusing a change it
+		// was never shown.
+		Base:        base,
 		Sort:        "created",
 		Direction:   "desc",
 		ListOptions: gogithub.ListOptions{PerPage: 1},

@@ -12,11 +12,41 @@ import (
 	"sync"
 	"time"
 
+	"github.com/smykla-skalski/smyklot/internal/orgsync"
 	"github.com/smykla-skalski/smyklot/internal/pendingci"
 	"github.com/smykla-skalski/smyklot/internal/storage"
 )
 
 const maxRequestBody = 64 << 10
+
+// maxDocumentBody bounds a request carrying templates. See bodyBoundFor, which
+// is the only thing that hands it out.
+//
+// Well above the megabyte FileConfig allows rather than at it, because a
+// megabyte of file content is more than a megabyte of JSON: every newline,
+// quote and backslash in it is escaped on the way.
+const maxDocumentBody = 4 << 20
+
+// bodyBoundFor is how large a request carrying one kind's configuration may be.
+//
+// The larger bound only where something validates against a limit that needs
+// it. Files do: FileConfig allows a megabyte of templates in total, and a cap
+// below that makes the documented limit unreachable through the only writer
+// there is - a dozen medium workflow files pasted into the shared-files form
+// were truncated at 64 KiB and refused as invalid JSON, which sends whoever
+// pasted them looking for a syntax error in a YAML file that has none.
+//
+// No other kind has a total of its own. A label document bounds each name,
+// colour and description and not how many there are, so raising the bound for
+// them raises nothing but the size of a mistake - and a label document is an
+// action per label per repository once it is planned.
+func bodyBoundFor(kind orgsync.Kind) int64 {
+	if kind == orgsync.KindFiles {
+		return maxDocumentBody
+	}
+
+	return maxRequestBody
+}
 
 type catalogSyncer interface {
 	SyncCatalog(context.Context) ([]string, error)
@@ -192,6 +222,14 @@ func (s *Server) Handler() http.Handler {
 	)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/sync/config/{kind}", s.getSyncConfig)
 	mux.HandleFunc("PUT "+base+"/api/v1/targets/{target}/sync/config/{kind}", s.putSyncConfig)
+	mux.HandleFunc(
+		"GET "+base+"/api/v1/targets/{target}/repositories/{repository}/sync/{kind}",
+		s.getSyncOverride,
+	)
+	mux.HandleFunc(
+		"PUT "+base+"/api/v1/targets/{target}/repositories/{repository}/sync/{kind}",
+		s.putSyncOverride,
+	)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/sync/plan", s.getSyncPlan)
 	mux.HandleFunc(
 		"POST "+base+"/api/v1/targets/{target}/sync/plans/{plan}/approval",
@@ -487,9 +525,25 @@ func (s *Server) requireSameOrigin(w http.ResponseWriter, r *http.Request) bool 
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	return decodeJSONWithin(w, r, target, maxRequestBody)
+}
+
+// decodeJSONWithin is the same read against a bound the caller chooses, for the
+// endpoints that carry a document rather than a form.
+func decodeJSONWithin(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		// A body over the bound is not malformed, and saying it is sends
+		// somebody looking for a syntax error that is not there.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+				fmt.Sprintf("the request is larger than %d bytes", limit))
+
+			return false
+		}
+
 		writeError(w, http.StatusBadRequest, "invalid_request", "request body must be valid JSON")
 		return false
 	}

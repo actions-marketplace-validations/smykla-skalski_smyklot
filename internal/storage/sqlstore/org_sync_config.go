@@ -15,6 +15,16 @@ import (
 const syncConfigColumns = `
     target_id, kind, enabled, document, digest, revision, updated_by, updated_at`
 
+// syncOverrideFrom is the same for a repository's answer, and it carries its
+// join: the scope of an installation is the catalog's, so a query that reads
+// one of these without going through repositories is one that could read
+// another installation's row.
+const syncOverrideFrom = `
+SELECT o.repository_id, o.kind, o.enabled_override, o.document,
+       o.revision, o.updated_by, o.updated_at
+FROM sync_repository_overrides o
+JOIN repositories r ON r.id = o.repository_id`
+
 func scanSyncConfig(scanner rowScanner) (orgsync.Config, error) {
 	var (
 		config   orgsync.Config
@@ -184,11 +194,12 @@ func scanSyncOverride(scanner rowScanner) (orgsync.RepositoryOverride, error) {
 	var (
 		override orgsync.RepositoryOverride
 		enabled  sql.NullBool
+		document string
 		updated  StoredTime
 	)
 
 	if err := scanner.Scan(
-		&override.RepositoryID, &override.Kind, &enabled,
+		&override.RepositoryID, &override.Kind, &enabled, &document,
 		&override.Revision, &override.UpdatedBy, &updated,
 	); err != nil {
 		return orgsync.RepositoryOverride{}, fmt.Errorf("scan sync override: %w", err)
@@ -197,9 +208,41 @@ func scanSyncOverride(scanner rowScanner) (orgsync.RepositoryOverride, error) {
 	if enabled.Valid {
 		override.Enabled = &enabled.Bool
 	}
+
+	override.Document = []byte(document)
 	override.UpdatedAt = updated.Time()
 
 	return override, nil
+}
+
+// syncDocumentColumn is what a document column holds where a caller passed
+// nothing, so the value stored and the column's own default agree.
+func syncDocumentColumn(document []byte) string {
+	if len(document) == 0 {
+		return emptyDocument
+	}
+
+	return string(document)
+}
+
+// GetSyncRepositoryOverride reads one repository's answer about one kind.
+//
+// Scoped through the installation as well as the repository, so a caller
+// holding an identifier from one installation cannot read a row belonging to
+// another - the same join the listing goes through, for the same reason.
+func (s *Store) GetSyncRepositoryOverride(
+	ctx context.Context,
+	targetID, repositoryID string,
+	kind orgsync.Kind,
+) (orgsync.RepositoryOverride, error) {
+	override, err := scanSyncOverride(s.db.QueryRowContext(ctx, syncOverrideFrom+`
+WHERE r.target_id = ? AND o.repository_id = ? AND o.kind = ?`,
+		targetID, repositoryID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return orgsync.RepositoryOverride{}, storage.ErrNotFound
+	}
+
+	return override, err
 }
 
 // ListSyncRepositoryOverrides reads every repository answer in an installation.
@@ -211,10 +254,7 @@ func (s *Store) ListSyncRepositoryOverrides(
 	ctx context.Context,
 	targetID string,
 ) ([]orgsync.RepositoryOverride, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT o.repository_id, o.kind, o.enabled_override, o.revision, o.updated_by, o.updated_at
-FROM sync_repository_overrides o
-JOIN repositories r ON r.id = o.repository_id
+	rows, err := s.db.QueryContext(ctx, syncOverrideFrom+`
 WHERE r.target_id = ?
 ORDER BY o.repository_id, o.kind`, targetID)
 	if err != nil {
@@ -271,6 +311,7 @@ func (s *Store) SetSyncRepositoryOverride(
 		RepositoryID: change.RepositoryID,
 		Kind:         change.Kind,
 		Enabled:      change.Enabled,
+		Document:     []byte(syncDocumentColumn(change.Document)),
 		Revision:     revision,
 		UpdatedBy:    change.ActorID,
 		UpdatedAt:    change.Now,
@@ -297,10 +338,10 @@ WHERE repository_id = ? AND kind = ?`+s.dialect.RowLock(),
 
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO sync_repository_overrides (
-    repository_id, kind, enabled_override, revision, updated_by, updated_at
-) VALUES (?, ?, ?, 1, ?, ?)`,
+    repository_id, kind, enabled_override, document, revision, updated_by, updated_at
+) VALUES (?, ?, ?, ?, 1, ?, ?)`,
 			change.RepositoryID, change.Kind, change.Enabled,
-			change.ActorID, change.Now,
+			syncDocumentColumn(change.Document), change.ActorID, change.Now,
 		); err != nil {
 			return 0, fmt.Errorf("insert sync override: %w", err)
 		}
@@ -316,9 +357,10 @@ INSERT INTO sync_repository_overrides (
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE sync_repository_overrides SET
-    enabled_override = ?, revision = revision + 1, updated_by = ?, updated_at = ?
+    enabled_override = ?, document = ?,
+    revision = revision + 1, updated_by = ?, updated_at = ?
 WHERE repository_id = ? AND kind = ?`,
-		change.Enabled, change.ActorID, change.Now,
+		change.Enabled, syncDocumentColumn(change.Document), change.ActorID, change.Now,
 		change.RepositoryID, change.Kind,
 	); err != nil {
 		return 0, fmt.Errorf("update sync override: %w", err)
@@ -327,13 +369,20 @@ WHERE repository_id = ? AND kind = ?`,
 	return current + 1, nil
 }
 
-// ListSyncRepositoryState reads what each repository has already had applied.
+// syncStateColumns is what both state reads select, spelled once so neither can
+// drift from scanSyncRepositoryState. Aliased, because both go through the
+// repositories join that scopes them to an installation.
+const syncStateColumns = `
+    s.repository_id, s.kind, s.applied_digest, s.applied_at, s.problem`
+
+// ListSyncRepositoryState reads what is known about each repository: what it
+// has already had applied, or why nothing could be.
 func (s *Store) ListSyncRepositoryState(
 	ctx context.Context,
 	targetID string,
 ) ([]orgsync.RepositoryState, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT s.repository_id, s.kind, s.applied_digest, s.applied_at
+SELECT`+syncStateColumns+`
 FROM sync_repository_state s
 JOIN repositories r ON r.id = s.repository_id
 WHERE r.target_id = ?
@@ -342,18 +391,48 @@ ORDER BY s.repository_id, s.kind`, targetID)
 		return nil, fmt.Errorf("list sync repository state: %w", err)
 	}
 
-	return collectRows(rows, func(scanner rowScanner) (orgsync.RepositoryState, error) {
-		var (
-			state   orgsync.RepositoryState
-			applied StoredTime
-		)
-		if err := scanner.Scan(
-			&state.RepositoryID, &state.Kind, &state.AppliedDigest, &applied,
-		); err != nil {
-			return orgsync.RepositoryState{}, fmt.Errorf("scan sync repository state: %w", err)
-		}
-		state.AppliedAt = applied.Time()
+	return collectRows(rows, scanSyncRepositoryState)
+}
 
-		return state, nil
-	})
+// GetSyncRepositoryState reads one repository's row for one kind.
+//
+// Carrying its installation, and joining on it, like every other read of these
+// tables: the scope of an installation is the catalog's, so a query that reads
+// one of these rows without going through repositories is one that could read
+// another installation's. The caller here happens to resolve the repository
+// against the target first - and a caller holding a repository id off a plan
+// action, a stream event or the Root console would not.
+func (s *Store) GetSyncRepositoryState(
+	ctx context.Context,
+	targetID, repositoryID string,
+	kind orgsync.Kind,
+) (orgsync.RepositoryState, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT`+syncStateColumns+`
+FROM sync_repository_state s
+JOIN repositories r ON r.id = s.repository_id
+WHERE r.target_id = ? AND s.repository_id = ? AND s.kind = ?`,
+		targetID, repositoryID, kind)
+
+	state, err := scanSyncRepositoryState(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return orgsync.RepositoryState{}, storage.ErrNotFound
+	}
+
+	return state, err
+}
+
+func scanSyncRepositoryState(scanner rowScanner) (orgsync.RepositoryState, error) {
+	var (
+		state   orgsync.RepositoryState
+		applied StoredTime
+	)
+	if err := scanner.Scan(
+		&state.RepositoryID, &state.Kind, &state.AppliedDigest, &applied, &state.Problem,
+	); err != nil {
+		return orgsync.RepositoryState{}, fmt.Errorf("scan sync repository state: %w", err)
+	}
+	state.AppliedAt = applied.Time()
+
+	return state, nil
 }

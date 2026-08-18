@@ -184,6 +184,101 @@ func declareOrgSyncSpecs(runtime func() (context.Context, storage.Store, time.Ti
 			Expect(listed[0].Enabled).To(BeNil())
 		})
 
+		It("keeps what a repository adjusts, byte for byte", func() {
+			ctx, store, now := runtime()
+			account := seed(ctx, store, now)
+
+			// Spaced and ordered the way somebody typed it. The bytes are what
+			// the digest beside them is taken from, so an engine that
+			// re-rendered the document would disagree with the other about
+			// whether a repository has settled.
+			document := []byte(`{"merges":[{"path":"renovate.json",` +
+				`"overrides":{"timezone":"Europe/Warsaw"}}]}`)
+
+			written, err := store.SetSyncRepositoryOverride(
+				ctx, orgsync.RepositoryOverrideChange{
+					RepositoryID: repoA, Kind: orgsync.KindFiles, Document: document,
+					ActorID: account.ID, Now: now,
+				})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(written.Document)).To(Equal(string(document)))
+
+			listed, err := store.ListSyncRepositoryOverrides(ctx, target)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(listed).To(HaveLen(1))
+			Expect(string(listed[0].Document)).To(Equal(string(document)))
+			Expect(listed[0].Enabled).To(BeNil())
+		})
+
+		It("reads a repository that adjusts nothing as adjusting nothing", func() {
+			ctx, store, now := runtime()
+			account := seed(ctx, store, now)
+			yes := true
+
+			written, err := store.SetSyncRepositoryOverride(
+				ctx, orgsync.RepositoryOverrideChange{
+					RepositoryID: repoA, Kind: orgsync.KindFiles, Enabled: &yes,
+					ActorID: account.ID, Now: now,
+				})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(written.Document)).To(Equal("{}"))
+
+			listed, err := store.ListSyncRepositoryOverrides(ctx, target)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(listed[0].Document)).To(Equal("{}"))
+		})
+
+		It("reads one repository's answer without reading the installation's", func() {
+			ctx, store, now := runtime()
+			account := seed(ctx, store, now)
+			no := false
+
+			_, err := store.SetSyncRepositoryOverride(
+				ctx, orgsync.RepositoryOverrideChange{
+					RepositoryID: repoA, Kind: orgsync.KindLabels, Enabled: &no,
+					ActorID: account.ID, Now: now,
+				})
+			Expect(err).NotTo(HaveOccurred())
+
+			read, err := store.GetSyncRepositoryOverride(
+				ctx, target, repoA, orgsync.KindLabels)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(read.RepositoryID).To(Equal(repoA))
+			Expect(read.Kind).To(Equal(orgsync.KindLabels))
+			Expect(read.Enabled).To(HaveValue(BeFalse()))
+
+			// A kind this repository has said nothing about, and a repository
+			// that has said nothing at all. Both are inheriting, which the
+			// caller renders rather than reports.
+			_, err = store.GetSyncRepositoryOverride(
+				ctx, target, repoA, orgsync.KindFiles)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+
+			_, err = store.GetSyncRepositoryOverride(
+				ctx, target, repoB, orgsync.KindLabels)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+		})
+
+		// The row is keyed by repository, and the installation is reached
+		// through the catalog. An identifier from one installation naming a
+		// repository in another has to answer nothing rather than answer.
+		It("will not read an override through the wrong installation", func() {
+			ctx, store, now := runtime()
+			account := seed(ctx, store, now)
+			no := false
+
+			_, err := store.SetSyncRepositoryOverride(
+				ctx, orgsync.RepositoryOverrideChange{
+					RepositoryID: repoA, Kind: orgsync.KindLabels, Enabled: &no,
+					ActorID: account.ID, Now: now,
+				})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.GetSyncRepositoryOverride(
+				ctx, "github:test:target:absent", repoA, orgsync.KindLabels)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+		})
+
 		It("refuses an override for a repository nothing knows about", func() {
 			ctx, store, now := runtime()
 			seed(ctx, store, now)
@@ -640,6 +735,143 @@ func declareOrgSyncSpecs(runtime func() (context.Context, storage.Store, time.Ti
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state).To(HaveLen(1))
 			Expect(state[0].AppliedDigest).To(Equal("digest-2"))
+		})
+	})
+
+	// What is known about one repository for one kind, which is either what it
+	// has had applied or why nothing could be. One row holds both, so the two
+	// cannot be true at once.
+	Describe("repository state", func() {
+		It("keeps why a repository could not be synced", func() {
+			ctx, store, now := runtime()
+			seed(ctx, store, now)
+
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{{
+				RepositoryID: repoA, Kind: orgsync.KindFiles, AppliedAt: now,
+				Problem: "these files cannot be composed: docs is not a directory here",
+			}})).To(Succeed())
+
+			read, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindFiles)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(read.Problem).To(Equal(
+				"these files cannot be composed: docs is not a directory here"))
+			Expect(read.AppliedAt).To(BeTemporally("==", now))
+
+			// And with no digest, which is what keeps a refusal from reading as
+			// a repository that matches: the planner compares the stored digest
+			// against the configured one, and an empty one matches nothing
+			Expect(read.AppliedDigest).To(BeEmpty())
+		})
+
+		// A repository nothing has looked at is not a repository with a
+		// problem, and a page that read the two the same way would report a
+		// refusal on every repository in a fresh installation
+		It("answers not-found where nothing has looked yet", func() {
+			ctx, store, now := runtime()
+			seed(ctx, store, now)
+
+			_, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindFiles)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+		})
+
+		// A repository identifier names something the caller may never have
+		// been authorized against, so the installation is a parameter here
+		// rather than a check somebody remembers to make first. Asked with a
+		// row that exists and an installation that does not own it, because the
+		// suite seeds one installation and every other read in it would pass
+		// with the scoping deleted.
+		It("does not read a repository through another installation", func() {
+			ctx, store, now := runtime()
+			seed(ctx, store, now)
+
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{{
+				RepositoryID: repoA, Kind: orgsync.KindFiles, AppliedAt: now,
+				Problem: "these files cannot be composed",
+			}})).To(Succeed())
+
+			_, err := store.GetSyncRepositoryState(
+				ctx, "github:installation:999", repoA, orgsync.KindFiles)
+			Expect(errors.Is(err, storage.ErrNotFound)).To(BeTrue())
+		})
+
+		// The one that matters most: a repository that was refused and then
+		// settles must not keep the refusal. It is the same row, so writing the
+		// digest is what clears it - nothing has to remember to
+		It("clears a refusal when the repository settles", func() {
+			ctx, store, now := runtime()
+			seed(ctx, store, now)
+
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{{
+				RepositoryID: repoA, Kind: orgsync.KindFiles, AppliedAt: now,
+				Problem: "the adjustments saved for this repository cannot be used",
+			}})).To(Succeed())
+
+			later := now.Add(time.Hour)
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{{
+				RepositoryID: repoA, Kind: orgsync.KindFiles,
+				AppliedDigest: "digest-1", AppliedAt: later,
+			}})).To(Succeed())
+
+			read, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindFiles)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(read.Problem).To(BeEmpty())
+			Expect(read.AppliedDigest).To(Equal("digest-1"))
+		})
+
+		// A repository decides each kind on its own, and so does a refusal.
+		// Reading one kind's row for another is how a repository whose files
+		// cannot be composed would be reported as refusing its labels too
+		It("keeps one kind's refusal out of another's", func() {
+			ctx, store, now := runtime()
+			seed(ctx, store, now)
+
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{
+				{
+					RepositoryID: repoA, Kind: orgsync.KindFiles, AppliedAt: now,
+					Problem: "these files cannot be composed",
+				},
+				{
+					RepositoryID: repoA, Kind: orgsync.KindLabels,
+					AppliedDigest: "digest-1", AppliedAt: now,
+				},
+			})).To(Succeed())
+
+			labels, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindLabels)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(labels.Problem).To(BeEmpty())
+			Expect(labels.AppliedDigest).To(Equal("digest-1"))
+
+			files, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindFiles)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(files.Problem).To(Equal("these files cannot be composed"))
+		})
+
+		// Applying is the other way a repository settles, and it has to clear a
+		// refusal too - otherwise a repository whose pull request landed would
+		// go on saying its files could not be composed
+		It("clears a refusal when a plan finishes against it", func() {
+			ctx, store, now := runtime()
+			account := seed(ctx, store, now)
+
+			Expect(store.RecordSyncRepositoryState(ctx, []orgsync.RepositoryState{{
+				RepositoryID: repoA, Kind: orgsync.KindLabels, AppliedAt: now,
+				Problem: "something stopped it",
+			}})).To(Succeed())
+
+			planFor(ctx, store, "plan-1", account.ID, "digest-1", now, nil)
+			approveAndLease(ctx, store, account.ID, "plan-1", "digest-1", now)
+
+			Expect(store.FinishSyncPlan(ctx, orgsync.PlanOutcome{
+				PlanID: "plan-1", State: orgsync.PlanApplied, Now: now,
+				Applied: []orgsync.RepositoryState{{
+					RepositoryID: repoA, Kind: orgsync.KindLabels,
+					AppliedDigest: "digest-1", AppliedAt: now,
+				}},
+			})).To(Succeed())
+
+			read, err := store.GetSyncRepositoryState(ctx, target, repoA, orgsync.KindLabels)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(read.Problem).To(BeEmpty())
 		})
 	})
 

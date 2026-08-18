@@ -425,7 +425,7 @@ Run `mise run panel:dev:mock` to inspect every panel state with deterministic lo
 
 ### Organization sync
 
-The service can keep every repository in an installation carrying the same labels, set to the same repository settings, and enforcing the same rulesets. All three are configured in the panel, per installation, and each is switched on separately.
+The service can keep every repository in an installation carrying the same labels, set to the same repository settings, enforcing the same rulesets, and holding the same shared files. All four are configured in the panel, per installation, and each is switched on separately.
 
 Nothing is changed without being shown first. A reconcile works out what would differ, stores it as a plan, and waits: the panel lists every change against every repository, and applying is a second act. A plan is invalidated the moment the configuration behind it changes, so nobody can approve a screen that has gone stale.
 
@@ -435,7 +435,19 @@ Settings carry a rule labels do not. Every one of them has three states - on, of
 
 Rulesets are how branch protection is expressed here, because a ruleset takes a ref pattern - `refs/heads/release/*` protects the release branch cut tomorrow, where the branch-protection endpoint takes one concrete branch and protects only what exists today. A ruleset the configuration names is owned whole: GitHub writes one by replacement, so what the configuration does not say stops being enforced, and the plan says what would go before it goes. A ruleset the configuration no longer names can be removed, which is the one thing here that destroys something somebody may have made by hand, so it needs removal switched on and it appears in a plan first. A ruleset the organization defines is read but never written: it is not the repository's to change, and the plan says when a repository-level one would be enforced beside it.
 
-Labels need the **Issues** write access the bot already holds. Settings and rulesets need **Administration** write, and an installation that has not approved it is not an error: that kind stands down, says which permission it wants, and the rest of the sync carries on.
+Files are the one kind that does not write to a repository. The templates are configuration rather than files kept somewhere else, and what a repository should end up with arrives as a pull request it can merge or close. Everything a repository needs goes into one commit behind one pull request, so a change lands whole or not at all. No branch is ever force-pushed and none is ever deleted: the commit is built on whatever the branch already points at, so a reviewer's fixup is a commit this one descends from rather than something that disappears.
+
+Closing that pull request is how a repository refuses, and leaving it open is how it takes its time - neither is asked again. The branch is named after what the files should end up saying, so a proposal already in front of a repository answers for that change, and a configuration that changes is a different branch, which asks once more.
+
+Deletion is a named list of retired paths and nothing else: a path named there is removed wherever a repository still has it, and there is no switch that removes what the configuration does not name. A repository can adjust a template rather than take it whole - merged by key for JSON and YAML, by heading for Markdown - and a merge that cannot be applied is an error rather than a fallback, so a broken adjustment leaves the file alone instead of overwriting it with the plain template.
+
+git will put a file wherever a commit names one and say nothing about what it replaced, so a path a repository holds as a directory, a link or a submodule, or one whose parent is a file, refuses that repository whole rather than being written over - and it says which path and what git records there. Configuring a path and another path inside it is refused where it is typed, since no repository could hold both.
+
+A repository refused that way receives none of the organization's files, and the panel says so on its Sync pane: what stopped it, in the words the planner used, and when it last looked. A refusal is asked again every sweep rather than held for the six hours a settled repository is, so a fix clears the notice on the next pass without anybody retrying anything.
+
+Labels need the **Issues** write access the bot already holds. Settings and rulesets need **Administration** write, files need **Contents** write, and an installation that has not approved one is not an error: that kind stands down, says which permission it wants, and the rest of the sync carries on.
+
+Files under `.github/workflows/` need **Workflows** write on top of Contents. GitHub keeps them behind a permission of their own and enforces it where the branch moves, so a configuration naming one is checked before anything is planned rather than after somebody has approved it - and a retired workflow counts, since removing one is writing the tree that no longer holds it.
 
 A repository that already matches is not read again for six hours. That is what keeps a steady sweep at almost no cost, and the horizon is what lets it still notice a label renamed by hand.
 

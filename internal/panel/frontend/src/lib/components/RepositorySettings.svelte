@@ -1,12 +1,13 @@
 <script lang="ts">
   import { BOOLEAN_FIELDS } from '../config';
-  import type { RepositorySection } from '../routes';
+  import { REPOSITORY_SECTIONS, type RepositorySection } from '../routes';
   import type {
     ConfigKey,
     ConfigPatch,
     RepositoryDetail,
     RepositoryFileStatus,
     RepositorySummary,
+    SyncOverride,
   } from '../types';
   import Chip, { type ChipTone } from './Chip.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
@@ -15,6 +16,7 @@
   import BackLink from './BackLink.svelte';
   import PageHeader from './PageHeader.svelte';
   import Plate from './Plate.svelte';
+  import RepositorySyncPane from './RepositorySyncPane.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
   /**
@@ -51,6 +53,13 @@
     onBypass,
     onSaveConfig,
     onResetMigration,
+    sections = REPOSITORY_SECTIONS,
+    syncOverride = undefined,
+    syncSaving = false,
+    syncReadProblem = null,
+    syncSaveProblem = null,
+    now = 0,
+    onSaveSync = () => {},
   }: {
     repository: RepositorySummary;
     detail: RepositoryDetail | undefined;
@@ -66,6 +75,27 @@
        promise is part of the contract rather than something to fire and drop. */
     onSaveConfig: (patch: ConfigPatch) => Promise<void>;
     onResetMigration: () => void;
+    /**
+     * The panes this surface offers, in the order the switch shows them.
+     *
+     * Handed in rather than worked out here, because which panes there are is
+     * a fact about where this is being drawn. The Root view of somebody else's
+     * installation has no sync pane: sync is configured on the installation's
+     * own page and has no Root address, so a pane offering to edit it there
+     * would be a pane whose every save is a 404.
+     */
+    sections?: readonly RepositorySection[];
+    /** Undefined until the pane is opened and the read comes back. */
+    syncOverride?: SyncOverride | undefined;
+    syncSaving?: boolean;
+    /* Two problems, because they belong to different things: a read that did
+       not answer leaves the pane with nothing to draw, and a save that was
+       refused leaves it drawing what the reader typed. */
+    syncReadProblem?: string | null;
+    syncSaveProblem?: string | null;
+    /** The clock the pane's relative times are read against. */
+    now?: number;
+    onSaveSync?: (enabled: boolean | null, document: Record<string, unknown>) => void;
   } = $props();
 
   const disabled = $derived(readOnly || busy);
@@ -91,15 +121,32 @@
     return keys.filter((key) => Object.hasOwn(one.config_patch, key)).length;
   }
 
-  function badge(count: number): number | undefined {
+  /* How many of this repository's own settings a pane holds, where the number
+     is worth a badge. The file pane counts a broken file rather than settings,
+     and sync has nothing to count - what it holds is one switch and a list. */
+  function sectionBadge(one: RepositoryDetail, pane: RepositorySection): number | undefined {
+    if (pane === 'file') return one.config_file_error === undefined ? undefined : 1;
+    if (pane === 'sync') return undefined;
+
+    const count = sectionCount(one, pane);
+
     return count === 0 ? undefined : count;
   }
 
+  /* What each pane is called. Which panes exist is REPOSITORY_SECTIONS, which
+     keys this record, so a fifth one is a compile error here rather than a
+     switch quietly missing an option. Both the label under the switch and the
+     switch's own options read it. */
+  const SECTION_LABELS: Record<RepositorySection, string> = {
+    file: 'File',
+    behavior: 'Behavior',
+    commands: 'Commands',
+    sync: 'Sync',
+  };
+
   /** Names the pane for a screen reader, which the switch above it does not. */
   function sectionLabel(pane: RepositorySection): string {
-    if (pane === 'file') return 'File';
-
-    return pane === 'behavior' ? 'Behavior' : 'Commands';
+    return SECTION_LABELS[pane];
   }
 </script>
 
@@ -117,23 +164,11 @@
           name="repository-{repository.id}-section"
           label="Settings for {repository.name}"
           compact
-          options={[
-            {
-              value: 'file',
-              label: 'File',
-              badge: detail.config_file_error === undefined ? undefined : 1,
-            },
-            {
-              value: 'behavior',
-              label: 'Behavior',
-              badge: badge(sectionCount(detail, 'behavior')),
-            },
-            {
-              value: 'commands',
-              label: 'Commands',
-              badge: badge(sectionCount(detail, 'commands')),
-            },
-          ]}
+          options={sections.map((pane) => ({
+            value: pane,
+            label: SECTION_LABELS[pane],
+            badge: sectionBadge(detail, pane),
+          }))}
           value={section}
           onSelect={(next) => onSection(next as RepositorySection)}
         />
@@ -241,6 +276,23 @@
             {/if}
           </div>
         </Plate>
+      {:else if section === 'sync'}
+        {#if syncOverride === undefined && syncReadProblem !== null}
+          <!-- A read that failed is not a read still going, and the two read
+               identically in a dim line saying "Reading…". -->
+          <p class="form-error" role="alert">{syncReadProblem}</p>
+        {:else if syncOverride === undefined}
+          <p class="detail-loading dim" role="status">Reading what this repository adjusts…</p>
+        {:else}
+          <RepositorySyncPane
+            stored={syncOverride}
+            {readOnly}
+            {now}
+            saving={syncSaving}
+            saveProblem={syncSaveProblem}
+            onSave={onSaveSync}
+          />
+        {/if}
       {:else}
         {@const count = sectionCount(detail, section)}
         <Plate label={section === 'behavior' ? 'Behavior overrides' : 'Command overrides'}>

@@ -42,6 +42,7 @@ import type {
   RepositorySummary,
   RootElevation,
   SyncConfig,
+  SyncOverride,
   SyncPlan,
   SecurityNotification,
   InvitationStatus,
@@ -170,6 +171,9 @@ export interface MockState {
   prefs: { values: Record<string, unknown>; rev: number };
   /** Label sync, per installation: what is configured and what is in flight. */
   sync: Map<string, SyncConfig>;
+
+  /** What each repository adjusts, keyed by repository and kind together. */
+  syncOverrides: Map<string, SyncOverride>;
   syncPlans: Map<string, SyncPlan>;
 }
 
@@ -487,6 +491,49 @@ export function seed(
     sync: new Map([
       [`${organization.value.id}/labels`, syncLabelsSeed(iso)],
       [`${organization.value.id}/rulesets`, syncRulesetsSeed(iso)],
+      [`${organization.value.id}/files`, syncFilesSeed(iso)],
+    ]),
+    /* One repository that adjusts a template, because the pane that shows one
+       has a card per adjustment and a form nobody can look at except empty is
+       a form that drifts out of the design unseen. */
+    syncOverrides: new Map([
+      [
+        '4001/files',
+        {
+          kind: 'files',
+          enabled: null,
+          document: {
+            merges: [
+              {
+                path: 'renovate.json',
+                strategy: 'deep-merge',
+                overrides: { timezone: 'Europe/Warsaw', schedule: ['* 4 * * 6'] },
+              },
+            ],
+          },
+          revision: 1,
+          updated_by: 'bart',
+          updated_at: iso(-2 * 60 * 60_000),
+          unreadable: false,
+        },
+      ],
+      /* And one the planner refuses, because a repository receiving none of the
+         organization's files reads here exactly like one receiving all of them
+         unless the notice that says so is on a screen somebody looks at. */
+      [
+        '4002/files',
+        {
+          kind: 'files',
+          enabled: null,
+          document: {},
+          revision: 0,
+          unreadable: false,
+          problem:
+            'these files cannot be composed: docs/guide.md cannot be written ' +
+            'because docs is not a directory in this repository',
+          problem_at: iso(-4 * 60_000),
+        },
+      ],
     ]),
     syncPlans: new Map([[organization.value.id, syncPlanSeed(iso)]]),
     // Replaced by install() with the running server's own page.
@@ -563,6 +610,43 @@ export function syncRulesetsSeed(iso: (offsetMs: number) => string): SyncConfig 
       ],
       allow_removal: false,
       excludes: ['hand-made-*'],
+    },
+    unreadable: false,
+    unavailable: '',
+  };
+}
+
+/**
+ * The files an organization keeps in step, seeded for the reason the two above
+ * are: a form nobody can look at except empty drifts out of the design unseen,
+ * and this one draws a card per file whose height is the template's.
+ */
+export function syncFilesSeed(iso: (offsetMs: number) => string): SyncConfig {
+  return {
+    kind: 'files',
+    enabled: true,
+    labels: [],
+    allow_removal: false,
+    excludes: [],
+    revision: 4,
+    updated_by: 'bart',
+    updated_at: iso(-9 * 60 * 60_000),
+    digest: 'sha256:files',
+    document: {
+      files: [
+        {
+          path: 'CONTRIBUTING.md',
+          content:
+            '# Contributing\n\nOpen a pull request against `{{DEFAULT_BRANCH}}`.\n' +
+            'Every change needs a review from a code owner.\n',
+        },
+        {
+          path: 'renovate.json',
+          content: '{\n  "extends": ["config:recommended"],\n  "timezone": "UTC"\n}\n',
+        },
+      ],
+      retired: ['.github/workflows/sync-trigger.yml'],
+      excludes: ['LICENSE'],
     },
     unreadable: false,
     unavailable: '',

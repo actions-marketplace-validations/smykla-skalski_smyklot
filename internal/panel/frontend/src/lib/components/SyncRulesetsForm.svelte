@@ -12,6 +12,7 @@
    * point of there being one.
    */
   import { canonicalStringify } from '#lib/preferences-sync.js';
+  import { asList, lines, patchedAt, rowKeys, storedList, withoutAt } from '#lib/form-lists.js';
   import type {
     SyncRuleset,
     SyncRulesetBypassActor,
@@ -106,9 +107,9 @@
   /* Derived from what is saved and written over as somebody edits, so a save
      landing from anywhere reseeds it rather than leaving the screen describing
      a document that is gone. */
-  let drafts = $derived<SyncRuleset[]>(storedRulesets(stored));
+  let drafts = $derived<SyncRuleset[]>(storedList<SyncRuleset>(stored, 'rulesets'));
   let removal = $derived(stored.allow_removal === true);
-  let excludes = $derived<string[]>(storedExcludes(stored));
+  let excludes = $derived<string[]>(storedList<string>(stored, 'excludes'));
   let wanted = $derived(enabled);
 
   const disabled = $derived(saving || readOnly || unreadable);
@@ -125,7 +126,11 @@
      against the wrong one offers a save the moment the page loads. */
   const untouched = $derived(
     canonicalStringify(
-      asDocument(storedRulesets(stored), stored.allow_removal === true, storedExcludes(stored)),
+      asDocument(
+        storedList<SyncRuleset>(stored, 'rulesets'),
+        stored.allow_removal === true,
+        storedList<string>(stored, 'excludes'),
+      ),
     ),
   );
 
@@ -138,33 +143,6 @@
     excluded: string[],
   ): Record<string, unknown> {
     return { ...stored, rulesets, allow_removal: allowRemoval, excludes: excluded };
-  }
-
-  function storedRulesets(from: Record<string, unknown>): SyncRuleset[] {
-    return Array.isArray(from.rulesets) ? (from.rulesets as SyncRuleset[]) : [];
-  }
-
-  function storedExcludes(from: Record<string, unknown>): string[] {
-    return Array.isArray(from.excludes) ? (from.excludes as string[]) : [];
-  }
-
-  /**
-   * A list with one entry changed, and a list without one, both as new lists.
-   *
-   * Every edit on this page is one of the two, at three depths: the rulesets,
-   * a ruleset's bypass actors, a code-scanning rule's tools. Written out each
-   * time they were six copies of the same index arithmetic.
-   *
-   * New lists rather than edits in place, because the draft is compared against
-   * what was saved to decide whether Save is offered, and a list mutated where
-   * it stands compares equal to itself.
-   */
-  function patchedAt<T>(items: T[], at: number, change: Partial<T>): T[] {
-    return items.map((item, index) => (index === at ? { ...item, ...change } : item));
-  }
-
-  function withoutAt<T>(items: T[], at: number): T[] {
-    return items.filter((_, index) => index !== at);
   }
 
   function patch(index: number, change: Partial<SyncRuleset>): void {
@@ -193,18 +171,6 @@
 
   function remove(index: number): void {
     drafts = withoutAt(drafts, index);
-  }
-
-  /** One ref or context per line, which is how somebody writes a list. */
-  function lines(values: readonly string[] | undefined): string {
-    return (values ?? []).join('\n');
-  }
-
-  function asList(text: string): string[] {
-    return text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '');
   }
 
   /**
@@ -335,10 +301,7 @@
     });
   }
 
-  /** A stable handle for a row nobody has named yet, so typing does not remount it. */
-  function rowKey(index: number): string {
-    return `ruleset-${index}`;
-  }
+  const rowKey = rowKeys('ruleset');
 </script>
 
 <!--

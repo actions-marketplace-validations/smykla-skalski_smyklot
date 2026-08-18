@@ -22,7 +22,7 @@
   import type { FilterSection } from '../filter-menu';
   import type { VirtualRenderRow } from '../virtual-rows.js';
   import { formatRelative, formatTimestamp } from '../format';
-  import type { RepositorySection } from '../routes';
+  import { availableRepositorySections, type RepositorySection } from '../routes';
   import { getPanelSession } from '../session.svelte';
   import { pressableRow, rowOpensOn } from '../table-row';
   import {
@@ -48,6 +48,8 @@
     RepositorySort,
     RepositoryStateFilter,
     RepositorySummary,
+    SyncOverride,
+    SyncOverrideInput,
   } from '../types';
   import Skeleton from './Skeleton.svelte';
   import SortIndicator from './SortIndicator.svelte';
@@ -172,6 +174,8 @@
     onUpdate,
     onResetConfigMigration,
     onChanged,
+    onLoadSyncOverride = null,
+    onSaveSyncOverride = null,
     readOnly = false,
     prefs = EPHEMERAL_PREFS,
   }: {
@@ -182,6 +186,20 @@
     onUpdate: (repositoryId: string, input: RepositorySettingsInput) => Promise<RepositoryDetail>;
     onResetConfigMigration: (targetId: string, repositoryId: string) => Promise<RepositoryDetail>;
     onChanged: (targetId: string, detail: RepositoryDetail) => void;
+    /**
+     * What this repository says about the files the organization keeps in step.
+     * Read when the sync pane is opened rather than with the rest of the
+     * detail: most visits are about the configuration file, and a second
+     * request per repository for a pane nobody opened is a request per row.
+     *
+     * Null where there is nowhere to ask, which is the Root view of somebody
+     * else's installation: sync is configured on the installation's own page
+     * and has no Root address, so a pane offering to edit it there would be a
+     * pane whose every save is a 404.
+     */
+    onLoadSyncOverride?: ((repositoryId: string) => Promise<SyncOverride>) | null;
+    onSaveSyncOverride?:
+      ((repositoryId: string, input: SyncOverrideInput) => Promise<SyncOverride>) | null;
     readOnly?: boolean;
     prefs?: PrefsAccessor;
   } = $props();
@@ -236,6 +254,12 @@
   const limit = 20;
   let details = $state<Record<string, RepositoryDetail>>({});
   let failures = $state<Record<string, RepositoryFailure>>({});
+
+  /* Whether a save is in flight and what went wrong, which are this page's own
+     and belong to the moment. What a repository says about the files is server
+     state and is read as one - see syncOverrideQuery. */
+  let savingOverride = $state<Record<string, boolean>>({});
+  let overrideProblem = $state<Record<string, string | null>>({});
   let pendingEnablement = $state<Record<string, RepositoryEnablement>>({});
   const working = new SvelteSet<string>();
   const queryClient = useQueryClient();
@@ -297,7 +321,20 @@
      installation and every read is scoped to one, so two organizations owning a
      repository of the same name never meet. */
   const activeRepositoryKey = $derived(session.currentRepository?.name ?? null);
-  const activeSection = $derived<RepositorySection>(session.currentRepository?.section ?? 'file');
+
+  /* Which panes this surface has, worked out once here and handed to the page:
+     whether there is anywhere to ask about sync is this component's fact, and
+     the page reading `onLoadSyncOverride !== null` for itself would be the same
+     question asked in two places. */
+  const availableSections = $derived(availableRepositorySections(onLoadSyncOverride !== null));
+
+  /* An address naming a pane this view cannot offer lands on the first one
+     rather than on an empty box. Root manages somebody else's installation and
+     sync has no Root address, so this is a link followed rather than a switch
+     pressed. */
+  const activeSection = $derived<RepositorySection>(
+    offeredSection(session.currentRepository?.section ?? 'file'),
+  );
   const repositoryDetailQuery = createQuery(() => ({
     queryKey: ['repository', targetId, activeRepositoryKey],
     enabled: activeRepositoryKey !== null,
@@ -323,6 +360,32 @@
       null
     );
   });
+  /**
+   * What a repository says about the files.
+   *
+   * A query rather than a field this component fills in once, so the stream
+   * saying something changed invalidates it with everything else. Kept in a
+   * record it was read the first time the pane opened and never again - and the
+   * revision it held is what the next save sends as the one it expects, so a
+   * colleague saving first left this page unable to save at all until the whole
+   * thing was reloaded.
+   *
+   * Only when the pane is opened. Most visits to this page are about the
+   * repository's own configuration file, and reading this with the rest of the
+   * detail would be a second request per repository for a pane nobody looked at.
+   */
+  const syncOverrideKey = (repositoryId: string) => ['sync-override', targetId, repositoryId];
+  const syncOverrideQuery = createQuery(() => ({
+    queryKey: syncOverrideKey(activeRepositoryId ?? ''),
+    enabled: onLoadSyncOverride !== null && activeRepositoryId !== null && activeSection === 'sync',
+    queryFn: () => {
+      if (onLoadSyncOverride === null || activeRepositoryId === null) {
+        throw new Error('open a repository first');
+      }
+
+      return onLoadSyncOverride(activeRepositoryId);
+    },
+  }));
   const activeRepository = $derived(
     activeRepositoryId === null
       ? null
@@ -332,6 +395,9 @@
             : null) ??
           details[activeRepositoryId]?.repository ??
           null),
+  );
+  const syncReadProblem = $derived(
+    syncOverrideQuery.error === null ? null : errorMessage(syncOverrideQuery.error),
   );
   const settingSelection = $derived(
     settingFilter.mode === 'keys' ? settingFilter.keys : [settingFilter.mode],
@@ -565,6 +631,10 @@
     });
   });
 
+  function offeredSection(section: RepositorySection): RepositorySection {
+    return availableSections.includes(section) ? section : 'file';
+  }
+
   function toggleNameSort(): void {
     toggleColumnSort('repository');
   }
@@ -605,6 +675,37 @@
     });
     rememberDetail(detail, repository);
     return detail;
+  }
+
+  /**
+   * Saves what a repository says about the files.
+   *
+   * The revision it sends is the one the read produced, so what the save
+   * answers with is put where the read looks rather than left to a refetch.
+   */
+  async function saveSyncOverride(
+    repositoryId: string,
+    enabled: boolean | null,
+    document: Record<string, unknown>,
+  ): Promise<void> {
+    const current = syncOverrideQuery.data;
+    if (onSaveSyncOverride === null || current === undefined) return;
+
+    savingOverride = { ...savingOverride, [repositoryId]: true };
+    overrideProblem = { ...overrideProblem, [repositoryId]: null };
+    try {
+      const saved = await onSaveSyncOverride(repositoryId, {
+        enabled,
+        document,
+        expected_revision: current.revision,
+      });
+
+      queryClient.setQueryData(syncOverrideKey(repositoryId), saved);
+    } catch (cause) {
+      overrideProblem = { ...overrideProblem, [repositoryId]: errorMessage(cause) };
+    } finally {
+      savingOverride = { ...savingOverride, [repositoryId]: false };
+    }
   }
 
   function rememberDetail(detail: RepositoryDetail, requested: string): void {
@@ -806,6 +907,13 @@
     onBypass={(bypass) => setBypass(repository.id, bypass)}
     onSaveConfig={(patch) => setConfig(repository.id, patch)}
     onResetMigration={() => resetConfigMigration(repository.id)}
+    sections={availableSections}
+    syncOverride={syncOverrideQuery.data}
+    syncSaving={savingOverride[repository.id] === true}
+    {syncReadProblem}
+    syncSaveProblem={overrideProblem[repository.id] ?? null}
+    {now}
+    onSaveSync={(enabled, document) => void saveSyncOverride(repository.id, enabled, document)}
   />
 {:else}
   <section class="plate repository-panel" aria-labelledby="repositories-heading">

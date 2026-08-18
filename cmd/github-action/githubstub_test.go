@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/githubtest"
+	"github.com/smykla-skalski/smyklot/internal/orgsync"
 	"github.com/smykla-skalski/smyklot/pkg/webhook"
 )
 
@@ -26,15 +27,40 @@ type githubStub struct {
 
 	// branchPRs answers a pull request listing filtered by head branch, which
 	// is how the configuration migration asks what became of its proposal.
-	branchPRs string
+	// refuseEmptyPR is GitHub declining to open one that would carry nothing.
+	branchPRs     string
+	refuseEmptyPR bool
 
-	// migrationRefs are immutable, content-addressed proposal branches.
-	migrationRefs map[string]string
+	// branchRefs are the branches Smyklot has pushed: content-addressed
+	// proposals, whether of a configuration migration or of a file sync. A
+	// branch absent from here is one the repository does not have, which is
+	// what tells "create it" from "build on it".
+	branchRefs map[string]string
 
-	// migrationTipTree is the tree recorded by a migration branch's tip.
+	// migrationTipTree is the tree recorded by a proposal branch's tip.
 	migrationTipTree string
 	createdTreeSHA   string
 	migrationPRState string
+
+	// repoTree is what a repository's whole tree listing answers, which is how
+	// file sync learns what it already has. repoLevels answers one level at a
+	// time, keyed by the tree asked for, which is the walk file sync falls back
+	// to when the whole listing comes back truncated.
+	//
+	// repoTrees answers the whole listing for one named ref, for a spec that
+	// needs a proposal branch to hold something the default branch does not -
+	// which is the state a commit is built on and the plan never saw.
+	repoTree   string
+	repoTrees  map[string]string
+	repoLevels map[string]string
+
+	// treeNotFound is a tree GitHub has none of: a repository with no commits,
+	// a branch that was renamed, or one this installation can no longer read.
+	// GitHub names a default branch whatever the case - the name is
+	// configuration and is there long before the branch is - so this read is
+	// the only one that tells them from a repository holding none of the
+	// managed files.
+	treeNotFound bool
 
 	// Branch updates keep both the wire body and whether one asked GitHub to
 	// discard non-fast-forward work.
@@ -73,6 +99,7 @@ type githubStub struct {
 	// createdPRs and createdTrees are what the migration sent, because a pull
 	// request nobody asked for is judged entirely on what it contains.
 	createdPRs     []string
+	editedPRs      []string
 	createdTrees   []string
 	createdBlobs   []string
 	createdCommits []string
@@ -131,9 +158,12 @@ type githubStub struct {
 func newGitHubStub() *githubStub {
 	return &githubStub{
 		codeowners:       "* @someone\n",
-		migrationRefs:    map[string]string{},
+		branchRefs:       map[string]string{},
 		migrationTipTree: "treesha",
 		createdTreeSHA:   "treesha",
+		repoTree:         `{"sha":"basetree","tree":[],"truncated":false}`,
+		repoTrees:        map[string]string{},
+		repoLevels:       map[string]string{},
 		repoLabels:       `[]`,
 		repoSettings:     `{}`,
 		repoRulesets:     `[]`,
@@ -313,22 +343,7 @@ func (s *githubStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": 1}`))
 
 	case strings.Contains(r.URL.Path, "/pulls/"):
-		if s.migrationPRState != "" {
-			_, _ = io.WriteString(w, s.migrationPRState)
-
-			return
-		}
-		_, _ = fmt.Fprintf(w, `{
-			"number": 42,
-			"state": "open",
-			"mergeable": true,
-			"mergeable_state": "clean",
-			"title": "a change",
-			"user": {"login": %q},
-			"base": {"ref": "main"},
-			"head": {"sha": %q},
-			"labels": %s
-		}`, s.prAuthor, s.prHead, s.prLabels)
+		s.servePullRequest(w, r)
 
 	default:
 		// A path this stub does not know about is a gap in the stub, and it
@@ -477,11 +492,48 @@ func (s *githubStub) currentRepoConfig() string {
 }
 
 // writeFile answers the contents API, treating empty content as a missing file
+// servePullRequest answers one pull request, and records an edit of it.
+func (s *githubStub) servePullRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPatch {
+		s.record(&s.editedPRs, r)
+	}
+
+	if s.migrationPRState != "" {
+		_, _ = io.WriteString(w, s.migrationPRState)
+
+		return
+	}
+
+	_, _ = fmt.Fprintf(w, `{
+		"number": 42,
+		"state": "open",
+		"mergeable": true,
+		"mergeable_state": "clean",
+		"title": "a change",
+		"user": {"login": %q},
+		"base": {"ref": "main"},
+		"head": {"sha": %q},
+		"labels": %s
+	}`, s.prAuthor, s.prHead, s.prLabels)
+}
+
 // servePulls answers both things the pull request endpoint is asked: opening
 // one, and reporting what became of the one opened from a named branch.
 func (s *githubStub) servePulls(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		s.record(&s.createdPRs, r)
+
+		// GitHub's own refusal to open one that would carry nothing, in its own
+		// words: a spec that made this up would be asserting against a message
+		// nobody sends.
+		if s.refuseEmptyPR {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Validation Failed","errors":[`+
+				`{"message":"No commits between main and the head branch"}]}`)
+
+			return
+		}
+
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"number":77,"state":"open"}`)
 
@@ -525,10 +577,12 @@ func (s *githubStub) serveRepoConfig(w http.ResponseWriter, r *http.Request) {
 // the thing under test, not what git would have made of it.
 func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 	switch {
-	case strings.Contains(r.URL.Path, "/git/ref/heads/"+migrationBranch):
+	// A branch Smyklot proposes on exists only once it has been pushed, which
+	// is what tells "create it" from "build on what is there".
+	case proposalRefPath(r.URL.Path):
 		branch := r.URL.Path[strings.Index(r.URL.Path, "/git/ref/heads/")+len("/git/ref/heads/"):]
 		s.mu.Lock()
-		sha := s.migrationRefs[branch]
+		sha := s.branchRefs[branch]
 		s.mu.Unlock()
 
 		if sha == "" {
@@ -542,6 +596,44 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 
 	case strings.Contains(r.URL.Path, "/git/ref/"):
 		_, _ = io.WriteString(w, `{"object":{"sha":"basecommit"}}`)
+
+	// Reading a repository's tree, which is how file sync learns what it
+	// already has. Whole where the read asks for it, and one level otherwise -
+	// the two are the same address and differ only by the query, which is what
+	// lets a spec make the whole listing truncated and still be walked.
+	case strings.Contains(r.URL.Path, "/git/trees/"):
+		s.mu.Lock()
+		tree, trees, levels := s.repoTree, s.repoTrees, s.repoLevels
+		empty := s.treeNotFound
+		s.mu.Unlock()
+
+		if empty {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Git Repository is empty."}`)
+
+			return
+		}
+
+		at := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+
+		if r.URL.Query().Get("recursive") == "1" {
+			named, known := trees[at]
+			if !known {
+				named = tree
+			}
+
+			_, _ = io.WriteString(w, named)
+
+			return
+		}
+
+		if level, known := levels[at]; known {
+			_, _ = io.WriteString(w, level)
+
+			return
+		}
+
+		_, _ = io.WriteString(w, `{"tree":[]}`)
 
 	// A commit and the tree it records are different objects, and the tree is
 	// what a new one is built from
@@ -575,6 +667,16 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 		s.record(&s.createdCommits, r)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"sha":"commitsha"}`)
+
+	// Removing a branch and moving one are the same address, and only the
+	// method tells them apart. Nothing may send the first: GitHub's delete has
+	// no compare-and-swap, so a branch read and then removed is a branch
+	// somebody could have pushed to in between. The stub refuses it loudly
+	// rather than answering it, so a call that appeared would be a failing
+	// spec rather than a silent destruction.
+	case strings.Contains(r.URL.Path, "/git/refs/heads/") && r.Method == http.MethodDelete:
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, `{"message": "nothing may delete %s"}`, r.URL.Path)
 
 	case strings.Contains(r.URL.Path, "/git/refs/heads/"):
 		body, _ := io.ReadAll(r.Body)
@@ -613,7 +715,7 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(body, &created)
 		s.mu.Lock()
-		s.migrationRefs[strings.TrimPrefix(created.Ref, "refs/heads/")] = created.SHA
+		s.branchRefs[strings.TrimPrefix(created.Ref, "refs/heads/")] = created.SHA
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"object":{"sha":"commitsha"}}`)
@@ -622,6 +724,26 @@ func (s *githubStub) serveGitData(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = fmt.Fprintf(w, `{"message": "unstubbed git path %s"}`, r.URL.Path)
 	}
+}
+
+// proposalRefPath reports a read of a branch Smyklot proposes on, whether of a
+// configuration migration or of a file sync.
+//
+// Told apart from every other reference because the answer has to be able to be
+// "there is no such branch": every other branch in these specs exists, and a
+// proposal branch exists only once something pushed it.
+func proposalRefPath(path string) bool {
+	const heads = "/git/ref/heads/"
+
+	index := strings.Index(path, heads)
+	if index < 0 {
+		return false
+	}
+
+	branch := path[index+len(heads):]
+
+	return strings.HasPrefix(branch, migrationBranch) ||
+		strings.HasPrefix(branch, orgsync.FileBranchPrefix)
 }
 
 // repositoryRootPath reports /repos/{owner}/{repo} and nothing under it.

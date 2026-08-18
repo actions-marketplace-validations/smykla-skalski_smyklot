@@ -792,11 +792,14 @@ var _ = Describe("Org sync [Unit]", func() {
 			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
 			Expect(err).To(MatchError(storage.ErrNotFound))
 
-			// And nothing recorded, so the next sweep reads it again rather
-			// than believing it matches
+			// And what is recorded is why, with no digest, so the next sweep
+			// reads it again rather than believing it matches
 			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(state).To(BeEmpty())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].AppliedDigest).To(BeEmpty())
+			Expect(state[0].Problem).To(ContainSubstring(
+				"more than one ruleset here carries a configured name"))
 
 			reads := stub.countCalls(http.MethodGet, "/repos/smykla-skalski/smyklot/rulesets")
 			plan(target)
@@ -844,7 +847,9 @@ var _ = Describe("Org sync [Unit]", func() {
 
 			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(state).To(BeEmpty())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].AppliedDigest).To(BeEmpty())
+			Expect(state[0].Problem).NotTo(BeEmpty())
 		})
 
 		// The tool this replaces had no delete path at all, so a ruleset dropped
@@ -939,6 +944,1110 @@ var _ = Describe("Org sync [Unit]", func() {
 			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(state).To(BeEmpty())
+		})
+	})
+
+	Describe("files", func() {
+		const contributing = `{"files":[` +
+			`{"path":"CONTRIBUTING.md","content":"# Contributing\n"}]}`
+
+		// Files need contents, which is a permission of its own.
+		grantContents := func() storage.Target {
+			GinkgoHelper()
+
+			return granting(`{"issues":"write","contents":"write"}`)
+		}
+
+		// adjusting is what one repository changes about its files, which is
+		// the layer the merge engine exists for.
+		adjusting := func(target storage.Target, document string) {
+			GinkgoHelper()
+
+			repositories, err := service.store.ListRepositories(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = service.store.SetSyncRepositoryOverride(
+				GinkgoT().Context(), orgsync.RepositoryOverrideChange{
+					RepositoryID: repositories[0].ID, Kind: orgsync.KindFiles,
+					Document: []byte(document),
+					ActorID:  target.Account.ID, Now: time.Now().UTC(),
+				})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		applied := func(target storage.Target) {
+			GinkgoHelper()
+
+			plan(target)
+			computed, _ := livePlan(target)
+			approve(computed)
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+		}
+
+		It("proposes a file the repository does not have", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			_, actions := livePlan(target)
+
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Kind).To(Equal(orgsync.KindFiles))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationCreate))
+			Expect(actions[0].Subject).To(Equal("CONTRIBUTING.md"))
+		})
+
+		// One request per repository. git names an object by hashing its
+		// contents, so a listing of the tree answers whether every managed file
+		// already says what it should - the tool this replaces downloaded each
+		// of them from each repository on every run.
+		It("leaves a repository whose files already match alone", func() {
+			target := grantContents()
+			stub.repoTree = fmt.Sprintf(
+				`{"sha":"basetree","tree":[{"path":"CONTRIBUTING.md","type":"blob",`+
+					`"mode":"100644","sha":%q,"size":16}],"truncated":false}`,
+				orgsync.BlobID([]byte("# Contributing\n")))
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
+		// The tree the commit is built from still has the retired path, so the
+		// removal goes into it.
+		holdingRenovaterc := `{"tree":[{"path":".renovaterc","type":"blob",` +
+			`"mode":"100644","sha":"old","size":2}]}`
+
+		It("puts every path into one commit behind one pull request", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":".renovaterc",` +
+				`"type":"blob","mode":"100644","sha":"old","size":2}],"truncated":false}`
+			stub.repoLevels = map[string]string{"basetree": holdingRenovaterc}
+			configureKind(target, orgsync.KindFiles, `{"files":[`+
+				`{"path":"CONTRIBUTING.md","content":"# Contributing\n"},`+
+				`{"path":"SECURITY.md","content":"# Security\n"}],`+
+				`"retired":[".renovaterc"]}`)
+
+			plan(target)
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(3))
+
+			applied(target)
+
+			Expect(stub.createdCommits).To(HaveLen(1))
+			Expect(stub.createdTrees).To(HaveLen(1))
+
+			// All three in the one tree, and the removal spelled the way git
+			// spells one: an entry with no object
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"CONTRIBUTING.md"`))
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"SECURITY.md"`))
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`".renovaterc"`))
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"sha":null`))
+
+			Expect(stub.createdPRs).To(HaveLen(1))
+			Expect(stub.createdPRs[0]).To(ContainSubstring("CONTRIBUTING.md"))
+			Expect(stub.createdPRs[0]).To(ContainSubstring(".renovaterc"))
+		})
+
+		// The plan is computed against the default branch and the commit is
+		// built on the proposal branch, which already carries what an earlier
+		// tick put there. A tree entry removing a path that is not in the tree
+		// it is built from is a 422 - and the proposal comes round again on the
+		// reconcile horizon for as long as it sits unmerged, so this failed
+		// every six hours rather than once.
+		It("does not remove again what the branch has already removed", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":".renovaterc",` +
+				`"type":"blob","mode":"100644","sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"CONTRIBUTING.md","content":"# Contributing\n"}],`+
+					`"retired":[".renovaterc"]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			// The branch is there with an earlier tick's commit, whose tree has
+			// already taken the file out
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": `{"tree":[],"truncated":false}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(HaveLen(1))
+			Expect(stub.createdTrees[0]).NotTo(ContainSubstring(".renovaterc"))
+			Expect(stub.createdTrees[0]).To(ContainSubstring("CONTRIBUTING.md"))
+
+			// The pull request still says the file goes, because the proposal
+			// is what the branch does to the default branch rather than what
+			// this one commit adds to it
+			Expect(stub.createdPRs[0]).To(ContainSubstring(".renovaterc"))
+		})
+
+		// The same again with nothing else in the change, so every entry is
+		// dropped and there is no tree left to build. GitHub documents the
+		// entry list as required, so asking it to build a tree from none of
+		// them either fails or hands back the tree it was given - and a
+		// repository's proposal should not turn on which. The answer is known
+		// without the request.
+		It("asks for no tree where the branch already carries the whole change", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":".renovaterc",` +
+				`"type":"blob","mode":"100644","sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[],"retired":[".renovaterc"]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": `{"tree":[],"truncated":false}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(BeEmpty())
+			Expect(stub.createdCommits).To(BeEmpty())
+
+			// And the proposal is still kept current, because it is what the
+			// branch does to the default branch rather than what one commit
+			// added to it.
+			Expect(stub.createdPRs).NotTo(BeEmpty())
+		})
+
+		// Nothing is ever force-pushed. The tool this replaces rebuilt the
+		// branch from the default branch on every run and force-updated the
+		// reference, so a reviewer's fixup was gone on the next sync with no
+		// error and no trace.
+		It("never asks GitHub to discard what is on the branch", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			applied(target)
+
+			Expect(stub.forcedPushes).To(BeZero())
+		})
+
+		It("builds on the branch rather than rebuilding it", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			// The branch is already there, carrying somebody's commit
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "humancommit"
+			stub.migrationTipTree = "human-tree"
+			stub.createdTreeSHA = "newtree"
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			// Built from the branch's own tree, so what is on it survives
+			Expect(stub.createdTrees).To(HaveLen(1))
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"base_tree":"human-tree"`))
+			Expect(stub.createdCommits[0]).To(ContainSubstring(`"humancommit"`))
+			Expect(stub.forcedPushes).To(BeZero())
+		})
+
+		// A proposal in front of a repository is a question already asked, and
+		// settles it whichever way it went. Planning it again would produce the
+		// same plan, needing the same approval, adopting or re-asking the same
+		// pull request, once every horizon for as long as it sat there - and a
+		// refusal that is not durable is a repository asked forever. The branch
+		// is named after what the files should end up saying, so this answers
+		// for this change and a configuration that moves asks again.
+		DescribeTable("plans nothing more while a proposal is outstanding",
+			func(pulls string) {
+				target := grantContents()
+				configureKind(target, orgsync.KindFiles, contributing)
+				stub.branchPRs = pulls
+
+				plan(target)
+
+				_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+				Expect(err).To(MatchError(storage.ErrNotFound))
+
+				// And it is written down as settled, so the next reconcile does
+				// not read the repository again
+				state, err := service.store.ListSyncRepositoryState(
+					GinkgoT().Context(), target.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(HaveLen(1))
+				Expect(state[0].Kind).To(Equal(orgsync.KindFiles))
+			},
+
+			Entry("one still open", `[{"number":9,"state":"open"}]`),
+			Entry("one the repository closed",
+				`[{"number":9,"state":"closed","merged_at":null}]`),
+		)
+
+		// A repository with delete_branch_on_merge took the branch away the
+		// moment the pull request landed, so there is nothing to build on.
+		It("starts from the default branch where a merged one was tidied away", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+			stub.branchPRs = `[{"number":9,"state":"closed","merged":true,` +
+				`"merged_at":"2026-08-17T00:00:00Z","head":{"sha":"mergedcommit"}}]`
+
+			applied(target)
+
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"base_tree":"basetree"`))
+			Expect(stub.createdPRs).To(HaveLen(1))
+		})
+
+		// GitHub leaves a merged branch in place by default, and the branch is
+		// named after the outcome, so the same one comes round again the moment
+		// somebody changes the file back. Its tip is already in the default
+		// branch, so building on it once more would produce a commit carrying
+		// nothing and a pull request GitHub refuses to open - and reading that
+		// refusal as "the files are right" recorded the repository as matching
+		// while the file was gone, for ever, because nothing would ask again.
+		It("proposes again where a merged branch was left and the file changed back", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			// The branch is still there, pointing at what merged, and the
+			// default branch no longer holds the file - which is why the
+			// planner produced a create action at all
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "mergedcommit"
+			stub.branchPRs = `[{"number":9,"state":"closed","merged":true,` +
+				`"merged_at":"2026-08-17T00:00:00Z"}]`
+
+			// The merged tip already holds exactly what is being proposed, so a
+			// commit built on it would produce the tree it started from and
+			// carry nothing at all
+			stub.migrationTipTree = "branchtree"
+			stub.createdTreeSHA = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": fmt.Sprintf(
+					`{"tree":[{"path":"CONTRIBUTING.md","type":"blob","mode":"100644",`+
+						`"sha":%q,"size":16}],"truncated":false}`,
+					orgsync.BlobID([]byte("# Contributing\n"))),
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			// Built past the merged tip, on the default branch, so the commit
+			// carries something and the proposal opens. Built on the tip, the
+			// tree would be the one it started from and nothing would be
+			// committed at all - which is the shape that reported success with
+			// the file still missing.
+			Expect(stub.createdTrees).To(HaveLen(1))
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"base_tree":"basetree"`))
+			Expect(stub.createdCommits).To(HaveLen(1))
+			Expect(stub.createdPRs).To(HaveLen(1))
+			Expect(stub.forcedPushes).To(BeZero())
+
+			applied, _, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanApplied))
+		})
+
+		// The other side of it: a plan replayed after somebody merged, where
+		// the default branch does hold the file. Built on the default branch,
+		// the tree is the one it started from, so there is nothing to commit
+		// and nothing to open - answered here rather than by asking GitHub to
+		// open a pull request and reading its refusal.
+		It("proposes nothing where the default branch already says it", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "mergedcommit"
+			stub.branchPRs = `[{"number":9,"state":"closed","merged":true,` +
+				`"merged_at":"2026-08-17T00:00:00Z"}]`
+
+			// The default branch now holds exactly what was proposed
+			stub.repoTrees = map[string]string{
+				"basetree": fmt.Sprintf(
+					`{"tree":[{"path":"CONTRIBUTING.md","type":"blob","mode":"100644",`+
+						`"sha":%q,"size":16}],"truncated":false}`,
+					orgsync.BlobID([]byte("# Contributing\n"))),
+			}
+			stub.createdTreeSHA = "basetree"
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdCommits).To(BeEmpty())
+			Expect(stub.createdPRs).To(BeEmpty())
+
+			applied, _, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanApplied))
+		})
+
+		// Nothing here removes a branch. GitHub's delete has no
+		// compare-and-swap - unlike the move, which it refuses when it is not a
+		// fast-forward - so a commit landing between reading a branch and
+		// removing it would be gone with no error and no trace.
+		It("builds past a merged branch rather than taking it away", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "theircommit"
+			stub.migrationTipTree = "their-tree"
+			stub.branchPRs = `[{"number":9,"state":"closed","merged":true,` +
+				`"merged_at":"2026-08-17T00:00:00Z","head":{"sha":"mergedcommit"}}]`
+
+			// The stub answers a delete with a 500, so an apply that tried one
+			// would fail here rather than pass quietly
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			// On the default branch, not on the merged tip: what merged is in
+			// the default branch, so a commit built on the tip again would
+			// carry nothing.
+			Expect(stub.createdTrees[0]).To(ContainSubstring(`"base_tree":"basetree"`))
+			Expect(stub.createdCommits[0]).To(ContainSubstring(`"basecommit"`))
+			Expect(stub.forcedPushes).To(BeZero())
+			Expect(stub.branchRefs).To(HaveKey(written.Proposal))
+
+			// And on the old tip as well, which is what makes moving the branch
+			// there a fast-forward. GitHub squashes and rebases as well as
+			// merging, and after either of those the tip is not in the default
+			// branch at all - so without this the move is refused and the
+			// repository is stuck re-planning and re-failing for ever.
+			Expect(stub.createdCommits[0]).To(ContainSubstring(`"theircommit"`))
+		})
+
+		// The plan refused a retired path that was a directory on the default
+		// branch. The tree the commit is built on is the proposal branch, a
+		// different tree that can hold a different thing there - and a tree
+		// entry removing a directory removes everything under it.
+		It("refuses to remove a path the branch has turned into a directory", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":".renovaterc",` +
+				`"type":"blob","mode":"100644","sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"CONTRIBUTING.md","content":"# Contributing\n"}],`+
+					`"retired":[".renovaterc"]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": `{"tree":[{"path":".renovaterc","type":"tree",` +
+					`"mode":"040000","sha":"d1"}],"truncated":false}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(BeEmpty())
+
+			applied, planActions, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanFailed))
+			Expect(planActions[0].Error).To(ContainSubstring("not an ordinary file"))
+		})
+
+		// The same question asked of a write. Anybody with push rights can put
+		// a directory on the bot's own branch, and a blob written where one is
+		// takes everything under it with no record that it was ever there.
+		It("refuses to write a path the branch has turned into a directory", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"docs.md","content":"# Docs\n"}]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": `{"tree":[{"path":"docs.md","type":"tree",` +
+					`"mode":"040000","sha":"d1"}],"truncated":false}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(BeEmpty())
+
+			applied, planActions, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanFailed))
+			Expect(planActions[0].Error).To(ContainSubstring("not an ordinary file"))
+		})
+
+		// A removal whose parent the branch has turned into a file. Nothing is
+		// there to remove - git puts a blob or a directory at a name, never
+		// both - so the removal is left out and the rest of the change is
+		// committed. Refusing instead would stop a repository over a path it
+		// does not have, which is the answer a write in the same place gets
+		// because a write would take the file in the way with it.
+		It("leaves out a removal from under a path the branch made a file", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":"docs",` +
+				`"type":"tree","mode":"040000","sha":"d1"},{"path":"docs/old.md",` +
+				`"type":"blob","mode":"100644","sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"CONTRIBUTING.md","content":"# Contributing\n"}],`+
+					`"retired":["docs/old.md"]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+
+			// And read the long way round, so the apply path answers the same
+			// whether GitHub listed the branch's tree or declined to
+			stub.repoTrees = map[string]string{"branchtree": `{"tree":[],"truncated":true}`}
+			stub.repoLevels = map[string]string{
+				"branchtree": `{"tree":[{"path":"docs","type":"blob",` +
+					`"mode":"100644","sha":"b1","size":3}]}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(HaveLen(1))
+			Expect(stub.createdTrees[0]).NotTo(ContainSubstring("docs/old.md"))
+			Expect(stub.createdTrees[0]).To(ContainSubstring("CONTRIBUTING.md"))
+
+			applied, _, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanApplied))
+		})
+
+		// The organization retires one path for every repository, and one of
+		// them happens to keep a file where that path's directory would be. It
+		// never had the retired file and no commit could remove it, so it is
+		// synchronized like any other - where refusing put the whole repository
+		// out of sync for ever over a path it does not have.
+		It("syncs a repository holding a file where a retired path would sit", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[{"path":"docs",` +
+				`"type":"blob","mode":"100644","sha":"b1","size":4}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"CONTRIBUTING.md","content":"# Contributing\n"}],`+
+					`"retired":["docs/old.md"]}`)
+
+			plan(target)
+			_, actions := livePlan(target)
+
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Subject).To(Equal("CONTRIBUTING.md"))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationCreate))
+		})
+
+		// And of the directory above it. A tree entry at a/b.md where a is a
+		// blob replaces the blob with a directory, which is the same silent
+		// destruction from the other side.
+		It("refuses to write under a path the branch has turned into a file", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"docs/index.md","content":"# Docs\n"}]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			stub.branchRefs[written.Proposal] = "earliercommit"
+			stub.migrationTipTree = "branchtree"
+			stub.repoTrees = map[string]string{
+				"branchtree": `{"tree":[{"path":"docs","type":"blob",` +
+					`"mode":"100644","sha":"b1","size":3}],"truncated":false}`,
+			}
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdTrees).To(BeEmpty())
+
+			applied, planActions, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanFailed))
+			Expect(planActions[0].Error).To(ContainSubstring("is not a directory"))
+		})
+
+		// An attempt that died between recording one action and recording the
+		// next leaves the first saying something about a change the retry then
+		// makes whole. The retry replays everything, so its answer is every
+		// action's answer.
+		It("clears what an earlier attempt recorded once the retry lands", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, `{"files":[`+
+				`{"path":"CONTRIBUTING.md","content":"# Contributing\n"},`+
+				`{"path":"SECURITY.md","content":"# Security\n"}]}`)
+
+			plan(target)
+			computed, actions := livePlan(target)
+			approve(computed)
+
+			// One of them recorded failed, the other left where it was
+			Expect(service.store.RecordSyncActionOutcome(
+				GinkgoT().Context(), orgsync.ActionOutcome{
+					ActionID: actions[0].ID, State: orgsync.ActionFailed,
+					Error: "the process died here",
+				})).To(Succeed())
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			applied, planActions, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanApplied))
+
+			for _, action := range planActions {
+				Expect(action.State).To(Equal(orgsync.ActionApplied))
+				Expect(action.Error).To(BeEmpty())
+			}
+		})
+
+		// One opened between the plan and the apply, which is the window the
+		// planner cannot close. The proposal is adopted rather than doubled.
+		It("keeps an open pull request rather than opening a second", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+			computed, _ := livePlan(target)
+			approve(computed)
+
+			stub.branchPRs = `[{"number":9,"state":"open"}]`
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			Expect(stub.createdPRs).To(BeEmpty())
+			Expect(stub.editedPRs).To(HaveLen(1))
+			Expect(stub.editedPRs[0]).To(ContainSubstring("CONTRIBUTING.md"))
+		})
+
+		It("writes what a repository adjusts rather than the plain template", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"renovate.json",`+
+					`"content":"{\"extends\":[\"config:recommended\"]}"}]}`)
+			adjusting(target, `{"merges":[{"path":"renovate.json",`+
+				`"overrides":{"timezone":"Europe/Warsaw"}}]}`)
+
+			plan(target)
+			_, actions := livePlan(target)
+
+			written, err := orgsync.DecodeFile(actions[0].Payload)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(written.Content)).To(ContainSubstring("Europe/Warsaw"))
+			Expect(string(written.Content)).To(ContainSubstring("config:recommended"))
+		})
+
+		// Fail-closed. The tool this replaces reported a failed merge as a
+		// warning and wrote the raw template over the repository's file, so a
+		// broken adjustment destroyed the customization it described.
+		It("proposes nothing where a repository's adjustment cannot be used", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"renovate.json","content":"{}"}]}`)
+			adjusting(target, `{"merges":[{"path":"package.json"}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			// And what is recorded is why, with no digest: asked again once
+			// somebody fixes it rather than left looking finished for six
+			// hours, and readable meanwhile by whoever has to fix it
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].AppliedDigest).To(BeEmpty())
+			Expect(state[0].Problem).To(ContainSubstring(
+				"the adjustments saved for this repository cannot be used"))
+			Expect(state[0].Problem).To(ContainSubstring("package.json"))
+		})
+
+		It("stands down without the permission it needs", func() {
+			target := granting(`{"issues":"write"}`)
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
+		// A repository with no commits has nowhere to propose against, and
+		// GitHub names a default branch for one anyway - the name is
+		// configuration and is there long before the branch is. Read as a
+		// repository that simply has none of the managed files, the planner
+		// emitted a create for each, a person approved them, and the apply
+		// refused for want of a branch to build on - which spends the
+		// installation's one live plan slot and marks every plan riding with it
+		// failed, on every reconcile, for ever.
+		It("leaves a repository with no commits alone, and says why", func() {
+			target := grantContents()
+			stub.treeNotFound = true
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].AppliedDigest).To(BeEmpty())
+			Expect(state[0].Problem).To(ContainSubstring("no commits"))
+		})
+
+		// GitHub refuses to open a pull request for a branch carrying nothing
+		// the base does not, and reaching that means the planner found the
+		// default branch wanting - so it says the branch is stale, never that
+		// the files are right. Read as success, it recorded a repository as
+		// matching while what it should hold was missing, and the branch is
+		// named after the outcome, so nothing would ever ask again.
+		It("fails rather than reading an empty pull request as done", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, contributing)
+			plan(target)
+			computed, _ := livePlan(target)
+			approve(computed)
+
+			stub.refuseEmptyPR = true
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(Succeed())
+
+			applied, actions, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(applied.State).To(Equal(orgsync.PlanFailed))
+			Expect(actions[0].State).To(Equal(orgsync.ActionFailed))
+			Expect(actions[0].Error).To(ContainSubstring("No commits between"))
+
+			// And nothing recorded, so the repository is asked again rather
+			// than left looking finished behind a proposal that was refused
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(BeEmpty())
+		})
+
+		// GitHub keeps workflow files behind a permission of their own and
+		// enforces it where the ref moves, so a plan that did not check would be
+		// read and approved by a person and refused by GitHub at its last step -
+		// and because the apply failed, nothing is recorded, so the same plan is
+		// computed, approved and refused again on every reconcile after it.
+		It("stands down where a workflow is configured and not permitted", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, `{"files":[
+				{"path":".github/workflows/ci.yaml","content":"name: CI\n"}]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
+		// Removing one is writing the tree that no longer holds it, which GitHub
+		// refuses for the same reason it refuses adding one.
+		//
+		// The repository holds the path, so there is a removal to plan: without
+		// it the plan would be empty whatever the permission said, and this
+		// would pass with the check taken out.
+		It("stands down where a retired path is a workflow", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[
+				{"path":".github","type":"tree","mode":"040000","sha":"d1"},
+				{"path":".github/workflows","type":"tree","mode":"040000","sha":"d2"},
+				{"path":".github/workflows/old.yaml","type":"blob","mode":"100644",
+				 "sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[],"retired":[".github/workflows/old.yaml"]}`)
+
+			plan(target)
+
+			_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).To(MatchError(storage.ErrNotFound))
+		})
+
+		It("plans the removal of a retired workflow once permitted", func() {
+			target := granting(`{"issues":"write","contents":"write","workflows":"write"}`)
+			stub.repoTree = `{"sha":"basetree","tree":[
+				{"path":".github","type":"tree","mode":"040000","sha":"d1"},
+				{"path":".github/workflows","type":"tree","mode":"040000","sha":"d2"},
+				{"path":".github/workflows/old.yaml","type":"blob","mode":"100644",
+				 "sha":"old","size":2}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[],"retired":[".github/workflows/old.yaml"]}`)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Operation).To(Equal(orgsync.OperationDelete))
+		})
+
+		// An excluded path is skipped everywhere the planner looks, so asking
+		// for a permission on its account stands the whole kind down for the
+		// whole installation over a file nothing was going to touch.
+		It("asks for nothing extra for a workflow it excludes", func() {
+			target := grantContents()
+			configureKind(target, orgsync.KindFiles, `{"files":[
+				{"path":".github/workflows/ci.yaml","content":"name: CI\n"},
+				{"path":"CONTRIBUTING.md","content":"# Contributing\n"}],
+				"excludes":[".github/workflows/*"]}`)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Subject).To(Equal("CONTRIBUTING.md"))
+		})
+
+		// A 404 on the tree read is not only a repository with no commits: a
+		// branch renamed since the catalog looked, and one this installation can
+		// no longer read, answer the same way. Naming one of them as the cause
+		// puts a claim in front of somebody that the read cannot support.
+		It("does not name a cause the read cannot tell apart", func() {
+			target := grantContents()
+			stub.treeNotFound = true
+			configureKind(target, orgsync.KindFiles, contributing)
+
+			plan(target)
+
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].Problem).To(ContainSubstring("no commits"))
+			Expect(state[0].Problem).To(ContainSubstring("renamed"))
+			Expect(state[0].Problem).To(ContainSubstring("no longer read"))
+		})
+
+		It("proposes a workflow once the installation permits it", func() {
+			target := granting(`{"issues":"write","contents":"write","workflows":"write"}`)
+			configureKind(target, orgsync.KindFiles, `{"files":[
+				{"path":".github/workflows/ci.yaml","content":"name: CI\n"}]}`)
+
+			plan(target)
+
+			_, actions := livePlan(target)
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Subject).To(Equal(".github/workflows/ci.yaml"))
+		})
+
+		// The apply is where GitHub enforces it, so the apply is where being
+		// wrong costs a commit built and a ref refused. A permission can be
+		// withdrawn between the plan being approved and being applied, which is
+		// what revoking one is for.
+		It("refuses to apply a workflow whose permission was revoked", func() {
+			target := granting(`{"issues":"write","contents":"write","workflows":"write"}`)
+			configureKind(target, orgsync.KindFiles, `{"files":[
+				{"path":".github/workflows/ci.yaml","content":"name: CI\n"}]}`)
+			plan(target)
+			computed, _ := livePlan(target)
+			approve(computed)
+
+			stub.installations = `[{"id":411,"account":` +
+				`{"id":7,"login":"smykla-skalski","type":"Organization"},` +
+				`"permissions":{"issues":"write","contents":"write"}}]`
+			_, err := service.SyncCatalog(GinkgoT().Context())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(service.applySyncPlans(GinkgoT().Context())).To(HaveOccurred())
+
+			// Nothing built and nothing pushed: the commit is what GitHub
+			// refuses, and a branch left behind would be a proposal for a change
+			// no pull request could carry.
+			Expect(stub.createdCommits).To(BeEmpty())
+			held, _, err := service.store.GetSyncPlan(
+				GinkgoT().Context(), target.ID, computed.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(held.State).To(Equal(orgsync.PlanApplying))
+		})
+
+		// git puts a blob wherever a tree entry names one, and says nothing
+		// about what it replaced. A configured path that is a directory in one
+		// repository, or that sits under a file there, is a change that would
+		// destroy something - so that repository is refused whole rather than
+		// having the one path quietly skipped.
+		DescribeTable("refuses a repository whose contents the change would destroy",
+			func(tree string) {
+				target := grantContents()
+				stub.repoTree = tree
+				configureKind(target, orgsync.KindFiles,
+					`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+				plan(target)
+
+				_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+				Expect(err).To(MatchError(storage.ErrNotFound))
+
+				// And what is recorded is why, with no digest, so it is answered
+				// again the moment somebody resolves it rather than left
+				// looking finished
+				state, err := service.store.ListSyncRepositoryState(
+					GinkgoT().Context(), target.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(HaveLen(1))
+				Expect(state[0].AppliedDigest).To(BeEmpty())
+				Expect(state[0].Problem).To(ContainSubstring("these files cannot be composed"))
+				Expect(state[0].Problem).To(ContainSubstring("docs/guide.md"))
+			},
+			Entry("the path is a directory there", `{"sha":"basetree","tree":[
+				{"path":"docs","type":"tree","mode":"040000","sha":"d1"},
+				{"path":"docs/guide.md","type":"tree","mode":"040000","sha":"d2"}
+			],"truncated":false}`),
+			Entry("the path is a symbolic link there", `{"sha":"basetree","tree":[
+				{"path":"docs","type":"tree","mode":"040000","sha":"d1"},
+				{"path":"docs/guide.md","type":"blob","mode":"120000","sha":"b1","size":9}
+			],"truncated":false}`),
+			Entry("a directory on the way to it is a file there", `{"sha":"basetree","tree":[
+				{"path":"docs","type":"blob","mode":"100644","sha":"b1","size":4}
+			],"truncated":false}`),
+		)
+
+		// A refusal is rewritten every sweep until the repository can be synced,
+		// which is what makes it worth reading - and nothing rewrites it once
+		// the repository leaves the planner's scope. Left there it states, for
+		// ever, a reason nobody can act on, and usually the very reason
+		// somebody switched the kind off.
+		DescribeTable("takes a refusal off what it has stopped looking at",
+			func(leave func(target storage.Target)) {
+				target := grantContents()
+				stub.repoTree = `{"sha":"basetree","tree":[
+					{"path":"docs","type":"blob","mode":"100644","sha":"b1","size":4}
+				],"truncated":false}`
+				configureKind(target, orgsync.KindFiles,
+					`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+				plan(target)
+
+				state, err := service.store.ListSyncRepositoryState(
+					GinkgoT().Context(), target.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(HaveLen(1))
+				Expect(state[0].Problem).NotTo(BeEmpty())
+
+				leave(target)
+				plan(target)
+
+				state, err = service.store.ListSyncRepositoryState(
+					GinkgoT().Context(), target.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(state).To(HaveLen(1))
+				Expect(state[0].Problem).To(BeEmpty())
+			},
+			Entry("the repository switches the kind off", func(target storage.Target) {
+				override(target, orgsync.KindFiles, false)
+			}),
+			Entry("the installation switches the kind off", func(target storage.Target) {
+				GinkgoHelper()
+
+				stored, err := service.store.GetSyncConfig(
+					GinkgoT().Context(), target.ID, orgsync.KindFiles)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = service.store.SetSyncConfig(
+					GinkgoT().Context(), orgsync.ConfigChange{
+						TargetID: target.ID, Kind: orgsync.KindFiles, Enabled: false,
+						Document: stored.Document, ActorID: target.Account.ID,
+						Now: time.Now().UTC(), Revision: stored.Revision,
+					})
+				Expect(err).NotTo(HaveOccurred())
+			}),
+
+			// The row survives because a repository is soft-deleted rather than
+			// removed, so the foreign key holds and the listing still carries
+			// it - which is what makes this reachable at all.
+			Entry("the repository leaves the installation", func(_ storage.Target) {
+				GinkgoHelper()
+
+				stub.repos = `{"total_count":0,"repositories":[]}`
+				_, err := service.SyncCatalog(GinkgoT().Context())
+				Expect(err).NotTo(HaveOccurred())
+			}),
+		)
+
+		// A kind waiting on a permission is one somebody is still expecting to
+		// run, and its refusals are as true as they were. Cleared, the pane
+		// built to say why nothing is happening answers "nothing is wrong" -
+		// while the reason sits on a page the reader is not looking at.
+		It("keeps a refusal while the kind waits on a permission", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[
+				{"path":"docs","type":"blob","mode":"100644","sha":"b1","size":4}
+			],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+			plan(target)
+
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].Problem).NotTo(BeEmpty())
+
+			// The organization adds a workflow, which needs a permission this
+			// installation has not granted, so the whole kind stands down.
+			stored, err := service.store.GetSyncConfig(
+				GinkgoT().Context(), target.ID, orgsync.KindFiles)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = service.store.SetSyncConfig(GinkgoT().Context(), orgsync.ConfigChange{
+				TargetID: target.ID, Kind: orgsync.KindFiles, Enabled: true,
+				Document: []byte(`{"files":[
+					{"path":"docs/guide.md","content":"# Guide\n"},
+					{"path":".github/workflows/ci.yaml","content":"name: CI\n"}]}`),
+				ActorID: target.Account.ID, Now: time.Now().UTC(),
+				Revision: stored.Revision,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			plan(target)
+
+			state, err = service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].Problem).NotTo(BeEmpty())
+		})
+
+		// The other end of the same record. A repository that plans work is a
+		// repository nothing is stopping any more, and a refusal left standing
+		// would have the panel saying the files are not being synced here while
+		// a plan to sync them waited for approval.
+		It("takes a refusal off once the repository can be planned", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[
+				{"path":"docs","type":"blob","mode":"100644","sha":"b1","size":4}
+			],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+			plan(target)
+
+			state, err := service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].Problem).NotTo(BeEmpty())
+
+			// Somebody makes docs a directory, so the change composes
+			stub.repoTree = `{"sha":"basetree","tree":[
+				{"path":"docs","type":"tree","mode":"040000","sha":"d1"}
+			],"truncated":false}`
+
+			plan(target)
+
+			_, actions, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(actions).NotTo(BeEmpty())
+
+			// The refusal is gone, and no digest has taken its place: nothing
+			// has been applied yet, and the executor is what records that
+			state, err = service.store.ListSyncRepositoryState(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state).To(HaveLen(1))
+			Expect(state[0].Problem).To(BeEmpty())
+			Expect(state[0].AppliedDigest).To(BeEmpty())
+		})
+
+		// GitHub declines to list a tree past a hundred thousand entries, and a
+		// path missing from a listing that stopped early is not a path a
+		// repository does not have. Reading it a level at a time settles it,
+		// and the levels answer what git holds rather than whether a file can
+		// be downloaded - which is the only read that can see a directory.
+		Describe("a repository too large to list", func() {
+			BeforeEach(func() {
+				stub.repoTree = `{"sha":"basetree","tree":[],"truncated":true}`
+			})
+
+			It("reads the paths it cares about a level at a time", func() {
+				target := grantContents()
+				stub.repoLevels = map[string]string{
+					"main": `{"tree":[{"path":"docs","type":"tree",` +
+						`"mode":"040000","sha":"d1"}]}`,
+					"d1": fmt.Sprintf(
+						`{"tree":[{"path":"guide.md","type":"blob","mode":"100644",`+
+							`"sha":%q,"size":8}]}`, orgsync.BlobID([]byte("# Guide\n"))),
+				}
+				configureKind(target, orgsync.KindFiles,
+					`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+				plan(target)
+
+				// It already matches, so there is nothing to propose - which is
+				// the answer only an exact read can give
+				_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+				Expect(err).To(MatchError(storage.ErrNotFound))
+			})
+
+			It("still sees a directory it would have written over", func() {
+				target := grantContents()
+				stub.repoLevels = map[string]string{
+					"main": `{"tree":[{"path":"docs","type":"blob",` +
+						`"mode":"100644","sha":"b1","size":4}]}`,
+				}
+				configureKind(target, orgsync.KindFiles,
+					`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+				plan(target)
+
+				_, _, err := service.store.GetLiveSyncPlan(GinkgoT().Context(), target.ID)
+				Expect(err).To(MatchError(storage.ErrNotFound))
+			})
+		})
+
+		It("writes a path whose directory is a directory", func() {
+			target := grantContents()
+			stub.repoTree = `{"sha":"basetree","tree":[` +
+				`{"path":"docs","type":"tree","mode":"040000","sha":"d1"}],"truncated":false}`
+			configureKind(target, orgsync.KindFiles,
+				`{"files":[{"path":"docs/guide.md","content":"# Guide\n"}]}`)
+
+			plan(target)
+			_, actions := livePlan(target)
+
+			Expect(actions).To(HaveLen(1))
+			Expect(actions[0].Subject).To(Equal("docs/guide.md"))
 		})
 	})
 

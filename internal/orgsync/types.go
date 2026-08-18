@@ -15,6 +15,7 @@ package orgsync
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -50,6 +51,14 @@ func (k Kind) Valid() bool {
 
 	return false
 }
+
+// Proposes reports a kind whose work reaches a repository as a pull request
+// rather than as a change to it.
+//
+// Files are the only one, and the difference is what an outcome means: applying
+// a file action opens or updates a proposal, so nothing has been written to the
+// repository and nothing has been removed from it until somebody merges.
+func (k Kind) Proposes() bool { return k == KindFiles }
 
 // RequiredPermission is what an installation must have granted for a kind to
 // run, in GitHub's own spelling.
@@ -102,14 +111,59 @@ type Grantor interface {
 	Grants(permission string) bool
 }
 
-// Unpermitted reports a kind the grantor has not granted the permission for.
-func Unpermitted(grantor Grantor, kind Kind) (Unavailable, bool) {
-	permission := kind.RequiredPermission()
-	if permission == "" || grantor.Grants(permission) {
-		return Unavailable{}, false
+// unpermitted reports the first permission a grantor has not granted for a
+// kind's work: the kind's own, and then whatever else the work needs.
+//
+// The kind's own first, because it is the one to grant first - being told to
+// approve Workflows while Contents is still missing is advice that does not
+// help.
+func unpermitted(grantor Grantor, kind Kind, extra ...string) (Unavailable, bool) {
+	for _, permission := range slices.Concat([]string{kind.RequiredPermission()}, extra) {
+		if permission == "" || grantor.Grants(permission) {
+			continue
+		}
+
+		return Unavailable{Kind: kind, Permission: permission}, true
 	}
 
-	return Unavailable{Kind: kind, Permission: permission}, true
+	return Unavailable{}, false
+}
+
+// UnpermittedPath reports a permission an installation has not granted for work
+// on one path, which can need more than its kind does. See Kind.PathPermission.
+func UnpermittedPath(grantor Grantor, kind Kind, path string) (Unavailable, bool) {
+	return unpermitted(grantor, kind, kind.PathPermission(path))
+}
+
+// UnpermittedConfig reports a permission an installation has not granted for a
+// whole configuration: the kind's own, and whatever the paths it names need on
+// top of it.
+//
+// Asked before anything is planned, because the alternative is a plan somebody
+// approves and GitHub then refuses - which is the rule repositoryPlanner states
+// for itself: a plan holding work GitHub is going to refuse asks somebody to
+// approve a promise it cannot keep.
+func UnpermittedConfig(grantor Grantor, config Config) (Unavailable, bool) {
+	return unpermitted(grantor, config.Kind, configPermissions(config)...)
+}
+
+// configPermissions is what a configuration's own contents need.
+//
+// A document this version cannot read contributes nothing, and nothing slips
+// through on that: a kind whose document does not decode plans no work at all,
+// which the planner reports one step later and in better words than a
+// permission check could find.
+func configPermissions(config Config) []string {
+	if config.Kind != KindFiles {
+		return nil
+	}
+
+	named, err := decodeFilePaths(config.Document)
+	if err != nil {
+		return nil
+	}
+
+	return named.Permissions()
 }
 
 // Operation is what an action does to its subject.

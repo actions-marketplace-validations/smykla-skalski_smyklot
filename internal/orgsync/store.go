@@ -2,6 +2,7 @@ package orgsync
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -49,31 +50,79 @@ type RepositoryOverride struct {
 	RepositoryID string
 	Kind         Kind
 	Enabled      *bool
-	Revision     int64
-	UpdatedBy    string
-	UpdatedAt    time.Time
+
+	// Document is what this repository adjusts about the kind, as the kind
+	// spells it. Empty where it adjusts nothing.
+	//
+	// Against the repository's own row rather than keyed by name inside the
+	// installation's document, so a rename cannot orphan an adjustment: a file
+	// sync that quietly stopped applying one would write the plain template
+	// over exactly the customization it described.
+	Document []byte
+
+	Revision  int64
+	UpdatedBy string
+	UpdatedAt time.Time
+}
+
+// AdjustsNothing reports a repository that changes nothing about the kind.
+//
+// Two spellings arrive here and they mean the same thing: no document at all,
+// and the empty object the column defaults to. Telling them apart would make a
+// repository that has only ever answered about enablement carry a different
+// fingerprint from one that has never answered at all, and re-plan it for a
+// difference nobody made.
+func (o RepositoryOverride) AdjustsNothing() bool {
+	document := strings.TrimSpace(string(o.Document))
+
+	return document == "" || document == "{}"
+}
+
+// Disabled reports a repository that has said no to this kind.
+//
+// A pointer receiver and nil-safe, because the three places asking are asking
+// about a row that may not exist: a repository that has never answered inherits
+// the installation's switch. Enabled is three-state, and reading a three-state
+// pointer as a two-state answer is the kind of test that gets copied wrong once
+// - the planner decides whether to look at a repository with it, the sweep
+// decides whether a recorded refusal is still current, and the panel decides
+// whether to show one. Disagreeing means a refusal the panel states for ever.
+func (o *RepositoryOverride) Disabled() bool {
+	return o != nil && o.Enabled != nil && !*o.Enabled
 }
 
 // RepositoryOverrideChange writes one, or clears it back to inheriting by
-// passing a nil Enabled.
+// passing a nil Enabled and an empty Document.
 type RepositoryOverrideChange struct {
 	RepositoryID string
 	Kind         Kind
 	Enabled      *bool
+	Document     []byte
 	ActorID      string
 	Now          time.Time
 	Revision     int64
 }
 
-// RepositoryState is what a repository has already had applied for one kind,
-// and the reason a steady-state reconcile costs nothing: where the stored
-// digest matches the configured one, the planner does not need to ask GitHub
-// what the repository looks like.
+// RepositoryState is what is known about one repository for one kind: what it
+// has already had applied, or why nothing could be.
+//
+// The applied half is the reason a steady-state reconcile costs nothing. Where
+// the stored digest matches the configured one, the planner does not need to
+// ask GitHub what the repository looks like.
 type RepositoryState struct {
 	RepositoryID  string
 	Kind          Kind
 	AppliedDigest string
 	AppliedAt     time.Time
+
+	// Problem is why this kind is not being synced here, in words somebody
+	// reading the panel can act on, or empty where nothing is wrong.
+	//
+	// Never set beside a digest. A repository is settled or it is refused, and
+	// a refusal is written with no digest so that it can never be read as a
+	// repository that matches: the planner compares the stored digest against
+	// the configured one, and an empty digest matches nothing.
+	Problem string
 }
 
 // PlanCreate records a computed plan and its actions together.
@@ -191,6 +240,18 @@ type Store interface {
 	// or the plan stays approvable and applies work nobody reviewed.
 	SetSyncConfig(context.Context, ConfigChange) (Config, error)
 
+	// GetSyncRepositoryOverride reads what one repository says about one kind,
+	// answering ErrNotFound where it has said nothing.
+	//
+	// Beside the listing rather than instead of it: a planner wants every
+	// answer in an installation and reads them once, and a page about one
+	// repository wants one row. Reading the whole installation to pick a row
+	// out of it costs the same on the first repository and two hundred times as
+	// much across the pane being opened on each of them.
+	GetSyncRepositoryOverride(
+		context.Context, string, string, Kind,
+	) (RepositoryOverride, error)
+
 	ListSyncRepositoryOverrides(context.Context, string) ([]RepositoryOverride, error)
 	SetSyncRepositoryOverride(
 		context.Context, RepositoryOverrideChange,
@@ -198,14 +259,32 @@ type Store interface {
 
 	ListSyncRepositoryState(context.Context, string) ([]RepositoryState, error)
 
-	// RecordSyncRepositoryState writes what repositories have, for the ones a
-	// planner found already matching.
+	// GetSyncRepositoryState reads one repository's row for one kind, answering
+	// ErrNotFound where nothing has looked at it yet.
+	//
+	// Beside the listing for the same reason the override read is: a planner
+	// wants a whole installation at once, and a page about one repository wants
+	// one row. The installation is a parameter for the same reason it is on
+	// every other read here - a repository identifier names something the
+	// caller may never have been authorized against.
+	GetSyncRepositoryState(
+		context.Context, string, string, Kind,
+	) (RepositoryState, error)
+
+	// RecordSyncRepositoryState writes what a planner learned about the
+	// repositories that produced no plan: the ones already matching, and the
+	// ones nothing could be done for.
 	//
 	// A repository that matches produces no actions, so it appears in no plan
 	// and would never be recorded by an apply - and the planner would then ask
 	// GitHub about it again on every tick, for ever, which is exactly the cost
 	// the recorded digest exists to avoid. Reading its labels and computing no
 	// work is proof that it matches, so that is when it is written down.
+	//
+	// A refused one produces no actions either, and for the same reason has
+	// nowhere else to be said. It is written with its reason and no digest, so
+	// it is still asked about every sweep - the record is there to be read, not
+	// to save the work.
 	RecordSyncRepositoryState(context.Context, []RepositoryState) error
 
 	CreateSyncPlan(context.Context, PlanCreate) (Plan, error)

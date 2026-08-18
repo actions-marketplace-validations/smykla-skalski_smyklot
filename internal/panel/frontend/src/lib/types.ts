@@ -716,6 +716,58 @@ export interface SyncRulesetCodeScanningTool {
   security_alerts_threshold: string;
 }
 
+/**
+ * One file every repository is expected to carry, and what it should say.
+ *
+ * The content is configuration rather than a file in another repository, which
+ * is what stops a template going missing between the place it is kept and the
+ * repository it is written to.
+ */
+export interface SyncFile {
+  path: string;
+  content: string;
+}
+
+/**
+ * How one repository composes its copy of one template.
+ *
+ * There is deliberately no type for the whole adjustment document. The pane
+ * reads it as an open record and writes it back the same way, so a key a later
+ * version of the service adds survives a save by somebody running this one.
+ */
+export interface SyncFileMerge {
+  path: string;
+  /** deep-merge, shallow-merge or markdown. Empty lets the extension decide. */
+  strategy?: string;
+  overrides?: Record<string, unknown>;
+}
+
+/** What one repository says about one kind of sync. */
+export interface SyncOverride {
+  kind: string;
+  /** null where the repository inherits the installation's answer. */
+  enabled: boolean | null;
+  document: Record<string, unknown>;
+  revision: number;
+  updated_by?: string;
+  updated_at?: string;
+  /** A stored document this version cannot read, so nothing here was shown. */
+  unreadable: boolean;
+  /**
+   * Why this kind is not being synced here, and when the planner last found
+   * that. Absent where nothing is wrong.
+   */
+  problem?: string;
+  problem_at?: string;
+}
+
+/** What a repository's answer is saved as. */
+export interface SyncOverrideInput {
+  enabled: boolean | null;
+  document: Record<string, unknown>;
+  expected_revision: number;
+}
+
 /** An installation's label sync configuration, as saved. */
 export interface SyncConfig {
   kind: string;
