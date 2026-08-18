@@ -8,6 +8,8 @@ import (
 	gogithub "github.com/google/go-github/v90/github"
 )
 
+const rulesetWorkflows = "workflows"
+
 // RulesetSummary is a ruleset as the listing describes it.
 //
 // Its own type, because the listing is genuinely less than the thing. GitHub's
@@ -250,9 +252,28 @@ func (c *Client) GetRepositoryRuleset(
 	owner, repo string,
 	id int64,
 ) (RepositoryRuleset, error) {
+	return c.getRepositoryRuleset(ctx, owner, repo, id, false)
+}
+
+// GetRepositoryRulesetIncludingParents reads a ruleset through a repository,
+// including an organization or enterprise ruleset inherited by that repository.
+func (c *Client) GetRepositoryRulesetIncludingParents(
+	ctx context.Context,
+	owner, repo string,
+	id int64,
+) (RepositoryRuleset, error) {
+	return c.getRepositoryRuleset(ctx, owner, repo, id, true)
+}
+
+func (c *Client) getRepositoryRuleset(
+	ctx context.Context,
+	owner, repo string,
+	id int64,
+	includeParents bool,
+) (RepositoryRuleset, error) {
 	path := fmt.Sprintf("/repos/%s/%s/rulesets/%d", owner, repo, id)
 
-	raw, _, err := c.gh.Repositories.GetRuleset(ctx, owner, repo, id, false)
+	raw, _, err := c.gh.Repositories.GetRuleset(ctx, owner, repo, id, includeParents)
 	if err != nil {
 		return RepositoryRuleset{}, wrapError(ErrAPIRequest, http.MethodGet, path, err)
 	}
@@ -266,11 +287,35 @@ func (c *Client) CreateRepositoryRuleset(
 	owner, repo string,
 	ruleset RepositoryRuleset,
 ) error {
+	_, err := c.CreateRepositoryRulesetWithID(ctx, owner, repo, ruleset)
+
+	return err
+}
+
+// CreateRepositoryRulesetWithID creates a ruleset and returns the identity
+// GitHub assigned. Long-running reconcilers persist it so they never delete a
+// same-named ruleset they did not create.
+func (c *Client) CreateRepositoryRulesetWithID(
+	ctx context.Context,
+	owner, repo string,
+	ruleset RepositoryRuleset,
+) (int64, error) {
 	path := fmt.Sprintf("/repos/%s/%s/rulesets", owner, repo)
 
-	_, _, err := c.gh.Repositories.CreateRuleset(ctx, owner, repo, asGitHubRuleset(ruleset))
+	created, _, err := c.gh.Repositories.CreateRuleset(
+		withoutRetry(ctx), owner, repo, asGitHubRuleset(ruleset),
+	)
+	if err != nil {
+		return 0, wrapError(ErrAPIRequest, http.MethodPost, path, err)
+	}
+	if created.GetID() <= 0 {
+		return 0, NewAPIError(
+			ErrResponseParse, 0, http.MethodPost, path,
+			fmt.Errorf("created ruleset response has no id"),
+		)
+	}
 
-	return wrapError(ErrAPIRequest, http.MethodPost, path, err)
+	return created.GetID(), nil
 }
 
 // UpdateRepositoryRuleset replaces a ruleset a repository already has.
@@ -371,7 +416,7 @@ func unmodelledRules(rules *gogithub.RepositoryRulesetRules) []string {
 		{rules.CommitterEmailPattern != nil, "committer_email_pattern"},
 		{rules.BranchNamePattern != nil, "branch_name_pattern"},
 		{rules.TagNamePattern != nil, "tag_name_pattern"},
-		{rules.Workflows != nil, "workflows"},
+		{rules.Workflows != nil, rulesetWorkflows},
 		{rules.CopilotCodeReview != nil, "copilot_code_review"},
 
 		{rules.FileExtensionRestriction != nil, "file_extension_restriction"},

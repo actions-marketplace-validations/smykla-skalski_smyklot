@@ -17,9 +17,10 @@ import (
 // tables lists every table a copy carries, ordered so that a row's references
 // are already present when it arrives.
 //
-// schema_migrations is deliberately absent: it describes how a database was
-// built, and the destination wrote its own while migrating. Copying the
-// source's would claim migrations that never ran there.
+// schema_migrations and pending_ci_policy_lock are deliberately absent: both
+// are schema-owned singleton state the destination creates while migrating.
+// Copying either would collide with the destination rather than carry user or
+// service data.
 //
 // The order is the schema's own dependency order and is stated rather than
 // derived, so it can be read and checked. TestTableListCoversSchema fails if a
@@ -39,6 +40,8 @@ var tables = []string{
 	"target_owners",
 	"target_roles",
 	"repositories",
+	"pending_ci_repository_gates",
+	"pending_ci_check_slots",
 	"root_elevations",
 	"audit_entries",
 	"access_audit_entries",

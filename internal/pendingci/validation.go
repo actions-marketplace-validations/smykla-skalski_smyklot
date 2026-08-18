@@ -18,6 +18,10 @@ var ErrStaleSourceRevision = errors.New("stale pending CI source revision")
 var ErrAmbiguousSourceRevision = errors.New("ambiguous pending CI source revision")
 
 func (request ArmRequest) Validate() error {
+	artifact := request.ArtifactKind
+	if artifact == "" {
+		artifact = ArtifactLabel
+	}
 	if empty(request.TargetID, request.RepositoryID, request.RepositoryFullName) {
 		return invalid("target and repository identity are required")
 	}
@@ -28,8 +32,17 @@ func (request ArmRequest) Validate() error {
 		return invalid("head, base branch, and requester are required")
 	}
 	if request.SourceCommentID <= 0 || request.SourceSequence <= 0 || request.SourceOrder <= 0 ||
-		empty(request.SourceRevision, request.Label) {
-		return invalid("source comment, revision, and label are required")
+		empty(request.SourceRevision) {
+		return invalid("source comment and revision are required")
+	}
+	if artifact == ArtifactLabel && (empty(request.Label) || request.CheckSlotID != nil) {
+		return invalid("label artifacts require only a label")
+	}
+	if artifact == ArtifactCheck && (request.Label != "" || request.CheckSlotID == nil || *request.CheckSlotID <= 0) {
+		return invalid("check artifacts require only a check slot")
+	}
+	if artifact != ArtifactLabel && artifact != ArtifactCheck {
+		return invalid("unsupported pending CI artifact %q", artifact)
 	}
 	if _, err := ParseSourceRevision(request.SourceRevision); err != nil {
 		return err
@@ -125,6 +138,47 @@ func (request ClaimMergeRequest) Validate() error {
 	return nil
 }
 
+func (request MarkMergeCheckSucceededRequest) Validate() error {
+	if request.ID <= 0 || request.ExpectedRevision <= 0 || request.MarkedAt.IsZero() {
+		return invalid("merge check identity, revision, and time are required")
+	}
+
+	return nil
+}
+
+func (request RequireReauthorizationRequest) Validate() error {
+	if request.ID <= 0 || request.ExpectedRevision <= 0 || request.CandidateCheckID <= 0 ||
+		empty(request.CandidateHeadSHA, request.CandidateBase) || request.ObservedAt.IsZero() {
+		return invalid("reauthorization candidate identity, check, and time are required")
+	}
+
+	return nil
+}
+
+func (request ClearRetiredCheckSlotRequest) Validate() error {
+	if request.ID <= 0 || request.ExpectedRevision <= 0 || request.CheckSlotID <= 0 ||
+		request.ClearedAt.IsZero() {
+		return invalid("retired check identity, revision, and time are required")
+	}
+
+	return nil
+}
+
+func (request ReauthorizeRequest) Validate() error {
+	if empty(
+		request.RepositoryID,
+		request.HeadSHA,
+		request.BaseBranch,
+		request.Actor,
+		request.EventKey,
+		request.DeliveryID,
+	) || request.PullRequest <= 0 || request.CheckSlotID <= 0 || request.AuthorizedAt.IsZero() {
+		return invalid("reauthorization repository, revision, actor, event, and time are required")
+	}
+
+	return nil
+}
+
 func (request RetuneQuietPeriodRequest) Validate() error {
 	if request.PassingQuiet < MinPassingQuiet || request.PassingQuiet > MaxPassingQuiet {
 		return invalid(
@@ -135,6 +189,12 @@ func (request RetuneQuietPeriodRequest) Validate() error {
 	}
 	if request.ChangedAt.IsZero() {
 		return invalid("quiet period change time is required")
+	}
+	if request.RepositoryID != "" && request.TargetID == "" {
+		return invalid("repository quiet-period retune requires a target")
+	}
+	if request.RepositoryID != "" && request.InheritedOnly {
+		return invalid("repository quiet-period retune cannot be inheritance-only")
 	}
 
 	return nil
@@ -307,6 +367,10 @@ func (request RetryCleanupRequest) Validate() error {
 func (filter QueueFilter) Validate() error {
 	if filter.Schedule != nil && !filter.Schedule.valid() {
 		return invalid("unsupported schedule %q", *filter.Schedule)
+	}
+	if filter.ArtifactKind != "" && filter.ArtifactKind != ArtifactLabel &&
+		filter.ArtifactKind != ArtifactCheck {
+		return invalid("unsupported pending CI artifact %q", filter.ArtifactKind)
 	}
 
 	return nil

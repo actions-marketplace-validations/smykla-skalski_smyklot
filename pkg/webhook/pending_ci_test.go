@@ -48,6 +48,32 @@ var _ = Describe("pending CI webhook notifications [Unit]", func() {
 		Expect(redelivery.Key).To(Equal(notification.Key))
 	})
 
+	It("correlates a requested reauthorization action to the exact check run", func() {
+		body := []byte(`{
+"action": "requested_action",
+"check_run": {
+  "id": 701,
+  "name": "Smyklot / merge after CI",
+  "external_id": "smyklot:merge-after-ci:9001:new-head",
+  "head_sha": "new-head",
+  "app": {"id": 17},
+  "pull_requests": [{"number": 198}]
+},
+"requested_action": {"identifier": "reauthorize"},
+"sender": {"login": "maintainer"},` + pendingCICommon + `}`)
+
+		notification, err := webhook.ParsePendingCINotification(webhook.EventCheckRun, body)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(notification.Action).To(Equal("requested_action"))
+		Expect(notification.Signals).To(ConsistOf(webhook.PendingCISignal{
+			Kind: webhook.SignalReauthorize, PullRequest: 198, HeadSHA: "new-head",
+			EventKey: notification.Key, Actor: "maintainer", CheckRunID: 701,
+			CheckName:  "Smyklot / merge after CI",
+			ExternalID: "smyklot:merge-after-ci:9001:new-head",
+			AppID:      17, ActionID: "reauthorize",
+		}))
+	})
+
 	It("falls back to matching a check suite by head SHA", func() {
 		body := []byte(`{
 "action": "completed",
@@ -63,6 +89,46 @@ var _ = Describe("pending CI webhook notifications [Unit]", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(notification.Signals).To(ConsistOf(webhook.PendingCISignal{
 			Kind: webhook.SignalWakeHead, HeadSHA: "fork-head", EventKey: notification.Key,
+		}))
+	})
+
+	It("distinguishes check run and suite rerequests for durable repair", func() {
+		checkRun := []byte(`{
+"action": "rerequested",
+"check_run": {
+  "id": 701,
+  "name": "Smyklot / merge after CI",
+  "external_id": "smyklot:merge-after-ci:9001:head",
+  "head_sha": "head",
+  "app": {"id": 17},
+  "pull_requests": [{"number": 198}]
+},` + pendingCICommon + `}`)
+		runNotification, err := webhook.ParsePendingCINotification(
+			webhook.EventCheckRun, checkRun,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(runNotification.Signals).To(ConsistOf(webhook.PendingCISignal{
+			Kind: webhook.SignalRerequestCheck, PullRequest: 198,
+			HeadSHA: "head", MatchHead: true, EventKey: runNotification.Key,
+			CheckRunID: 701, CheckName: "Smyklot / merge after CI",
+			ExternalID: "smyklot:merge-after-ci:9001:head", AppID: 17,
+		}))
+
+		checkSuite := []byte(`{
+"action": "rerequested",
+"check_suite": {
+  "id": 801,
+  "head_sha": "head",
+  "app": {"id": 17},
+  "pull_requests": []
+},` + pendingCICommon + `}`)
+		suiteNotification, err := webhook.ParsePendingCINotification(
+			webhook.EventCheckSuite, checkSuite,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(suiteNotification.Signals).To(ConsistOf(webhook.PendingCISignal{
+			Kind: webhook.SignalRerequestCheck, HeadSHA: "head",
+			EventKey: suiteNotification.Key, CheckRunID: 801, AppID: 17,
 		}))
 	})
 
@@ -99,6 +165,12 @@ var _ = Describe("pending CI webhook notifications [Unit]", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(synchronized.Signals[0].Kind).To(Equal(webhook.SignalWakePullRequest))
+		opened, err := webhook.ParsePendingCINotification(
+			webhook.EventPullRequest,
+			payload("opened", "", false),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(opened.Signals[0].Kind).To(Equal(webhook.SignalWakePullRequest))
 
 		closed, err := webhook.ParsePendingCINotification(
 			webhook.EventPullRequest,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/smykla-skalski/smyklot/internal/pendingci"
+	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/github"
 )
 
@@ -37,6 +38,7 @@ type pendingCIActivationRequest struct {
 	method             github.MergeMethod
 	requiredChecksOnly bool
 	label              string
+	artifactKind       pendingci.ArtifactKind
 }
 
 type pendingCIActivationErrors struct {
@@ -44,6 +46,7 @@ type pendingCIActivationErrors struct {
 	label     error
 	reaction  error
 	command   error
+	check     error
 	stale     bool
 	ambiguous bool
 	stoodDown bool
@@ -155,13 +158,18 @@ func persistPendingCIActivation(
 	ownership pendingCIArtifactOwnership,
 	failures *pendingCIActivationErrors,
 ) error {
-	if err := revalidatePendingCIActivation(ctx, guard, failures); err != nil ||
+	if err := revalidatePendingCIActivation(ctx, guard, request, failures); err != nil ||
 		failures.stoodDown {
 		rollbackErr := rollbackPendingCIArtifacts(
 			ctx, artifacts, request, ownership, false,
 		)
 
 		return errors.Join(err, rollbackErr)
+	}
+	if request.artifactKind == pendingci.ArtifactCheck {
+		return persistPendingCICheckActivation(
+			ctx, artifacts, command, request, ownership, failures,
+		)
 	}
 	failures.label = artifacts.AddLabel(
 		ctx, request.owner, request.repository, request.pullRequest, request.label,
@@ -184,6 +192,102 @@ func persistPendingCIActivation(
 	return removeConflictingPendingCILabels(ctx, artifacts, request)
 }
 
+func persistPendingCICheckActivation(
+	ctx context.Context,
+	artifacts pendingCIArtifacts,
+	command *pendingCICommand,
+	request pendingCIActivationRequest,
+	ownership pendingCIArtifactOwnership,
+	failures *pendingCIActivationErrors,
+) error {
+	if command.checks == nil {
+		failures.check = errors.New("pending CI Check Run service is unavailable")
+		return rollbackPendingCIArtifacts(ctx, artifacts, request, ownership, false)
+	}
+	target := storage.Target{
+		ID: command.targetID, InstallationID: fmt.Sprint(command.installationID),
+	}
+	repository := storage.Repository{
+		ID: command.repositoryID, FullName: command.repositoryFullName,
+	}
+	slot, err := command.checks.EnsureAuthorized(
+		ctx, target, repository, request.pullRequest, request.headSHA,
+		pendingci.MergeMethod(request.method), request.runtime.CommentAuthor,
+	)
+	if err != nil {
+		failures.check = err
+		return rollbackPendingCIArtifacts(ctx, artifacts, request, ownership, false)
+	}
+	_, failures.command = command.armCheck(
+		ctx, request.runtime, request.pullRequest, request.commentID,
+		request.headSHA, request.baseBranch, request.method,
+		request.requiredChecksOnly, slot.ID,
+	)
+	if failures.command != nil {
+		failures.check = restorePendingCICheckAfterArmFailure(
+			ctx, command, target, repository, request, slot,
+		)
+		return handlePendingCIArmFailure(
+			ctx, artifacts, command, request, ownership, failures,
+		)
+	}
+
+	return removeConflictingPendingCILabels(ctx, artifacts, request)
+}
+
+func restorePendingCICheckAfterArmFailure(
+	ctx context.Context,
+	command *pendingCICommand,
+	target storage.Target,
+	repository storage.Repository,
+	request pendingCIActivationRequest,
+	slot pendingci.CheckSlot,
+) error {
+	current, err := command.store.GetArmed(ctx, command.repositoryID, request.pullRequest)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		// The check is already blocking. Leave it that way when ownership cannot
+		// be proven instead of risking release of another authorization.
+		return fmt.Errorf("verify pending CI check owner after arm failure: %w", err)
+	}
+	if err == nil && current.ArtifactKind == pendingci.ArtifactCheck &&
+		current.CheckSlotID != nil && *current.CheckSlotID == slot.ID {
+		if current.AuthorizationState == pendingci.AuthorizationReauthorizationNeeded {
+			if current.CandidateHeadSHA == "" {
+				return errors.New("prior pending CI reauthorization has no candidate head")
+			}
+			_, err = command.checks.EnsureReauthorization(
+				ctx, target, repository, current.PullRequest, current.CandidateHeadSHA,
+			)
+			if err != nil {
+				return fmt.Errorf("restore prior pending CI reauthorization: %w", err)
+			}
+
+			return nil
+		}
+		requester := current.AuthorizedBy
+		if requester == "" {
+			requester = current.Requester
+		}
+		_, err = command.checks.EnsureAuthorized(
+			ctx, target, repository, current.PullRequest, current.HeadSHA,
+			current.MergeMethod, requester,
+		)
+		if err != nil {
+			return fmt.Errorf("restore prior pending CI authorization: %w", err)
+		}
+
+		return nil
+	}
+	_, err = command.checks.EnsureBaseline(
+		ctx, target, repository, request.pullRequest, request.headSHA,
+	)
+	if err != nil {
+		return fmt.Errorf("restore pending CI baseline: %w", err)
+	}
+
+	return nil
+}
+
 func preparePendingCIActivation(
 	ctx context.Context,
 	command *pendingCICommand,
@@ -195,7 +299,7 @@ func preparePendingCIActivation(
 		return pendingCIArtifactOwnership{}, true,
 			errors.New("pending CI activation guard is required")
 	}
-	if err := revalidatePendingCIActivation(ctx, guard, failures); err != nil ||
+	if err := revalidatePendingCIActivation(ctx, guard, request, failures); err != nil ||
 		failures.stoodDown {
 		return pendingCIArtifactOwnership{}, true, err
 	}
@@ -224,9 +328,15 @@ func preparePendingCIActivation(
 func revalidatePendingCIActivation(
 	ctx context.Context,
 	guard pendingCIActivationGuard,
+	request pendingCIActivationRequest,
 	failures *pendingCIActivationErrors,
 ) error {
-	allowed, err := guard.AllowsActivation(ctx)
+	allowed, err := guard.AllowsActivation(
+		ctx,
+		request.artifactKind,
+		request.baseBranch,
+		request.requiredChecksOnly,
+	)
 	if err != nil {
 		return fmt.Errorf("revalidate pending CI runner ownership: %w", err)
 	}

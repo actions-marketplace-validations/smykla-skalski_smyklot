@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,9 @@ SELECT
     t.kind,
     t.available,
     t.repository_default_enabled,
+	 t.pending_ci_mode_default,
+	 t.pending_ci_branch_patterns_default,
+	 t.pending_ci_quiet_period_seconds_override,
     t.config_patch,
     t.revision,
     t.settings_updated_at,
@@ -157,13 +161,18 @@ func reconcileInstallation(
 	); err != nil {
 		return fmt.Errorf("mark installation repositories unavailable: %w", err)
 	}
+	installationID, err := strconv.ParseInt(snapshot.InstallationID, 10, 64)
+	if err != nil || installationID <= 0 {
+		return fmt.Errorf("parse installation ID %q", snapshot.InstallationID)
+	}
 	for _, repository := range snapshot.Repositories {
-		if err := upsertRepository(ctx, tx, snapshot.TargetID, repository, snapshot.SyncedAt); err != nil {
+		if err := upsertRepository(
+			ctx, tx, snapshot.TargetID, installationID, repository, snapshot.SyncedAt,
+		); err != nil {
 			return err
 		}
 	}
-
-	return nil
+	return ensurePendingCIGates(ctx, tx, snapshot.TargetID, snapshot.SyncedAt)
 }
 
 func reconcileOwnership(
@@ -639,6 +648,7 @@ func upsertRepository(
 	ctx context.Context,
 	tx runner,
 	targetID string,
+	installationID int64,
 	repository storage.RepositorySnapshot,
 	syncedAt time.Time,
 ) error {
@@ -670,6 +680,45 @@ ON CONFLICT(id) DO UPDATE SET
 	if err != nil {
 		return fmt.Errorf("upsert installation repository: %w", err)
 	}
+	return refreshPendingCIOwnership(
+		ctx, tx, targetID, installationID, repository, syncedAt,
+	)
+}
+
+func refreshPendingCIOwnership(
+	ctx context.Context,
+	tx runner,
+	targetID string,
+	installationID int64,
+	repository storage.RepositorySnapshot,
+	syncedAt time.Time,
+) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE pending_ci_requests SET
+    target_id = ?, installation_id = ?, repository_full_name = ?,
+    next_check_at = ?, lease_expires_at = NULL, next_check_trigger = 'fallback',
+    updated_at = ?, revision = revision + 1
+WHERE repository_id = ? AND (lifecycle = 'armed' OR cleanup_pending = TRUE)
+  AND (target_id <> ? OR installation_id <> ? OR repository_full_name <> ?)`,
+		targetID, installationID, repository.FullName,
+		syncedAt, syncedAt, repository.ID,
+		targetID, installationID, repository.FullName,
+	)
+	if err != nil {
+		return fmt.Errorf("refresh pending CI request ownership: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+UPDATE pending_ci_check_slots SET
+    target_id = ?, installation_id = ?, repository_full_name = ?,
+    updated_at = ?, revision = revision + 1
+WHERE repository_id = ?
+  AND (target_id <> ? OR installation_id <> ? OR repository_full_name <> ?)`,
+		targetID, installationID, repository.FullName, syncedAt, repository.ID,
+		targetID, installationID, repository.FullName,
+	)
+	if err != nil {
+		return fmt.Errorf("refresh pending CI check ownership: %w", err)
+	}
 
 	return nil
 }
@@ -688,6 +737,8 @@ func scanTarget(scanner rowScanner) (storage.Target, error) {
 	var avatarURL, ownershipDetail sql.NullString
 	var lastFailureAt, targetUpdatedAt, accountUpdatedAt, ownershipSyncedAt StoredTime
 	var targetPatch, targetPermissions string
+	var branchPatterns string
+	var quietPeriod sql.NullInt64
 	var enabled int
 
 	err := scanner.Scan(
@@ -696,6 +747,9 @@ func scanTarget(scanner rowScanner) (storage.Target, error) {
 		&target.Kind,
 		&target.Available,
 		&target.RepositoryDefaultEnabled,
+		&target.PendingCIModeDefault,
+		&branchPatterns,
+		&quietPeriod,
 		&targetPatch,
 		&target.Revision,
 		&targetUpdatedAt,
@@ -728,6 +782,11 @@ func scanTarget(scanner rowScanner) (storage.Target, error) {
 	target.DeliveryHealth.LastFailureAt = lastFailureAt.Pointer()
 	target.Ownership.SyncedAt = ownershipSyncedAt.Time()
 	target.Permissions = unmarshalPermissions(targetPermissions)
+	target.PendingCIQuietPeriodOverride = durationPointer(quietPeriod)
+	target.PendingCIBranchPatternsDefault, err = unmarshalPendingCIBranchPatterns(branchPatterns)
+	if err != nil {
+		return storage.Target{}, err
+	}
 
 	return finishTarget(target, targetPatch, targetUpdatedAt, accountUpdatedAt)
 }
@@ -759,6 +818,9 @@ SELECT
     r.default_branch,
     r.available,
     r.enabled_override,
+	 r.pending_ci_mode_override,
+	 r.pending_ci_branch_patterns_override,
+	 r.pending_ci_quiet_period_seconds_override,
     r.config_patch,
     r.ignore_repository_file,
     r.config_file_status,
@@ -804,6 +866,8 @@ LIMIT 1`, targetID, repository, repository, repository))
 func scanRepository(scanner rowScanner) (storage.Repository, error) {
 	var repository storage.Repository
 	var enabledOverride sql.NullBool
+	var modeOverride, branchPatternsOverride sql.NullString
+	var quietPeriodOverride sql.NullInt64
 	var fileError sql.NullString
 	var panelPatch, filePatch, superseded string
 	var migrationPR sql.NullInt64
@@ -818,6 +882,9 @@ func scanRepository(scanner rowScanner) (storage.Repository, error) {
 		&repository.DefaultBranch,
 		&repository.Available,
 		&enabledOverride,
+		&modeOverride,
+		&branchPatternsOverride,
+		&quietPeriodOverride,
 		&panelPatch,
 		&repository.IgnoreRepositoryFile,
 		&repository.ConfigFileStatus,
@@ -835,6 +902,18 @@ func scanRepository(scanner rowScanner) (storage.Repository, error) {
 	}
 
 	repository.EnabledOverride = boolPointer(enabledOverride)
+	if modeOverride.Valid {
+		mode := storage.PendingCIMode(modeOverride.String)
+		repository.PendingCIModeOverride = &mode
+	}
+	if branchPatternsOverride.Valid {
+		patterns, err := unmarshalPendingCIBranchPatterns(branchPatternsOverride.String)
+		if err != nil {
+			return storage.Repository{}, err
+		}
+		repository.PendingCIBranchPatternsOverride = &patterns
+	}
+	repository.PendingCIQuietPeriodOverride = durationPointer(quietPeriodOverride)
 	repository.ConfigFileError = stringPointer(fileError)
 	repository.ConfigMigrationPR = intPointer(migrationPR)
 	if repository.IgnoreRepositoryFile {

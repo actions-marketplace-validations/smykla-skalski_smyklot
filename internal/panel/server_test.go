@@ -77,6 +77,25 @@ type fakePendingCIController struct {
 	wakes int
 }
 
+func (controller *fakePendingCIController) Wake() {
+	controller.wakes++
+}
+
+func (controller *fakePendingCIController) Exclusive(
+	_ context.Context,
+	_ []string,
+	operation func() error,
+) error {
+	return operation()
+}
+
+func (controller *fakePendingCIController) ExclusiveCatalog(
+	_ context.Context,
+	operation func() error,
+) error {
+	return operation()
+}
+
 func (controller *fakePendingCIController) CheckNow(
 	ctx context.Context,
 	change pendingci.CheckNowRequest,
@@ -435,7 +454,14 @@ func TestPanelSignInAndSettings(t *testing.T) {
 		t.Fatalf("viewer response = %d %s", viewer.Code, viewer.Body.String())
 	}
 
-	input := `{"repository_default_enabled":true,"config_patch":{"quiet_success":true},"expected_revision":1}`
+	input := `{
+		"repository_default_enabled":true,
+		"pending_ci_mode_default":"checks",
+		"pending_ci_branch_patterns_default":{"include":["~DEFAULT_BRANCH","refs/heads/release/*"],"exclude":[]},
+		"pending_ci_quiet_period_seconds_override":0,
+		"config_patch":{"quiet_success":true},
+		"expected_revision":1
+	}`
 	updated := harness.request(
 		t,
 		http.MethodPut,
@@ -453,6 +479,10 @@ func TestPanelSignInAndSettings(t *testing.T) {
 	if !target.RepositoryDefaultEnabled ||
 		!target.EffectiveConfig.QuietSuccess ||
 		target.InheritedConfig.QuietSuccess ||
+		target.PendingCIModeDefault != storage.PendingCIModeChecks ||
+		target.PendingCIQuietPeriodSecondsOverride == nil ||
+		*target.PendingCIQuietPeriodSecondsOverride != 0 ||
+		len(target.PendingCIBranchPatternsDefault.Include) != 2 ||
 		target.Revision != 2 {
 		t.Fatalf("unexpected target: %#v", target)
 	}
@@ -1444,7 +1474,7 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 		t.Fatalf("session was extended from %s to %s", shortened.ExpiresAt, unchanged.ExpiresAt)
 	}
 
-	invalid := harness.request(
+	zeroQuiet := harness.request(
 		t, http.MethodPut, "/panel/api/v1/root/settings",
 		strings.NewReader(`{
             "bot_config":null,
@@ -1457,10 +1487,13 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 		rootSession,
 	)
 	requireResponse(
-		t, invalid, "reject zero pending-CI quiet period", http.StatusBadRequest,
-		`"code":"invalid_runtime_settings"`,
-		`"message":"merge-after-CI quiet period must be at least 1s"`,
+		t, zeroQuiet, "accept zero pending-CI quiet period", http.StatusOK,
+		`"merge_after_ci_quiet_period":{"deployment_seconds":30,"override_seconds":0,"effective_seconds":0}`,
+		`"revision":5`,
 	)
+	if harness.runtime.values.PendingCIQuietPeriod != 0 {
+		t.Fatalf("zero pending-CI quiet period = %s", harness.runtime.values.PendingCIQuietPeriod)
+	}
 	overMaximum := harness.request(
 		t, http.MethodPut, "/panel/api/v1/root/settings",
 		strings.NewReader(`{
@@ -1469,7 +1502,7 @@ func TestPanelRootRuntimeSettings(t *testing.T) {
 			"reaction_poll_interval_seconds":null,
 			"merge_after_ci_quiet_period_seconds":86401,
             "session_ttl_seconds":null,
-			"expected_revision":4
+			"expected_revision":5
         }`),
 		rootSession,
 	)
@@ -2162,16 +2195,58 @@ func TestRepositoryEnablementDistinguishesOmittedFromNull(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
 	settingsPath := "/panel/api/v1/targets/github:installation:10/repositories/repository-20/settings"
+	armed, err := harness.store.Arm(t.Context(), pendingci.ArmRequest{
+		TargetID: "github:installation:10", InstallationID: 10,
+		RepositoryID: "repository-20", RepositoryFullName: "smykla-skalski/smyklot",
+		PullRequest: 99, HeadSHA: "quiet-head", BaseBranch: "main",
+		MergeMethod: pendingci.MergeMethodSquash, RequiredChecksOnly: true,
+		Requester: "owner", SourceCommentID: 99,
+		SourceRevision: harness.now.Format(time.RFC3339Nano), SourceSequence: 1, SourceOrder: 99,
+		Label: "smyklot:pending:ci:squash:required", RequestedAt: harness.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := harness.store.LeaseDue(t.Context(), harness.now, harness.now.Add(time.Minute))
+	if err != nil || lease.Request == nil {
+		t.Fatalf("lease quiet-period request = %#v, %v", lease, err)
+	}
+	_, err = harness.store.Reschedule(t.Context(), pendingci.RescheduleRequest{
+		ID: lease.Request.ID, ExpectedRevision: lease.Request.Revision,
+		Schedule: pendingci.ScheduleActive, HeadSHA: armed.Request.HeadSHA,
+		NextCheckAt: harness.now.Add(24 * time.Hour), NextCheckTrigger: pendingci.TriggerQuietPeriod,
+		LastProgressAt: harness.now, LastObservedState: string(pendingci.ObservedPassing),
+		LastFingerprint: "passing:1:1", CheckedAt: harness.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakesBefore := harness.pendingCI.wakes
 
 	explicitOff := harness.request(
 		t,
 		http.MethodPut,
 		settingsPath,
-		strings.NewReader(`{"enabled_override":false,"config_patch":{},"ignore_repository_file":false,"expected_revision":1}`),
+		strings.NewReader(`{
+			"enabled_override":false,
+			"pending_ci_mode_override":"labels",
+			"pending_ci_branch_patterns_override":{"include":["refs/heads/release/*"],"exclude":[]},
+			"pending_ci_quiet_period_seconds_override":0,
+			"config_patch":{},
+			"ignore_repository_file":false,
+			"expected_revision":1
+		}`),
 		session,
 	)
 	if explicitOff.Code != http.StatusOK {
 		t.Fatalf("explicit Off = %d %s", explicitOff.Code, explicitOff.Body.String())
+	}
+	if harness.pendingCI.wakes != wakesBefore+1 {
+		t.Fatalf("quiet-period update wakes = %d, want %d", harness.pendingCI.wakes, wakesBefore+1)
+	}
+	lease, err = harness.store.LeaseDue(t.Context(), harness.now, harness.now.Add(time.Minute))
+	if err != nil || lease.Request == nil || lease.Request.ID != armed.Request.ID {
+		t.Fatalf("retuned quiet-period request = %#v, %v", lease, err)
 	}
 
 	omitted := harness.request(
@@ -2202,12 +2277,28 @@ func TestRepositoryEnablementDistinguishesOmittedFromNull(t *testing.T) {
 	if detail.Repository.EnabledOverride == nil || *detail.Repository.EnabledOverride || detail.Revision != 2 {
 		t.Fatalf("omitted field changed repository: %#v", detail)
 	}
+	if detail.PendingCIModeOverride == nil ||
+		*detail.PendingCIModeOverride != storage.PendingCIModeLabels ||
+		detail.PendingCIBranchPatternsOverride == nil ||
+		detail.PendingCIQuietPeriodSecondsOverride == nil ||
+		*detail.PendingCIQuietPeriodSecondsOverride != 0 || detail.PendingCIGate == nil ||
+		detail.PendingCIGate.DesiredMode != storage.PendingCIModeLabels {
+		t.Fatalf("pending CI repository overrides = %#v", detail)
+	}
 
 	inherited := harness.request(
 		t,
 		http.MethodPut,
 		settingsPath,
-		strings.NewReader(`{"enabled_override":null,"config_patch":{},"ignore_repository_file":false,"expected_revision":2}`),
+		strings.NewReader(`{
+			"enabled_override":null,
+			"pending_ci_mode_override":null,
+			"pending_ci_branch_patterns_override":null,
+			"pending_ci_quiet_period_seconds_override":null,
+			"config_patch":{},
+			"ignore_repository_file":false,
+			"expected_revision":2
+		}`),
 		session,
 	)
 	if inherited.Code != http.StatusOK {
@@ -2216,7 +2307,9 @@ func TestRepositoryEnablementDistinguishesOmittedFromNull(t *testing.T) {
 	if err := json.Unmarshal(inherited.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Repository.EnabledOverride != nil || detail.Revision != 3 {
+	if detail.Repository.EnabledOverride != nil || detail.PendingCIModeOverride != nil ||
+		detail.PendingCIBranchPatternsOverride != nil ||
+		detail.PendingCIQuietPeriodSecondsOverride != nil || detail.Revision != 3 {
 		t.Fatalf("explicit null did not restore inheritance: %#v", detail)
 	}
 }

@@ -382,18 +382,21 @@ type DeliveryHealth struct {
 
 // Target is one GitHub App installation and its panel-owned settings.
 type Target struct {
-	ID                       string
-	InstallationID           string
-	Kind                     TargetKind
-	Account                  Account
-	Available                bool
-	RepositoryDefaultEnabled bool
-	ConfigPatch              config.Patch
-	Revision                 int64
-	UpdatedAt                time.Time
-	RepositoryCounts         RepositoryCounts
-	DeliveryHealth           DeliveryHealth
-	Ownership                TargetOwnership
+	ID                             string
+	InstallationID                 string
+	Kind                           TargetKind
+	Account                        Account
+	Available                      bool
+	RepositoryDefaultEnabled       bool
+	PendingCIModeDefault           PendingCIMode
+	PendingCIBranchPatternsDefault PendingCIBranchPatterns
+	PendingCIQuietPeriodOverride   *time.Duration
+	ConfigPatch                    config.Patch
+	Revision                       int64
+	UpdatedAt                      time.Time
+	RepositoryCounts               RepositoryCounts
+	DeliveryHealth                 DeliveryHealth
+	Ownership                      TargetOwnership
 
 	// Permissions is what the installation has granted. Kept here rather than
 	// asked of GitHub, because the two callers that need it cannot ask: the
@@ -418,6 +421,18 @@ type Target struct {
 func (t Target) Grants(permission string) bool {
 	switch t.Permissions[permission] {
 	case "write", "admin":
+		return true
+	default:
+		return false
+	}
+}
+
+// CanRead reports whether the installation may inspect a GitHub capability.
+// Keep it separate from Grants: callers of Grants are about to write, while a
+// read grant is sufficient for policy discovery such as merge-queue presence.
+func (t Target) CanRead(permission string) bool {
+	switch t.Permissions[permission] {
+	case "read", "write", "admin":
 		return true
 	default:
 		return false
@@ -486,19 +501,23 @@ type RepositoryConfigMigration struct {
 
 // Repository is a catalog entry plus its panel-owned controls.
 type Repository struct {
-	ID                   string
-	TargetID             string
-	Name                 string
-	FullName             string
-	Private              bool
-	DefaultBranch        string
-	Available            bool
-	EnabledOverride      *bool
-	ConfigPatch          config.Patch
-	IgnoreRepositoryFile bool
-	ConfigFileStatus     RepositoryFileStatus
-	ConfigFilePatch      config.Patch
-	ConfigFileError      *string
+	ID                              string
+	TargetID                        string
+	Name                            string
+	FullName                        string
+	Private                         bool
+	DefaultBranch                   string
+	Available                       bool
+	EnabledOverride                 *bool
+	PendingCIModeOverride           *PendingCIMode
+	PendingCIBranchPatternsOverride *PendingCIBranchPatterns
+	PendingCIQuietPeriodOverride    *time.Duration
+	PendingCIGate                   *PendingCIRepositoryGate
+	ConfigPatch                     config.Patch
+	IgnoreRepositoryFile            bool
+	ConfigFileStatus                RepositoryFileStatus
+	ConfigFilePatch                 config.Patch
+	ConfigFileError                 *string
 
 	// ConfigFilePath is the file the configuration was read from, empty when
 	// the repository has none. Discovery looks in four places plus a
@@ -550,29 +569,39 @@ type InstallationSnapshot struct {
 
 // TargetSettingsChange atomically changes target defaults and records audit.
 type TargetSettingsChange struct {
-	TargetID                 string
-	ActorAccountID           string
-	ElevationID              *string
-	SessionTokenHash         string
-	RepositoryDefaultEnabled bool
-	ConfigPatch              config.Patch
-	ExpectedRevision         int64
-	ChangedAt                time.Time
+	TargetID                       string
+	ActorAccountID                 string
+	ElevationID                    *string
+	SessionTokenHash               string
+	RepositoryDefaultEnabled       bool
+	PendingCIModeDefault           PendingCIMode
+	PendingCIBranchPatternsDefault PendingCIBranchPatterns
+	PendingCIQuietPeriodOverride   *time.Duration
+	RetunePendingCIQuietPeriod     bool
+	DeploymentPendingCIQuietPeriod time.Duration
+	ConfigPatch                    config.Patch
+	ExpectedRevision               int64
+	ChangedAt                      time.Time
 }
 
 // RepositorySettingsChange atomically changes repository controls and records
 // audit.
 type RepositorySettingsChange struct {
-	TargetID             string
-	RepositoryID         string
-	ActorAccountID       string
-	ElevationID          *string
-	SessionTokenHash     string
-	EnabledOverride      *bool
-	ConfigPatch          config.Patch
-	IgnoreRepositoryFile bool
-	ExpectedRevision     int64
-	ChangedAt            time.Time
+	TargetID                        string
+	RepositoryID                    string
+	ActorAccountID                  string
+	ElevationID                     *string
+	SessionTokenHash                string
+	EnabledOverride                 *bool
+	PendingCIModeOverride           *PendingCIMode
+	PendingCIBranchPatternsOverride *PendingCIBranchPatterns
+	PendingCIQuietPeriodOverride    *time.Duration
+	RetunePendingCIQuietPeriod      bool
+	DeploymentPendingCIQuietPeriod  time.Duration
+	ConfigPatch                     config.Patch
+	IgnoreRepositoryFile            bool
+	ExpectedRevision                int64
+	ChangedAt                       time.Time
 }
 
 // RepositoryFileState records the last repository-file read without changing

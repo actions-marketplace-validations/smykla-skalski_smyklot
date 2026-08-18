@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/orgsync"
+	"github.com/smykla-skalski/smyklot/internal/storage"
 	"github.com/smykla-skalski/smyklot/pkg/github"
 	"github.com/smykla-skalski/smyklot/pkg/logging"
 	"github.com/smykla-skalski/smyklot/pkg/metrics"
@@ -101,19 +102,30 @@ func (s *server) pollLoop(ctx context.Context) {
 
 func (s *server) migrationLoop(ctx context.Context) {
 	for {
-		if err := s.migrationSweep(ctx); err == nil {
-			return
-		} else {
+		if err := s.migrationSweep(ctx); err != nil {
 			s.logger.Error("pending CI migration sweep failed", "error", err)
+			timer := time.NewTimer(s.migrationRetryDelay)
+			select {
+			case <-ctx.Done():
+				stopTimer(timer)
+
+				return
+			case <-timer.C:
+			}
+			continue
 		}
-		timer := time.NewTimer(s.migrationRetryDelay)
 		select {
 		case <-ctx.Done():
-			stopTimer(timer)
-
 			return
-		case <-timer.C:
+		case <-s.pendingCIGateChanged:
 		}
+	}
+}
+
+func (s *server) WakePendingCIGates() {
+	select {
+	case s.pendingCIGateChanged <- struct{}{}:
+	default:
 	}
 }
 
@@ -168,8 +180,10 @@ func (s *server) sweep(ctx context.Context) error {
 	return s.sweepMode(ctx, true)
 }
 
-// migrationSweep performs only state handoff and pre-durable label cleanup.
-// It runs once even when reaction polling is disabled.
+// migrationSweep performs state handoff, pre-durable label cleanup, and
+// required-check gate reconciliation. It runs at startup and whenever panel or
+// pull-request activity says installation policy may have changed, even when
+// reaction polling is disabled.
 func (s *server) migrationSweep(ctx context.Context) error {
 	return s.sweepMode(ctx, false)
 }
@@ -331,8 +345,11 @@ func (s *server) reconcileSweepInstallation(
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.ReconcileInstallation(ctx, snapshot); err != nil {
+	if err := s.reconcileInstallationSnapshot(ctx, snapshot); err != nil {
 		return nil, err
+	}
+	if s.pendingCI != nil {
+		s.pendingCI.Wake()
 	}
 	if s.panel != nil {
 		s.panel.Announce(snapshot.TargetID, "")
@@ -379,11 +396,25 @@ func (s *server) sweepRepo(
 		logging.From(ctx).Warn("could not propose the configuration migration",
 			"repo", repoFullName(repo.Owner, repo.Name), "error", err)
 	}
+	var target storage.Target
+	var repository storage.Repository
+	if s.panel != nil {
+		target, repository, err = s.repositoryControls(
+			ctx, targetID, repositoryStorageID(repo.ID),
+		)
+		if err != nil {
+			return err
+		}
+	}
 
 	// Checked before CODEOWNERS is read, so a repository left to the Action
 	// costs the sweep one request rather than two
 	if serviceStandsDown(logging.With(ctx, "repo", repoFullName(repo.Owner, repo.Name)), bc) {
-		return s.handoffPendingCIToAction(ctx, client, repo)
+		prs, err := s.handoffPendingCIToAction(ctx, client, repo)
+		if err != nil {
+			return err
+		}
+		return s.reconcileInactivePendingCIGate(ctx, client, target, repository, prs)
 	}
 
 	ctx = logging.With(ctx, "repo", repoFullName(repo.Owner, repo.Name))
@@ -398,22 +429,12 @@ func (s *server) sweepRepo(
 		return err
 	}
 
-	if s.panel != nil {
-		target, repository, controlsErr := s.repositoryControls(
-			ctx,
-			targetID,
-			repositoryStorageID(repo.ID),
-		)
-		if controlsErr != nil {
-			return controlsErr
-		}
-		enabled := target.RepositoryDefaultEnabled
-		if repository.EnabledOverride != nil {
-			enabled = *repository.EnabledOverride
-		}
-		if !enabled {
-			return nil
-		}
+	enabled, err := s.reconcileActivePendingCIGate(ctx, client, target, repository, prs)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return nil
 	}
 
 	if err := s.drainLegacyPendingCILabels(
@@ -444,6 +465,66 @@ func (s *server) sweepRepo(
 	)
 }
 
+func (s *server) reconcileInactivePendingCIGate(
+	ctx context.Context,
+	client *github.Client,
+	target storage.Target,
+	repository storage.Repository,
+	prs []map[string]interface{},
+) error {
+	if s.panel == nil {
+		return nil
+	}
+	err := s.pendingCICoordinator.Exclusive(ctx, repository.ID, func() error {
+		freshTarget, freshRepository, readErr := s.readRepositoryControls(
+			ctx, target.ID, repository.ID,
+		)
+		if readErr != nil {
+			return readErr
+		}
+
+		return s.pendingCIGates.Reconcile(
+			ctx, client, freshTarget, freshRepository, prs, false,
+		)
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile inactive pending CI gate: %w", err)
+	}
+
+	return nil
+}
+
+func (s *server) reconcileActivePendingCIGate(
+	ctx context.Context,
+	client *github.Client,
+	target storage.Target,
+	repository storage.Repository,
+	prs []map[string]interface{},
+) (bool, error) {
+	if s.panel == nil {
+		return true, nil
+	}
+	enabled := false
+	err := s.pendingCICoordinator.Exclusive(ctx, repository.ID, func() error {
+		freshTarget, freshRepository, readErr := s.readRepositoryControls(
+			ctx, target.ID, repository.ID,
+		)
+		if readErr != nil {
+			return readErr
+		}
+		enabled = effectiveRepositoryEnabled(freshTarget, freshRepository)
+
+		return s.pendingCIGates.Reconcile(
+			ctx, client, freshTarget, freshRepository, prs, enabled,
+		)
+	})
+	if err != nil {
+		return enabled, fmt.Errorf("reconcile active pending CI gate: %w", err)
+	}
+
+	return enabled, nil
+}
+
 // migrateRepositoryConfig reads the repository's configuration back out of the
 // cache serviceConfig filled, and offers the move to TOML.
 func (s *server) migrateRepositoryConfig(
@@ -469,20 +550,20 @@ func (s *server) handoffPendingCIToAction(
 	ctx context.Context,
 	client *github.Client,
 	repo github.Repository,
-) error {
+) ([]map[string]interface{}, error) {
 	const reason = "repository switched to the GitHub Action runner"
 	_, err := s.pendingCIHandoff.CancelRepository(
 		ctx, repositoryStorageID(repo.ID), reason, time.Now().UTC(),
 	)
 	if err != nil {
-		return fmt.Errorf("cancel pending CI during runner handoff: %w", err)
+		return nil, fmt.Errorf("cancel pending CI during runner handoff: %w", err)
 	}
 	prs, err := client.GetOpenPRs(ctx, repo.Owner, repo.Name)
 	if err != nil {
-		return NewGitHubError(ErrGetPRs, err)
+		return nil, NewGitHubError(ErrGetPRs, err)
 	}
 
 	_, err = s.reconcilePendingCIServiceArtifacts(ctx, client, repo, prs, true)
 
-	return err
+	return prs, err
 }

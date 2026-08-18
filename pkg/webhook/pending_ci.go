@@ -12,6 +12,8 @@ const (
 	SignalWakeHead        SignalKind = "wake_head"
 	SignalPullRequestDone SignalKind = "pull_request_done"
 	SignalLabelRemoved    SignalKind = "label_removed"
+	SignalReauthorize     SignalKind = "reauthorize"
+	SignalRerequestCheck  SignalKind = "rerequest_check"
 )
 
 type Metadata struct {
@@ -30,6 +32,12 @@ type PendingCISignal struct {
 	EventKey    string
 	Merged      bool
 	Label       string
+	Actor       string
+	CheckRunID  int64
+	CheckName   string
+	ExternalID  string
+	AppID       int64
+	ActionID    string
 }
 
 type PendingCINotification struct {
@@ -120,6 +128,8 @@ func metadataFrom(payload commonPayload) (Metadata, error) {
 
 type checkSubject struct {
 	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	ExternalID   string `json:"external_id"`
 	HeadSHA      string `json:"head_sha"`
 	Status       string `json:"status"`
 	Conclusion   string `json:"conclusion"`
@@ -127,6 +137,9 @@ type checkSubject struct {
 	PullRequests []struct {
 		Number int `json:"number"`
 	} `json:"pull_requests"`
+	App struct {
+		ID int64 `json:"id"`
+	} `json:"app"`
 }
 
 func parseCheckRun(
@@ -135,13 +148,69 @@ func parseCheckRun(
 	body []byte,
 ) (*PendingCINotification, error) {
 	var payload struct {
-		CheckRun checkSubject `json:"check_run"`
+		CheckRun        checkSubject `json:"check_run"`
+		RequestedAction struct {
+			Identifier string `json:"identifier"`
+		} `json:"requested_action"`
+		Sender struct {
+			Login string `json:"login"`
+		} `json:"sender"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
 
+	if common.Action == "requested_action" {
+		return requestedCheckActionNotification(
+			metadata,
+			payload.CheckRun,
+			payload.RequestedAction.Identifier,
+			payload.Sender.Login,
+		)
+	}
+
 	return checkNotification(EventCheckRun, common.Action, metadata, payload.CheckRun)
+}
+
+func requestedCheckActionNotification(
+	metadata Metadata,
+	subject checkSubject,
+	identifier, actor string,
+) (*PendingCINotification, error) {
+	if subject.ID <= 0 || subject.HeadSHA == "" || subject.Name == "" ||
+		subject.ExternalID == "" || subject.App.ID <= 0 || identifier == "" || actor == "" {
+		return nil, fmt.Errorf("check_run requested action is missing check or actor identity")
+	}
+	key := fmt.Sprintf(
+		"%s:%d:%d:requested_action:%s:%s",
+		EventCheckRun,
+		metadata.RepositoryID,
+		subject.ID,
+		identifier,
+		actor,
+	)
+	signals := make([]PendingCISignal, 0, max(1, len(subject.PullRequests)))
+	appendSignal := func(pullRequest int) {
+		signals = append(signals, PendingCISignal{
+			Kind: SignalReauthorize, PullRequest: pullRequest, HeadSHA: subject.HeadSHA,
+			EventKey: key, Actor: actor, CheckRunID: subject.ID, CheckName: subject.Name,
+			ExternalID: subject.ExternalID, AppID: subject.App.ID,
+			ActionID: identifier,
+		})
+	}
+	for _, pullRequest := range subject.PullRequests {
+		if pullRequest.Number > 0 {
+			appendSignal(pullRequest.Number)
+		}
+	}
+	if len(signals) == 0 {
+		appendSignal(0)
+	}
+
+	return &PendingCINotification{
+		Event: EventCheckRun, Action: "requested_action", Key: key,
+		Metadata: metadata, Signals: signals,
+	}, nil
 }
 
 func parseCheckSuite(
@@ -178,19 +247,41 @@ func checkNotification(
 		subject.UpdatedAt,
 	)
 	signals := make([]PendingCISignal, 0, max(1, len(subject.PullRequests)))
+	kind := SignalWakePullRequest
+	if action == "rerequested" {
+		if subject.App.ID <= 0 {
+			return nil, fmt.Errorf("%s rerequest is missing App identity", event)
+		}
+		kind = SignalRerequestCheck
+	}
 	for _, pullRequest := range subject.PullRequests {
 		if pullRequest.Number <= 0 {
 			continue
 		}
-		signals = append(signals, PendingCISignal{
-			Kind: SignalWakePullRequest, PullRequest: pullRequest.Number,
+		signal := PendingCISignal{
+			Kind: kind, PullRequest: pullRequest.Number,
 			HeadSHA: subject.HeadSHA, MatchHead: true, EventKey: key,
-		})
+		}
+		if kind == SignalRerequestCheck {
+			signal.CheckRunID = subject.ID
+			signal.CheckName = subject.Name
+			signal.ExternalID = subject.ExternalID
+			signal.AppID = subject.App.ID
+		}
+		signals = append(signals, signal)
 	}
 	if len(signals) == 0 {
-		signals = append(signals, PendingCISignal{
-			Kind: SignalWakeHead, HeadSHA: subject.HeadSHA, EventKey: key,
-		})
+		if kind == SignalRerequestCheck {
+			signals = append(signals, PendingCISignal{
+				Kind: kind, HeadSHA: subject.HeadSHA, EventKey: key,
+				CheckRunID: subject.ID, CheckName: subject.Name,
+				ExternalID: subject.ExternalID, AppID: subject.App.ID,
+			})
+		} else {
+			signals = append(signals, PendingCISignal{
+				Kind: SignalWakeHead, HeadSHA: subject.HeadSHA, EventKey: key,
+			})
+		}
 	}
 
 	return &PendingCINotification{
@@ -275,7 +366,7 @@ func parsePullRequest(
 	case "unlabeled":
 		signal.Kind = SignalLabelRemoved
 		signal.Label = payload.Label.Name
-	case "synchronize", "reopened", "ready_for_review", "converted_to_draft", "edited", "labeled",
+	case "opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft", "edited", "labeled",
 		"unlocked", "enqueued", "dequeued":
 	default:
 		return &PendingCINotification{
