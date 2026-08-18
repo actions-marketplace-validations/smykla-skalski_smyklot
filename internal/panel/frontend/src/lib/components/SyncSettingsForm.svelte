@@ -8,10 +8,11 @@
    * configuration editor uses - the chain says "following each repository", and
    * breaking it is what makes a value a policy.
    *
-   * Nothing here is sent until Save. A settings change is one request per
-   * repository and the whole of it succeeds or fails together, so a control
+   * Nothing here is sent until Save. Almost all of a settings change is one
+   * request per repository whose whole succeeds or fails together, so a control
    * that saved on every click would send a dozen half-formed policies.
    */
+  import { OFF, ON, SWITCH } from '#lib/form-switch.js';
   import { canonicalStringify } from '#lib/preferences-sync.js';
 
   import InheritControl from './InheritControl.svelte';
@@ -46,13 +47,6 @@
     kind: 'switch' | 'choice';
     options: readonly Choice[];
   };
-
-  const ON = 'on';
-  const OFF = 'off';
-  const SWITCH: readonly Choice[] = [
-    { value: ON, label: 'On' },
-    { value: OFF, label: 'Off' },
-  ];
 
   function toggle(key: string, label: string): Field {
     return { key, label, kind: 'switch', options: SWITCH };
@@ -125,11 +119,12 @@
     {
       id: 'security',
       title: 'Security',
-      note: 'A repository that does not have one of these is left alone rather than asked, and the plan says which.',
+      note: 'A repository that does not have one of these is left alone rather than asked. Dependabot security updates are applied on their own, so they appear in the plan as a second action.',
       fields: [
         toggle('advanced_security', 'Advanced security'),
         toggle('secret_scanning', 'Secret scanning'),
         toggle('secret_scanning_push_protection', 'Push protection'),
+        toggle('dependabot_security_updates', 'Dependabot security updates'),
       ],
     },
   ];
@@ -200,7 +195,7 @@
       <div class="settings-rows">
         {#each group.fields as field (field.key)}
           <div class="settings-row">
-            <span class="settings-label">{field.label}</span>
+            <span class="sync-form-label">{field.label}</span>
             <span class="settings-spacer"></span>
             <InheritControl
               label={field.label}
@@ -275,11 +270,6 @@
 
   .settings-rows > .settings-row:last-child {
     padding-bottom: 0.15rem;
-  }
-
-  .settings-label {
-    font-size: 0.875rem;
-    font-weight: 600;
   }
 
   /* The control sits at the end of its row rather than at the end of the page:

@@ -13,6 +13,7 @@
    */
   import { canonicalStringify } from '#lib/preferences-sync.js';
   import { asList, lines, patchedAt, rowKeys, storedList, withoutAt } from '#lib/form-lists.js';
+  import { OFF, ON, SWITCH } from '#lib/form-switch.js';
   import type {
     SyncRuleset,
     SyncRulesetBypassActor,
@@ -45,13 +46,6 @@
     saving: boolean;
     onSave: (enabled: boolean, document: Record<string, unknown>) => void;
   } = $props();
-
-  const ON = 'on';
-  const OFF = 'off';
-  const SWITCH = [
-    { value: ON, label: 'On' },
-    { value: OFF, label: 'Off' },
-  ] as const;
 
   const TARGETS = [
     { value: 'branch', label: 'Branches' },
@@ -315,7 +309,7 @@
 -->
 {#snippet toggleRow(label: string, name: string, value: string, onSelect: (chosen: string) => void)}
   <div class="ruleset-row">
-    <span class="ruleset-label">{label}</span>
+    <span class="sync-form-label">{label}</span>
     <span class="ruleset-spacer"></span>
     <SegmentedControl {name} {label} options={SWITCH} {value} {disabled} {onSelect} />
   </div>
@@ -354,7 +348,7 @@
        rather than only in the API: a person who can turn removal on from this
        page has to be able to protect something from this page too. -->
   <label class="ruleset-field">
-    <span class="ruleset-field-label">Rulesets to leave alone</span>
+    <span class="sync-form-label">Rulesets to leave alone</span>
     <!-- The note is a sibling rather than a child, because everything inside a
          label becomes part of the control's name and a reader would hear the
          whole paragraph before reaching the box. -->
@@ -379,7 +373,7 @@
     <article class="ruleset">
       <div class="ruleset-row">
         <label class="ruleset-name">
-          <span class="ruleset-field-label">Name</span>
+          <span class="sync-form-label">Name</span>
           <input
             type="text"
             value={ruleset.name}
@@ -399,7 +393,7 @@
       </div>
 
       <div class="ruleset-row">
-        <span class="ruleset-label">Applies to</span>
+        <span class="sync-form-label">Applies to</span>
         <span class="ruleset-spacer"></span>
         <SegmentedControl
           name="{rowKey(index)}-target"
@@ -412,7 +406,7 @@
       </div>
 
       <div class="ruleset-row">
-        <span class="ruleset-label">Enforcement</span>
+        <span class="sync-form-label">Enforcement</span>
         <span class="ruleset-spacer"></span>
         <SegmentedControl
           name="{rowKey(index)}-enforcement"
@@ -425,7 +419,7 @@
       </div>
 
       <label class="ruleset-field">
-        <span class="ruleset-field-label">Refs it covers</span>
+        <span class="sync-form-label">Refs it covers</span>
         <textarea
           rows="2"
           {disabled}
@@ -446,7 +440,7 @@
       </p>
 
       <label class="ruleset-field">
-        <span class="ruleset-field-label">Refs it leaves out</span>
+        <span class="sync-form-label">Refs it leaves out</span>
         <textarea
           rows="2"
           {disabled}
@@ -498,7 +492,7 @@
       {#if ruleset.rules?.pull_request !== undefined}
         <div class="ruleset-rows ruleset-nested">
           <div class="ruleset-row">
-            <span class="ruleset-label">Approving reviews</span>
+            <span class="sync-form-label">Approving reviews</span>
             <span class="ruleset-spacer"></span>
             <input
               class="ruleset-count"
@@ -531,7 +525,7 @@
           <!-- GitHub needs at least one, so the plan would be refused with
                none. Said here rather than only in the error a save returns. -->
           <div class="ruleset-row">
-            <span class="ruleset-label">Merged by</span>
+            <span class="sync-form-label">Merged by</span>
             <span class="ruleset-spacer"></span>
             <div class="ruleset-methods">
               {#each MERGE_METHODS as method (method)}
@@ -563,7 +557,7 @@
       {#if ruleset.rules?.required_status_checks !== undefined}
         <div class="ruleset-nested">
           <label class="ruleset-field">
-            <span class="ruleset-field-label">Checks that must pass</span>
+            <span class="sync-form-label">Checks that must pass</span>
             <textarea
               rows="2"
               {disabled}
@@ -756,11 +750,6 @@
     justify-self: start;
   }
 
-  .ruleset-field-label {
-    font-size: 0.875rem;
-    font-weight: 600;
-  }
-
   .rulesets-empty,
   .ruleset-note {
     color: var(--dim);
@@ -794,11 +783,6 @@
     flex-wrap: wrap;
     gap: var(--space-3);
     padding-block: 0.7rem;
-  }
-
-  .ruleset-label {
-    font-size: 0.875rem;
-    font-weight: 600;
   }
 
   .ruleset-spacer {
