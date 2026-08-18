@@ -8,9 +8,11 @@
     tableFeatures,
   } from '@tanstack/svelte-table';
   import type { ColumnFiltersState, SortingState, Updater } from '@tanstack/svelte-table';
+  import type { VirtualRenderRow } from '../virtual-rows.js';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { createInfiniteQuery, type InfiniteData } from '@tanstack/svelte-query';
   import { untrack } from 'svelte';
+  import { createAttachmentKey } from 'svelte/attachments';
   import { MediaQuery } from 'svelte/reactivity';
   import { get } from 'svelte/store';
   import { useDebounce, useInterval } from 'runed';
@@ -47,9 +49,18 @@
     UpdateTargetUserInput,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
+  import CopyableLinkField from './CopyableLinkField.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
+  import FormError from './FormError.svelte';
+  import Select from './Select.svelte';
+  import Callout from './Callout.svelte';
+  import IdentityRow from './IdentityRow.svelte';
+  import Skeleton from './Skeleton.svelte';
+  import Button from './Button.svelte';
   import SortIndicator from './SortIndicator.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
+  import DataTable from './DataTable.svelte';
   import CopyReceipt from './CopyReceipt.svelte';
   import DecisionHistory from './DecisionHistory.svelte';
   import FilterMenu from './FilterMenu.svelte';
@@ -57,7 +68,7 @@
   import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
   import LoginField from './LoginField.svelte';
   import Modal from './Modal.svelte';
-  import PanelHeader from './PanelHeader.svelte';
+  import PageHeader from './PageHeader.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import RolePicker, { type RolePickerOption } from './RolePicker.svelte';
   import SearchField from './SearchField.svelte';
@@ -531,7 +542,7 @@
     getScrollElement: () => invitationScroll ?? null,
     overscan: 6,
   });
-  const userRenderRows = $derived.by(() =>
+  const userRenderRows: VirtualRenderRow[] = $derived.by(() =>
     desktopTableLayout.current
       ? $userVirtualizer.getVirtualItems().map((row) => ({ ...row, virtual: true as const }))
       : userTableRows.map((row, index) => ({
@@ -542,7 +553,7 @@
           virtual: false as const,
         })),
   );
-  const invitationRenderRows = $derived.by(() =>
+  const invitationRenderRows: VirtualRenderRow[] = $derived.by(() =>
     desktopTableLayout.current
       ? $invitationVirtualizer.getVirtualItems().map((row) => ({ ...row, virtual: true as const }))
       : invitationTableRows.map((row, index) => ({
@@ -1269,6 +1280,9 @@
     const last = pages.at(-1);
     return last === undefined ? null : { ...last, items: pages.flatMap((page) => page.items) };
   }
+  /* One key for every row, created once: `createAttachmentKey` mints a fresh symbol
+     each call, so one per row would give each row a different key. */
+  const ROW_PRESS = createAttachmentKey();
 </script>
 
 {#snippet sortButton(label: string, onSelect: () => void)}
@@ -1286,14 +1300,14 @@
 {/snippet}
 
 {#snippet headerActions()}
-  <button class="btn btn-signal" type="button" bind:this={addButton} onclick={openAddModal}>
-    <Icon name="user-plus" size={14} strokeWidth={2} />
-    <span class="button-label">{invitingFirst ? 'Invite user' : 'Add user'}</span>
-  </button>
+  <Button tone="signal" bind:element={addButton} onclick={openAddModal}>
+    {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
+    {invitingFirst ? 'Invite user' : 'Add user'}
+  </Button>
 {/snippet}
 
 <section class="plate user-management" aria-labelledby="user-management-heading">
-  <PanelHeader
+  <PageHeader
     id="user-management-heading"
     title="Access"
     description="Roles, invitations, and access decisions for this workspace"
@@ -1328,7 +1342,7 @@
       {/if}
     </div>
 
-    {#if failure !== null}<p class="form-error" role="alert">{failure}</p>{/if}
+    <FormError message={failure} />
 
     {#if activeSection === 'users'}
       <div id="users-list-panel" aria-label="Users">
@@ -1339,12 +1353,11 @@
           aria-busy={loadingUsers}
         >
           {#if loadingUsers && userPage === null}
-            <div class="table-skeleton" aria-hidden="true">
-              {#each [0, 1, 2, 3, 4, 5] as index (index)}
-                <span></span>
-              {/each}
-            </div>
-            <p class="visually-hidden" role="status">Loading users</p>
+            <Skeleton
+              label="Loading users"
+              --skeleton-bar-top="1.15rem"
+              --skeleton-bar-a-width="min(13rem, 28%)"
+            />
           {:else if userFailure !== null && userPage === null}
             <ResultProblem
               title="Users could not be loaded"
@@ -1363,174 +1376,163 @@
                 overContent
               />
             {/if}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <div
-              class="user-table-wrap table-card"
-              role="region"
-              aria-label="Panel users"
-              tabindex="0"
+            <DataTable
+              class="user-table-wrap"
+              tableClass="user-table"
+              caption="Panel users. Select a sortable column header to change the sort order"
+              regionLabel="Panel users"
+              rows={userRenderRows}
+              rowKey={(virtualRow) => virtualRow.key}
+              columnCount={5}
+              bind:body={userScroll}
+              rowAttrs={(virtualRow) => {
+                const user = userAt(virtualRow.index);
+                const opens = hasDecisionHistory(user);
+                return {
+                  class: [virtualRow.virtual && 'virtual-row', opens && 'history-row data-row']
+                    .filter(Boolean)
+                    .join(' '),
+                  /* The virtualiser's offset goes in a custom property rather than
+                     straight into `transform`, so the press can add a scale to the
+                     same property without overwriting the value that puts the row on
+                     screen. */
+                  style: virtualRow.virtual
+                    ? `height:${virtualRow.size}px;--row-y:${virtualRow.start}px`
+                    : '--row-y:0px',
+                  tabindex: opens ? 0 : undefined,
+                  onclick: (event: MouseEvent) => clickHistoryRow(event, user),
+                  onkeydown: (event: KeyboardEvent) => keyHistoryRow(event, user),
+                  [ROW_PRESS]: pressableRow,
+                };
+              }}
             >
-              <table class="user-table">
-                <caption class="visually-hidden">
-                  Panel users. Select a sortable column header to change the sort order
-                </caption>
-                <thead>
-                  <tr>
-                    <th aria-sort={userSortDirection('name')}>
-                      <div class="table-heading">
-                        {@render sortButton('User', () => selectUserSort('name'))}
-                      </div>
-                    </th>
-                    <th aria-sort={userSortDirection('role')}>
-                      <div class="table-heading">
-                        {@render sortButton('Role', () => selectUserSort('role'))}
-                        <FilterMenu
-                          label="Role"
-                          summary={filterSummary(userRoles.length)}
-                          hint="Filter by permission level"
-                          sections={ROLE_FILTERS}
-                          selected={userRoles}
-                          multiple
-                          align="end"
-                          onChange={(values) => userTable.getColumn('role')?.setFilterValue(values)}
-                        />
-                      </div>
-                    </th>
-                    <th class="filterable-heading">
-                      <div class="table-heading">
-                        <span class="table-heading-label">Status</span>
-                        <FilterMenu
-                          label="Status"
-                          summary={filterSummary(userStatuses.length)}
-                          hint="Filter by access status"
-                          sections={userStatusFilterSections}
-                          selected={userStatuses}
-                          multiple
-                          align="end"
-                          onChange={(values) =>
-                            userTable.getColumn('status')?.setFilterValue(values)}
-                        />
-                      </div>
-                    </th>
-                    <th aria-sort={userSortDirection('last_login')}>
-                      <div class="table-heading">
-                        {@render sortButton('Last login', () => selectUserSort('last_login'))}
-                      </div>
-                    </th>
-                    <th><span class="visually-hidden">Actions</span></th>
-                  </tr>
-                </thead>
-                <tbody bind:this={userScroll} data-panel-scroll>
-                  {#if users.length === 0}
-                    {@const hasUserFilters =
-                      userQuery !== '' || userRoles.length > 0 || userStatuses.length > 0}
-                    <tr class="empty-row">
-                      <td colspan="5">
-                        <TableEmptyState
-                          title={hasUserFilters
-                            ? 'No users match'
-                            : 'No users for this installation'}
-                          description={hasUserFilters
-                            ? 'Try another search or clear the active filters'
-                            : 'Added users will appear here'}
-                          actionLabel={hasUserFilters ? 'Clear filters' : undefined}
-                          onAction={hasUserFilters ? clearUserFilters : undefined}
-                        />
-                      </td>
-                    </tr>
-                  {/if}
-                  {#if desktopTableLayout.current}
-                    <tr
-                      class="virtual-spacer"
-                      aria-hidden="true"
-                      style:height={`${$userVirtualizer.getTotalSize()}px`}
-                      ><td colspan="5"></td></tr
-                    >
-                  {/if}
-                  {#each userRenderRows as virtualRow (virtualRow.key)}
-                    {@const user = userAt(virtualRow.index)}
-                    <!-- The virtualiser's offset goes in a custom property rather
-                         than straight into `transform`, so the press can add a
-                         scale to the same property without overwriting the value
-                         that puts the row on screen. -->
-                    <tr
-                      class:virtual-row={virtualRow.virtual}
-                      class:history-row={hasDecisionHistory(user)}
-                      class:data-row={hasDecisionHistory(user)}
-                      style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
-                      style:--row-y={virtualRow.virtual ? `${virtualRow.start}px` : '0px'}
-                      tabindex={hasDecisionHistory(user) ? 0 : undefined}
-                      onclick={(event) => clickHistoryRow(event, user)}
-                      onkeydown={(event) => keyHistoryRow(event, user)}
-                      {@attach pressableRow}
-                    >
-                      <th scope="row">
-                        <span class="user-identity">
-                          <Avatar account={user.account} size={32} />
-                          <!-- The hint sits outside the stack, not at the end of it:
-                               `.band-trim-stack` trims the last line's descender space, and a
-                               clipped span is a last child with no line to trim. -->
-                          {#if hasDecisionHistory(user)}
-                            <span class="visually-hidden">
-                              Select this row to review access decision history
-                            </span>
-                          {/if}
-                          <span class="band-trim-stack">
-                            <strong>{user.account.display_name}</strong>
-                            <span class="user-login mono">@{user.account.login}</span>
-                          </span>
+              {#snippet head()}
+                <tr>
+                  <th aria-sort={userSortDirection('name')}>
+                    <div class="table-heading">
+                      {@render sortButton('User', () => selectUserSort('name'))}
+                    </div>
+                  </th>
+                  <th aria-sort={userSortDirection('role')}>
+                    <div class="table-heading">
+                      {@render sortButton('Role', () => selectUserSort('role'))}
+                      <FilterMenu
+                        label="Role"
+                        summary={filterSummary(userRoles.length)}
+                        hint="Filter by permission level"
+                        sections={ROLE_FILTERS}
+                        selected={userRoles}
+                        multiple
+                        align="end"
+                        onChange={(values) => userTable.getColumn('role')?.setFilterValue(values)}
+                      />
+                    </div>
+                  </th>
+                  <th class="filterable-heading">
+                    <div class="table-heading">
+                      <span class="table-heading-label">Status</span>
+                      <FilterMenu
+                        label="Status"
+                        summary={filterSummary(userStatuses.length)}
+                        hint="Filter by access status"
+                        sections={userStatusFilterSections}
+                        selected={userStatuses}
+                        multiple
+                        align="end"
+                        onChange={(values) => userTable.getColumn('status')?.setFilterValue(values)}
+                      />
+                    </div>
+                  </th>
+                  <th aria-sort={userSortDirection('last_login')}>
+                    <div class="table-heading">
+                      {@render sortButton('Last login', () => selectUserSort('last_login'))}
+                    </div>
+                  </th>
+                  <th><span class="visually-hidden">Actions</span></th>
+                </tr>
+              {/snippet}
+              {#snippet lead()}
+                {#if desktopTableLayout.current}
+                  <tr
+                    class="virtual-spacer"
+                    aria-hidden="true"
+                    style:height={`${$userVirtualizer.getTotalSize()}px`}><td colspan="5"></td></tr
+                  >
+                {/if}
+              {/snippet}
+              {#snippet empty()}
+                {@const hasUserFilters =
+                  userQuery !== '' || userRoles.length > 0 || userStatuses.length > 0}
+                <TableEmptyState
+                  title={hasUserFilters ? 'No users match' : 'No users for this installation'}
+                  description={hasUserFilters
+                    ? 'Try another search or clear the active filters'
+                    : 'Added users will appear here'}
+                  actionLabel={hasUserFilters ? 'Clear filters' : undefined}
+                  onAction={hasUserFilters ? clearUserFilters : undefined}
+                />
+              {/snippet}
+              {#snippet cells(virtualRow)}
+                {@const user = userAt(virtualRow.index)}
+                <th scope="row">
+                  <IdentityRow>
+                    {#snippet mark()}<Avatar account={user.account} size={32} />{/snippet}
+                    {#snippet extra()}
+                      {#if hasDecisionHistory(user)}
+                        <span class="visually-hidden">
+                          Select this row to review access decision history
                         </span>
-                      </th>
-                      <td data-label="Role">
-                        {#if user.manageable && !readOnly}
-                          <RolePicker
-                            label="Role for {user.account.login}"
-                            value={selectedRole(user)}
-                            options={selectableRoleOptions()}
-                            disabled={savingAccount === user.account.id}
-                            onSelect={(value) => void changeRole(user, value)}
-                          />
-                        {:else}
-                          {@render roleValue(shownRole(user))}
-                        {/if}
-                      </td>
-                      <td data-label="Status">
-                        <Chip tone={statusTone(user)} dot>{statusLabel(user)}</Chip>
-                      </td>
-                      <td class="last-login" data-label="Last login">
-                        {#if user.last_login_at === undefined}
-                          <span class="dim"><span class="cap-trim">Never</span></span>
-                        {:else}
-                          <time
-                            datetime={user.last_login_at}
-                            title={formatTimestamp(user.last_login_at)}
-                          >
-                            <!-- Wrapped so there is a box to trim. These cells keep the control
+                      {/if}
+                    {/snippet}
+                    {#snippet name()}<strong>{user.account.display_name}</strong>{/snippet}
+                    {#snippet handle()}
+                      <span class="user-login mono">@{user.account.login}</span>
+                    {/snippet}
+                  </IdentityRow>
+                </th>
+                <td data-label="Role">
+                  {#if user.manageable && !readOnly}
+                    <RolePicker
+                      label="Role for {user.account.login}"
+                      value={selectedRole(user)}
+                      options={selectableRoleOptions()}
+                      disabled={savingAccount === user.account.id}
+                      onSelect={(value) => void changeRole(user, value)}
+                    />
+                  {:else}
+                    {@render roleValue(shownRole(user))}
+                  {/if}
+                </td>
+                <td data-label="Status">
+                  <Chip tone={statusTone(user)} dot>{statusLabel(user)}</Chip>
+                </td>
+                <td class="last-login" data-label="Last login">
+                  {#if user.last_login_at === undefined}
+                    <span class="dim"><span class="cap-trim">Never</span></span>
+                  {:else}
+                    <time datetime={user.last_login_at} title={formatTimestamp(user.last_login_at)}>
+                      <!-- Wrapped so there is a box to trim. These cells keep the control
                                  height so a row does not shrink, and a bare text node inside a
                                  34px flex box centres by its em box, which is 0.34px above the
                                  words - the whole column sat there. -->
-                            <span class="cap-trim">{formatRelative(user.last_login_at, now)}</span>
-                          </time>
-                        {/if}
-                      </td>
-                      <td class="row-actions" data-label="Actions">
-                        {#if user.manageable && !readOnly}
-                          <ActionMenu
-                            label={`Actions for @${user.account.login}`}
-                            items={userActionItems(user)}
-                            onSelect={(action, trigger) =>
-                              beginAction(user, action as UserAction, trigger ?? undefined)}
-                          />
-                        {:else}
-                          <span
-                            class="action-slot-empty"
-                            title="No actions available"
-                            aria-hidden="true"
-                          >
-                            <Icon name="more" size={14} strokeWidth={2} />
-                          </span>
-                        {/if}
-                        <!-- After the actions rather than before, and always
+                      <span class="cap-trim">{formatRelative(user.last_login_at, now)}</span>
+                    </time>
+                  {/if}
+                </td>
+                <td class="row-actions" data-label="Actions">
+                  {#if user.manageable && !readOnly}
+                    <ActionMenu
+                      label={`Actions for @${user.account.login}`}
+                      items={userActionItems(user)}
+                      onSelect={(action, trigger) =>
+                        beginAction(user, action as UserAction, trigger ?? undefined)}
+                    />
+                  {:else}
+                    <span class="action-slot-empty" title="No actions available" aria-hidden="true">
+                      <Icon name="more" size={14} strokeWidth={2} />
+                    </span>
+                  {/if}
+                  <!-- After the actions rather than before, and always
                              drawn: it points out of the row, and it is what says
                              this row opens something where its neighbours do
                              not. Revealing it on hover only told a reader that
@@ -1539,17 +1541,14 @@
                              The SLOT is always here even when the arrow is not,
                              so the menu beside it lands at the same x in every
                              row - see `.row-go`. -->
-                        <span class="row-go" aria-hidden="true">
-                          {#if hasDecisionHistory(user)}
-                            <Icon name="chevron-right" size={14} />
-                          {/if}
-                        </span>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
+                  <span class="row-go" aria-hidden="true">
+                    {#if hasDecisionHistory(user)}
+                      <Icon name="chevron-right" size={14} />
+                    {/if}
+                  </span>
+                </td>
+              {/snippet}
+            </DataTable>
           {/if}
           <InfiniteLoadSentinel
             active={!desktopTableLayout.current &&
@@ -1562,9 +1561,7 @@
           {#if userLoadMoreFailure !== null}
             <div class="load-more-alert" role="alert">
               <span>{userLoadMoreFailure}</span>
-              <button class="btn" type="button" onclick={() => void loadNextUsers()}
-                >Try again</button
-              >
+              <Button onclick={() => void loadNextUsers()}>Try again</Button>
             </div>
           {/if}
         </div>
@@ -1578,12 +1575,11 @@
           aria-busy={loadingInvitations}
         >
           {#if loadingInvitations && invitationPage === null}
-            <div class="table-skeleton" aria-hidden="true">
-              {#each [0, 1, 2, 3, 4, 5] as index (index)}
-                <span></span>
-              {/each}
-            </div>
-            <p class="visually-hidden" role="status">Loading invitations</p>
+            <Skeleton
+              label="Loading invitations"
+              --skeleton-bar-top="1.15rem"
+              --skeleton-bar-a-width="min(13rem, 28%)"
+            />
           {:else if invitationFailure !== null && invitationPage === null}
             <ResultProblem
               title="Invitations could not be loaded"
@@ -1602,174 +1598,164 @@
                 overContent
               />
             {/if}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <div
-              class="user-table-wrap table-card"
-              role="region"
-              aria-label="Panel invitations"
-              tabindex="0"
+            <DataTable
+              class="user-table-wrap"
+              tableClass="user-table invitation-table"
+              caption="Panel invitations. Select a sortable column header to change the sort order"
+              regionLabel="Panel invitations"
+              rows={invitationRenderRows}
+              rowKey={(virtualRow) => virtualRow.key}
+              columnCount={6}
+              bind:body={invitationScroll}
+              rowAttrs={(virtualRow) => ({
+                class: virtualRow.virtual ? 'virtual-row' : '',
+                /* `--row-y`, not an inline transform. This table wrote the transform
+                   straight onto the element, which is the form nothing can extend -
+                   see the note on the users table above and `.data-row` in app.css. */
+                style: virtualRow.virtual
+                  ? `height:${virtualRow.size}px;--row-y:${virtualRow.start}px`
+                  : '--row-y:0px',
+              })}
             >
-              <table class="user-table invitation-table">
-                <caption class="visually-hidden">
-                  Panel invitations. Select a sortable column header to change the sort order
-                </caption>
-                <thead>
-                  <tr>
-                    <th aria-sort={invitationSortDirection('name')}>
-                      <div class="table-heading">
-                        {@render sortButton('Invitee', () => selectInvitationSort('name'))}
-                      </div>
-                    </th>
-                    <th aria-sort={invitationSortDirection('role')}>
-                      <div class="table-heading">
-                        {@render sortButton('Role', () => selectInvitationSort('role'))}
-                        <FilterMenu
-                          label="Role"
-                          summary={filterSummary(invitationRoles.length)}
-                          hint="Filter by invited permission level"
-                          sections={INVITATION_ROLE_FILTERS}
-                          selected={invitationRoles}
-                          multiple
-                          align="end"
-                          onChange={(values) =>
-                            invitationTable.getColumn('role')?.setFilterValue(values)}
-                        />
-                      </div>
-                    </th>
-                    <th class="filterable-heading">
-                      <div class="table-heading">
-                        <span class="table-heading-label">Status</span>
-                        <FilterMenu
-                          label="Status"
-                          summary={filterSummary(invitationStatuses.length)}
-                          hint="Filter by invitation status"
-                          sections={INVITATION_STATUS_FILTERS}
-                          selected={invitationStatuses}
-                          multiple
-                          align="end"
-                          onChange={(values) =>
-                            invitationTable.getColumn('status')?.setFilterValue(values)}
-                        />
-                      </div>
-                    </th>
-                    <th class="sent-heading">
-                      <div class="table-heading"><span class="table-heading-label">Sent</span></div>
-                    </th>
-                    <th aria-sort={invitationSortDirection('expires')}>
-                      <div class="table-heading">
-                        {@render sortButton('Expires', () => selectInvitationSort('expires'))}
-                      </div>
-                    </th>
-                    <th><span class="visually-hidden">Actions</span></th>
-                  </tr>
-                </thead>
-                <tbody bind:this={invitationScroll} data-panel-scroll>
-                  {#if invitations.length === 0}
-                    {@const hasInvitationFilters =
-                      invitationQuery !== '' ||
-                      invitationRoles.length > 0 ||
-                      invitationStatuses.length > 0}
-                    <tr class="empty-row">
-                      <td colspan="6">
-                        <TableEmptyState
-                          title={hasInvitationFilters
-                            ? 'No invitations match'
-                            : 'No invitations for this installation'}
-                          description={hasInvitationFilters
-                            ? 'Try another search or clear the active filters'
-                            : 'New invitations will appear here'}
-                          actionLabel={hasInvitationFilters ? 'Clear filters' : undefined}
-                          onAction={hasInvitationFilters ? clearInvitationFilters : undefined}
-                        />
-                      </td>
-                    </tr>
-                  {/if}
-                  {#if desktopTableLayout.current}
-                    <tr
-                      class="virtual-spacer"
-                      aria-hidden="true"
-                      style:height={`${$invitationVirtualizer.getTotalSize()}px`}
-                      ><td colspan="6"></td></tr
+              {#snippet head()}
+                <tr>
+                  <th aria-sort={invitationSortDirection('name')}>
+                    <div class="table-heading">
+                      {@render sortButton('Invitee', () => selectInvitationSort('name'))}
+                    </div>
+                  </th>
+                  <th aria-sort={invitationSortDirection('role')}>
+                    <div class="table-heading">
+                      {@render sortButton('Role', () => selectInvitationSort('role'))}
+                      <FilterMenu
+                        label="Role"
+                        summary={filterSummary(invitationRoles.length)}
+                        hint="Filter by invited permission level"
+                        sections={INVITATION_ROLE_FILTERS}
+                        selected={invitationRoles}
+                        multiple
+                        align="end"
+                        onChange={(values) =>
+                          invitationTable.getColumn('role')?.setFilterValue(values)}
+                      />
+                    </div>
+                  </th>
+                  <th class="filterable-heading">
+                    <div class="table-heading">
+                      <span class="table-heading-label">Status</span>
+                      <FilterMenu
+                        label="Status"
+                        summary={filterSummary(invitationStatuses.length)}
+                        hint="Filter by invitation status"
+                        sections={INVITATION_STATUS_FILTERS}
+                        selected={invitationStatuses}
+                        multiple
+                        align="end"
+                        onChange={(values) =>
+                          invitationTable.getColumn('status')?.setFilterValue(values)}
+                      />
+                    </div>
+                  </th>
+                  <th class="sent-heading">
+                    <div class="table-heading"><span class="table-heading-label">Sent</span></div>
+                  </th>
+                  <th aria-sort={invitationSortDirection('expires')}>
+                    <div class="table-heading">
+                      {@render sortButton('Expires', () => selectInvitationSort('expires'))}
+                    </div>
+                  </th>
+                  <th><span class="visually-hidden">Actions</span></th>
+                </tr>
+              {/snippet}
+              {#snippet empty()}
+                {@const hasInvitationFilters =
+                  invitationQuery !== '' ||
+                  invitationRoles.length > 0 ||
+                  invitationStatuses.length > 0}
+                <TableEmptyState
+                  title={hasInvitationFilters
+                    ? 'No invitations match'
+                    : 'No invitations for this installation'}
+                  description={hasInvitationFilters
+                    ? 'Try another search or clear the active filters'
+                    : 'New invitations will appear here'}
+                  actionLabel={hasInvitationFilters ? 'Clear filters' : undefined}
+                  onAction={hasInvitationFilters ? clearInvitationFilters : undefined}
+                />
+              {/snippet}
+              {#snippet lead()}
+                {#if desktopTableLayout.current}
+                  <tr
+                    class="virtual-spacer"
+                    aria-hidden="true"
+                    style:height={`${$invitationVirtualizer.getTotalSize()}px`}
+                    ><td colspan="6"></td></tr
+                  >
+                {/if}
+              {/snippet}
+              {#snippet cells(virtualRow)}
+                {@const invitation = invitationAt(virtualRow.index)}
+                <th scope="row">
+                  <span class="user-identity">
+                    <Avatar account={invitation.account} size={32} />
+                    <span class="band-trim-stack">
+                      <strong>{invitation.account.display_name}</strong>
+                      <span class="user-login mono">@{invitation.account.login}</span>
+                    </span>
+                  </span>
+                </th>
+                <td data-label="Role">{@render roleValue(invitation.role ?? 'none')}</td>
+                <td data-label="Status"
+                  ><Chip tone={invitationTone(invitation.status)} dot
+                    >{invitationStatusLabel(invitation.status)}</Chip
+                  ></td
+                >
+                <td class="last-login" data-label="Sent">
+                  <time
+                    datetime={invitation.created_at}
+                    title={formatTimestamp(invitation.created_at)}
+                  >
+                    <span class="cap-trim">{formatRelative(invitation.created_at, now)}</span>
+                  </time>
+                </td>
+                <td class="last-login" data-label="Expires">
+                  {#if invitation.status === 'pending'}
+                    <time
+                      class="expires-soon"
+                      datetime={invitation.expires_at}
+                      title={formatTimestamp(invitation.expires_at)}
+                    >
+                      <span class="cap-trim">{formatUntil(invitation.expires_at, now)}</span>
+                    </time>
+                  {:else if invitation.status === 'expired'}
+                    <time
+                      datetime={invitation.expires_at}
+                      title={formatTimestamp(invitation.expires_at)}
+                    >
+                      <span class="cap-trim">{formatDateTime(invitation.expires_at)}</span>
+                    </time>
+                  {:else}
+                    <!-- Expiry stops meaning anything once the invitation is resolved. -->
+                    <span class="cell-dash" aria-hidden="true"><span class="cap-trim">—</span></span
                     >
                   {/if}
-                  {#each invitationRenderRows as virtualRow (virtualRow.key)}
-                    {@const invitation = invitationAt(virtualRow.index)}
-                    <tr
-                      class:virtual-row={virtualRow.virtual}
-                      style:height={virtualRow.virtual ? `${virtualRow.size}px` : undefined}
-                      style:transform={virtualRow.virtual
-                        ? `translateY(${virtualRow.start}px)`
-                        : undefined}
-                    >
-                      <th scope="row">
-                        <span class="user-identity">
-                          <Avatar account={invitation.account} size={32} />
-                          <span class="band-trim-stack">
-                            <strong>{invitation.account.display_name}</strong>
-                            <span class="user-login mono">@{invitation.account.login}</span>
-                          </span>
-                        </span>
-                      </th>
-                      <td data-label="Role">{@render roleValue(invitation.role ?? 'none')}</td>
-                      <td data-label="Status"
-                        ><Chip tone={invitationTone(invitation.status)} dot
-                          >{invitationStatusLabel(invitation.status)}</Chip
-                        ></td
-                      >
-                      <td class="last-login" data-label="Sent">
-                        <time
-                          datetime={invitation.created_at}
-                          title={formatTimestamp(invitation.created_at)}
-                        >
-                          <span class="cap-trim">{formatRelative(invitation.created_at, now)}</span>
-                        </time>
-                      </td>
-                      <td class="last-login" data-label="Expires">
-                        {#if invitation.status === 'pending'}
-                          <time
-                            class="expires-soon"
-                            datetime={invitation.expires_at}
-                            title={formatTimestamp(invitation.expires_at)}
-                          >
-                            <span class="cap-trim">{formatUntil(invitation.expires_at, now)}</span>
-                          </time>
-                        {:else if invitation.status === 'expired'}
-                          <time
-                            datetime={invitation.expires_at}
-                            title={formatTimestamp(invitation.expires_at)}
-                          >
-                            <span class="cap-trim">{formatDateTime(invitation.expires_at)}</span>
-                          </time>
-                        {:else}
-                          <!-- Expiry stops meaning anything once the invitation is resolved. -->
-                          <span class="cell-dash" aria-hidden="true"
-                            ><span class="cap-trim">—</span></span
-                          >
-                        {/if}
-                      </td>
-                      <td class="row-actions" data-label="Actions">
-                        {#if invitationActionItems(invitation).length > 0}
-                          <ActionMenu
-                            label={`Actions for @${invitation.account.login} invitation`}
-                            items={invitationActionItems(invitation)}
-                            onSelect={(action, trigger) =>
-                              chooseInvitationAction(invitation, action, trigger)}
-                          />
-                        {:else}
-                          <span
-                            class="action-slot-empty"
-                            title="No actions available"
-                            aria-hidden="true"
-                          >
-                            <Icon name="more" size={14} strokeWidth={2} />
-                          </span>
-                        {/if}
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
+                </td>
+                <td class="row-actions" data-label="Actions">
+                  {#if invitationActionItems(invitation).length > 0}
+                    <ActionMenu
+                      label={`Actions for @${invitation.account.login} invitation`}
+                      items={invitationActionItems(invitation)}
+                      onSelect={(action, trigger) =>
+                        chooseInvitationAction(invitation, action, trigger)}
+                    />
+                  {:else}
+                    <span class="action-slot-empty" title="No actions available" aria-hidden="true">
+                      <Icon name="more" size={14} strokeWidth={2} />
+                    </span>
+                  {/if}
+                </td>
+              {/snippet}
+            </DataTable>
           {/if}
           <InfiniteLoadSentinel
             active={!desktopTableLayout.current &&
@@ -1782,9 +1768,7 @@
           {#if invitationLoadMoreFailure !== null}
             <div class="load-more-alert" role="alert">
               <span>{invitationLoadMoreFailure}</span>
-              <button class="btn" type="button" onclick={() => void loadNextInvitations()}
-                >Try again</button
-              >
+              <Button onclick={() => void loadNextInvitations()}>Try again</Button>
             </div>
           {/if}
         </div>
@@ -1837,8 +1821,8 @@
 >
   <form id="add-user-form" class="add-user-form" onsubmit={submitAdd}>
     {#if addStage === 'confirm'}
-      <div class="confirmation-note">
-        <span class="warning-mark" aria-hidden="true">!</span>
+      <Callout>
+        {#snippet icon()}<span class="warning-mark" aria-hidden="true">!</span>{/snippet}
         <div>
           <strong>Declining was an answer</strong>
           <p>
@@ -1846,7 +1830,7 @@
             the audit record.
           </p>
         </div>
-      </div>
+      </Callout>
     {:else if addStage === 'form'}
       <div class="add-scope-summary">
         <span class="add-scope-icon" aria-hidden="true">
@@ -1898,35 +1882,28 @@
         />
         <label class="form-field">
           <span>Role</span>
-          <span class="select-wrap">
-            <select
-              class="select-input"
-              value={addRole}
-              aria-label="Role"
-              onchange={(event) => (addRole = event.currentTarget.value as InstallationRole)}
-            >
-              {#each addRoleOptions as option (option.value)}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
-            <Icon name="chevron-down" size={14} strokeWidth={2} />
-          </span>
+          <Select
+            value={addRole}
+            aria-label="Role"
+            onchange={(event) => (addRole = event.currentTarget.value as InstallationRole)}
+          >
+            {#each addRoleOptions as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </Select>
         </label>
         {#if accessMethod === 'invite'}
           <label class="form-field">
             <span>Expires after</span>
-            <span class="select-wrap">
-              <select
-                class="select-input"
-                bind:value={expiresInDays}
-                aria-label="Invitation expiry"
-              >
-                <option value={1}>1 day</option>
-                <option value={7}>7 days</option>
-                <option value={30}>30 days</option>
-              </select>
-              <Icon name="chevron-down" size={14} strokeWidth={2} />
-            </span>
+            <Select
+              bind:value={expiresInDays}
+              aria-label="Invitation expiry"
+              options={[
+                { value: 1, label: '1 day' },
+                { value: 7, label: '7 days' },
+                { value: 30, label: '30 days' },
+              ]}
+            />
           </label>
         {/if}
       </div>
@@ -1938,41 +1915,29 @@
           <p>Share this single-use link with the invited GitHub user</p>
         </div>
       </div>
-      <label class="form-field">
-        <span>Invitation link</span>
-        <input class="text-input mono" readonly value={generatedLink} />
-      </label>
-      {#if linkCopied === 'failed'}
-        <p class="link-clipboard" role="alert">
-          <Icon name="alert" size={13} strokeWidth={2} />
-          Copy it from the field above, the clipboard was not available
-        </p>
-      {/if}
+      <CopyableLinkField
+        label="Invitation link"
+        value={generatedLink}
+        failed={linkCopied === 'failed'}
+      />
     {/if}
-    {#if addFailure !== null}<p class="form-error" role="alert">{addFailure}</p>{/if}
+    <FormError message={addFailure} />
   </form>
 
   {#snippet footer()}
     {#if addStage === 'confirm'}
-      <button class="btn btn-ghost" type="button" onclick={() => (declinedLogin = null)}>
-        Back
-      </button>
-      <button
-        class="btn btn-signal"
-        type="button"
-        disabled={adding}
-        onclick={() => void grantAccess(true)}
-      >
+      <Button tone="ghost" onclick={() => (declinedLogin = null)}>Back</Button>
+      <Button tone="signal" disabled={adding} onclick={() => void grantAccess(true)}>
         {adding ? 'Sending…' : 'Invite again'}
-      </button>
+      </Button>
     {:else}
-      <button class="btn btn-ghost" type="button" onclick={closeAddModal}>
+      <Button tone="ghost" onclick={closeAddModal}>
         {addStage === 'form' ? 'Cancel' : 'Done'}
-      </button>
+      </Button>
     {/if}
     {#if addStage === 'form'}
-      <button
-        class="btn btn-signal"
+      <Button
+        tone="signal"
         type="submit"
         form="add-user-form"
         disabled={adding || login.trim() === '' || namingSelf}
@@ -1984,26 +1949,25 @@
           : accessMethod === 'invite'
             ? 'Send invitation'
             : 'Add user'}
-      </button>
+      </Button>
     {:else if addStage === 'link'}
-      <button
-        class="btn btn-signal copy-button"
-        type="button"
-        onclick={() => void copyGeneratedLink()}
-      >
+      <Button tone="signal" class="copy-button" onclick={() => void copyGeneratedLink()}>
         Copy link
-      </button>
+      </Button>
     {/if}
   {/snippet}
 </Modal>
 
-<Modal
+<ConfirmDialog
   id={ACTION_DIALOG}
   open={actionUser !== null && pendingAction !== null}
   title={actionTitle()}
   description={actionDescription()}
   returnFocus={actionTrigger}
   onClose={cancelAction}
+  onConfirm={() => void confirmAction()}
+  confirmTone={pendingAction === 'restore' ? 'signal' : 'stop'}
+  busy={savingAccount !== null}
 >
   {#if pendingAction === 'suspend'}
     <label class="form-field">
@@ -2013,61 +1977,35 @@
         placeholder="Add context for other administrators"
         maxlength="500"
         rows="4"
-        bind:value={reason}
-        data-modal-focus></textarea>
+        bind:value={reason}></textarea>
       <small>{reason.length}/500 characters</small>
     </label>
   {:else}
-    <div class="confirmation-note">
-      <span class="warning-mark" aria-hidden="true">!</span>
+    <Callout>
+      {#snippet icon()}<span class="warning-mark" aria-hidden="true">!</span>{/snippet}
       <p>Review this change carefully before confirming</p>
-    </div>
+    </Callout>
   {/if}
+</ConfirmDialog>
 
-  {#snippet footer()}
-    <button class="btn btn-ghost" type="button" data-modal-focus onclick={cancelAction}
-      >Cancel</button
-    >
-    <button
-      class="btn"
-      class:btn-stop={pendingAction !== 'restore'}
-      class:btn-signal={pendingAction === 'restore'}
-      type="button"
-      disabled={savingAccount !== null}
-      onclick={() => void confirmAction()}
-    >
-      {savingAccount === null ? 'Confirm' : 'Saving…'}
-    </button>
-  {/snippet}
-</Modal>
-
-<Modal
+<ConfirmDialog
   id={INVITATION_DIALOG}
   open={pendingInvitation !== null}
   title={`Revoke invitation for @${pendingInvitation?.account.login ?? ''}`}
   description="The current link will stop working immediately and the audit record will remain"
   returnFocus={invitationActionTrigger}
   onClose={closeInvitationAction}
+  onConfirm={() => void revoke()}
+  confirmTone="stop"
+  confirmLabel="Revoke invitation"
+  busyLabel="Revoking…"
+  busy={invitationBusy !== null}
 >
-  <div class="confirmation-note">
-    <span class="warning-mark" aria-hidden="true">!</span>
+  <Callout>
+    {#snippet icon()}<span class="warning-mark" aria-hidden="true">!</span>{/snippet}
     <p>The user can only join if you create and share a new invitation</p>
-  </div>
-
-  {#snippet footer()}
-    <button class="btn btn-ghost" type="button" data-modal-focus onclick={closeInvitationAction}
-      >Cancel</button
-    >
-    <button
-      class="btn btn-stop"
-      type="button"
-      disabled={invitationBusy !== null}
-      onclick={() => void revoke()}
-    >
-      {invitationBusy === null ? 'Revoke invitation' : 'Revoking…'}
-    </button>
-  {/snippet}
-</Modal>
+  </Callout>
+</ConfirmDialog>
 
 <style>
   .user-management {
@@ -2155,63 +2093,24 @@
     cursor: progress;
   }
 
-  .empty-row td {
+  :global(.empty-row td) {
     border-bottom: 0;
     height: 12rem;
   }
 
-  .table-skeleton {
-    display: grid;
-  }
-
-  .table-skeleton span {
-    animation: user-skeleton-pulse 1.35s ease-in-out infinite alternate;
-    border-bottom: 1px solid var(--rule);
-    display: block;
-    height: 3.5rem;
-    position: relative;
-  }
-
-  .table-skeleton span::before,
-  .table-skeleton span::after {
-    background: var(--surface-inset);
-    border-radius: var(--radius-control);
-    content: '';
-    height: 0.75rem;
-    left: var(--space-4);
-    position: absolute;
-    top: 1.15rem;
-    width: min(13rem, 28%);
-  }
-
-  .table-skeleton span::after {
-    left: 46%;
-    width: min(8rem, 18%);
-  }
-
-  @keyframes user-skeleton-pulse {
-    from {
-      opacity: 0.48;
-    }
-
-    to {
-      opacity: 0.88;
-    }
-  }
-
   /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
-  .user-table-wrap {
+  :global(.user-table-wrap) {
     display: flex;
     flex: 1;
     min-height: 0;
   }
 
-  .user-table-wrap:focus-visible {
+  :global(.user-table-wrap:focus-visible) {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
   }
 
-  .user-table {
+  :global(.user-table) {
     background: var(--surface-base);
     /* Separated, not collapsed: a collapsed border is shared between adjacent
        rows, so each cell owns half of it and every row box lands on a .5. */
@@ -2229,14 +2128,14 @@
   /* `tbody th` as well as `td`: the identity cell is a row header, and without
      the separator it is a pixel taller than the cells beside it - which centres
      its contents half a pixel lower than the rest of the row. */
-  .user-table td,
-  .user-table tbody th {
+  :global(.user-table td),
+  :global(.user-table tbody th) {
     border-bottom: 1px solid var(--rule);
     font-size: var(--font-size-meta);
   }
 
-  .user-table th,
-  .user-table td {
+  :global(.user-table th),
+  :global(.user-table td) {
     text-align: left;
     vertical-align: middle;
   }
@@ -2247,29 +2146,29 @@
      cell of every row in this table is a `th scope="row"`, so it kept no padding
      at all and started its words 15px left of the heading's. The line is thead
      against tbody, never th against td. */
-  .user-table tbody :is(th, td) {
+  :global(.user-table tbody :is(th, td)) {
     padding: var(--space-2) var(--space-3);
   }
 
-  .user-table tbody :is(th, td):first-child {
+  :global(.user-table tbody :is(th, td):first-child) {
     padding-left: var(--space-4);
   }
 
-  .user-table tbody :is(th, td):last-child {
+  :global(.user-table tbody :is(th, td):last-child) {
     padding-right: var(--space-3);
   }
 
   /* Typography, ground and the heading's whole shape come from `app.css`. Only
      the band's height and the first column's wider inset are this table's. */
-  .user-table thead th {
+  :global(.user-table thead th) {
     height: 2.5rem;
   }
 
-  .user-table thead th:first-child {
+  :global(.user-table thead th:first-child) {
     --heading-pad-start: var(--space-4);
   }
 
-  .user-table tbody tr.history-row {
+  :global(.user-table tbody tr.history-row) {
     cursor: pointer;
     transition:
       background-color var(--duration-fast) var(--ease-standard),
@@ -2281,12 +2180,12 @@
      goes through the same property the virtualiser uses for the row's position,
      which is why that position is a variable - written straight into `transform`
      it would be overwritten here and the row would jump to the top of the list. */
-  .user-table tbody tr.history-row {
+  :global(.user-table tbody tr.history-row) {
     transform: translateY(var(--row-y, 0px));
     transform-origin: center;
   }
 
-  .user-table tbody tr.history-row:focus-visible {
+  :global(.user-table tbody tr.history-row:focus-visible) {
     outline: 2px solid var(--focus);
     outline-offset: -2px;
   }
@@ -2297,19 +2196,19 @@
       overflow: hidden;
     }
 
-    .user-table {
+    :global(.user-table) {
       display: flex;
       flex: 1;
       flex-direction: column;
       min-height: 0;
     }
 
-    .user-table thead {
+    :global(.user-table thead) {
       display: block;
       flex: none;
     }
 
-    .user-table tbody {
+    :global(.user-table tbody) {
       background: var(--table-filler-bg);
       display: block;
       flex: 1;
@@ -2318,8 +2217,8 @@
       position: relative;
     }
 
-    .user-table thead tr,
-    .user-table tbody tr {
+    :global(.user-table thead tr),
+    :global(.user-table tbody tr) {
       display: grid;
       grid-template-columns:
         minmax(16rem, 1.55fr) minmax(10rem, 1fr) minmax(8rem, 0.8fr) minmax(9rem, 0.9fr)
@@ -2327,8 +2226,8 @@
       width: 100%;
     }
 
-    .invitation-table thead tr,
-    .invitation-table tbody tr {
+    :global(.invitation-table thead tr),
+    :global(.invitation-table tbody tr) {
       grid-template-columns:
         minmax(13rem, 1.4fr) minmax(7.5rem, 0.9fr) minmax(7.5rem, 0.8fr) minmax(6.5rem, 0.7fr)
         minmax(7.5rem, 0.8fr) var(--row-action-column);
@@ -2343,7 +2242,7 @@
        RepositoryList. A table is as tall as its contents now, and something
        absolutely positioned contributes none, so the message disappeared and
        left a bare header behind it. */
-    .user-table tbody tr.empty-row {
+    :global(.user-table tbody tr.state-row) {
       align-content: center;
       grid-template-columns: minmax(0, 1fr);
       min-height: 12rem;
@@ -2352,32 +2251,31 @@
     /* Pin the grid track to the row's fixed height: auto-sizing would take the
        tallest cell's border-box, push the bottom border one pixel past the
        virtual row, and let the next row paint over every separator. */
-    .user-table tbody tr:not(.virtual-spacer) {
+    :global(.user-table tbody tr:not(.virtual-spacer)) {
       grid-template-rows: 100%;
     }
 
-    /* The rows this component paints are the ones it does not hand to
-       `.data-row`. They have to be opaque - the tbody behind them is the scroll
-       container and carries the filler that fills the space under the last row -
-       and painting them all here is what beat the shared hover, because a
-       component's rule carries its scope class and outranks `app.css` by one.
-       A row that opens something keeps its ground and every state from
-       `.data-row`, which is the whole point of wearing the class. */
-    .user-table tbody tr:not(.virtual-spacer, .data-row) {
+    /* The rows this component paints are the ones it does not hand to `.data-row`.
+       They have to be opaque - the tbody behind them is the scroll container and
+       carries the filler under the last row - and painting them all here is what beat
+       the shared hover, because this rule outranks `app.css` by a class. A row that
+       opens something keeps its ground and every state from `.data-row`, which is the
+       whole point of wearing the class. */
+    :global(.user-table tbody tr:not(.virtual-spacer, .data-row)) {
       background: var(--surface-base);
     }
 
-    .user-table tbody tr:not(.virtual-spacer) > th,
-    .user-table tbody tr:not(.virtual-spacer) > td {
+    :global(.user-table tbody tr:not(.virtual-spacer) > th),
+    :global(.user-table tbody tr:not(.virtual-spacer) > td) {
       align-items: center;
       display: flex;
     }
 
-    .user-table tbody .row-actions {
+    :global(.user-table tbody .row-actions) {
       justify-content: flex-end;
     }
 
-    .user-table tbody .virtual-row {
+    :global(.user-table tbody .virtual-row) {
       left: 0;
       position: absolute;
       top: 0;
@@ -2386,7 +2284,7 @@
       transform: translateY(var(--row-y, 0px));
     }
 
-    .user-table tbody .virtual-spacer {
+    :global(.user-table tbody .virtual-spacer) {
       background: transparent;
       border: 0;
       display: block;
@@ -2394,7 +2292,7 @@
       width: 1px;
     }
 
-    .virtual-spacer td {
+    :global(.virtual-spacer td) {
       display: none;
     }
   }
@@ -2440,7 +2338,7 @@
     vertical-align: middle;
   }
 
-  .user-table tbody :global(.role-trigger) {
+  :global(.user-table tbody .role-trigger) {
     background: transparent;
     border-color: transparent;
     /* Pull the trigger's padding and border back so its icon sits at the
@@ -2448,21 +2346,21 @@
     margin-left: calc(-0.5rem - 1px);
   }
 
-  .user-table tbody :global(.role-trigger .role-chevron) {
+  :global(.user-table tbody .role-trigger .role-chevron) {
     opacity: 0;
     transition: opacity var(--duration-fast) var(--ease-standard);
   }
 
-  .user-table tbody tr:hover :global(.role-trigger:not(:disabled)),
-  .user-table tbody :global(.role-trigger:focus-visible),
-  .user-table tbody :global(.role-trigger[aria-expanded='true']) {
+  :global(.user-table tbody tr:hover .role-trigger:not(:disabled)),
+  :global(.user-table tbody .role-trigger:focus-visible),
+  :global(.user-table tbody .role-trigger[aria-expanded='true']) {
     background: var(--control-surface);
     border-color: var(--control-border);
   }
 
-  .user-table tbody tr:hover :global(.role-trigger .role-chevron),
-  .user-table tbody :global(.role-trigger:focus-visible .role-chevron),
-  .user-table tbody :global(.role-trigger[aria-expanded='true'] .role-chevron) {
+  :global(.user-table tbody tr:hover .role-trigger .role-chevron),
+  :global(.user-table tbody .role-trigger:focus-visible .role-chevron),
+  :global(.user-table tbody .role-trigger[aria-expanded='true'] .role-chevron) {
     opacity: 1;
   }
 
@@ -2497,7 +2395,7 @@
    * row never carries a chevron, and giving it room for one would be 14px of
    * nothing at the end of every row.
    */
-  .user-table {
+  :global(.user-table) {
     /* The 14px chevron. Written once because two things measure it: the slot it
        sits in, and the column that has to be wide enough to hold that slot
        beside the menu. */
@@ -2507,7 +2405,7 @@
     );
   }
 
-  .invitation-table {
+  :global(.invitation-table) {
     --row-action-column: 4.25rem;
   }
 
@@ -2540,8 +2438,10 @@
       transform var(--duration-fast) var(--ease-standard);
   }
 
-  tr.history-row:hover .row-go,
-  tr.history-row:focus-visible .row-go {
+  /* `:global` on the row half only: the `<tr>` is `DataTable`'s element now, while
+     `.row-go` is drawn in this file's `cells` snippet and stays scoped. */
+  :global(tr.history-row:hover) .row-go,
+  :global(tr.history-row:focus-visible) .row-go {
     opacity: 1;
     transform: translateX(2px);
   }
@@ -2572,7 +2472,7 @@
     font-weight: 600;
   }
 
-  .invitation-table {
+  :global(.invitation-table) {
     min-width: 44rem;
   }
 
@@ -2855,7 +2755,7 @@
   }
 
   .invitation-created p,
-  .confirmation-note p {
+  :global(.callout) p {
     color: var(--dim);
     font-size: 0.75rem;
     margin: 0.15rem 0 0;
@@ -2908,29 +2808,40 @@
     min-width: 6.75rem;
   }
 
+  /* Not `stacked` on `DataTable`, and this block is why. Nor `pinned` - see the
+     64.001rem block above, which lays a row out as a GRID rather than as a table so
+     the two halves can share one set of column tracks. The shared pinned layout says
+     `display: table` on a row at two classes and two elements, which outranks this
+     file's one class and two, and the headings ended up 195px from their cells.
+     ------------------------------------------------
+     The shared stacked layout hides `thead` at 64rem, and these two tables carry
+     their filters IN their column headings with no tools menu to fall back on -
+     so hiding the band takes the only way to filter with it. Their own mobile
+     layout starts at 48rem instead and keeps the headings, which is what
+     `mobile-layout.test.ts` asks for at 320 and 375. */
   @media (max-width: 48rem) {
     .identity-grid.with-expiry {
       grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(6.5rem, 0.75fr));
     }
 
-    .user-table-wrap {
+    :global(.user-table-wrap) {
       overflow: visible;
       padding: var(--space-3);
     }
 
-    .user-table {
+    :global(.user-table) {
       display: block;
       min-width: 0;
     }
 
-    .user-table thead {
+    :global(.user-table thead) {
       display: block;
     }
 
     /* Wrapped, because these are four independent chips rather than a row that
        has to stay a row: unwrapped, the last of them was cut off by the card's
        edge with no way to reach it. */
-    .user-table thead tr {
+    :global(.user-table thead tr) {
       align-items: center;
       border: 0;
       display: flex;
@@ -2939,7 +2850,7 @@
       padding: 0 0 var(--space-3);
     }
 
-    .user-table thead th {
+    :global(.user-table thead th) {
       display: block;
       padding: 0;
     }
@@ -2949,7 +2860,7 @@
        has no sort button, only a funnel, and hiding it took the funnel with it
        - on a phone there was no way to filter users or invitations by status at
        all. The control was still in the page, focusable, in a 1px box. */
-    .user-table thead th:not(:has(.table-sort-button)):not(:has(.filter-trigger)) {
+    :global(.user-table thead th:not(:has(.table-sort-button)):not(:has(.filter-trigger))) {
       clip-path: inset(50%);
       height: 1px;
       overflow: hidden;
@@ -2962,13 +2873,13 @@
        ride and it goes back into the flow beside the words. This is the one place
        the shared full-cell target does not apply - see `.table-heading` in
        `app.css` - because the chip IS the control. */
-    .user-table thead .table-heading,
-    .user-table thead .table-sort-button {
+    :global(.user-table thead .table-heading),
+    :global(.user-table thead .table-sort-button) {
       height: var(--control-height-compact);
       width: auto;
     }
 
-    .user-table thead :global(.filter-trigger) {
+    :global(.user-table thead .filter-trigger) {
       inset: auto;
       margin-block: 0;
       position: relative;
@@ -2976,13 +2887,13 @@
 
     /* The chip carries the inset now, so the label inside it must not carry it
        twice. */
-    .user-table thead .table-heading > .table-heading-label {
+    :global(.user-table thead .table-heading > .table-heading-label) {
       padding-inline: 0;
     }
 
     /* Dressed as the sort chips beside it: it does the same job in the same row,
        and the border is what makes either read as something to press. */
-    .user-table thead th.filterable-heading .table-heading {
+    :global(.user-table thead th.filterable-heading .table-heading) {
       background: var(--control-bg);
       border: 1px solid var(--control-border);
       border-radius: var(--radius-control);
@@ -2990,7 +2901,7 @@
       padding-inline: var(--space-3) var(--space-1);
     }
 
-    .user-table thead .table-sort-button {
+    :global(.user-table thead .table-sort-button) {
       background: var(--control-bg);
       border: 1px solid var(--control-border);
       border-radius: var(--radius-control);
@@ -2998,18 +2909,18 @@
       padding-inline: var(--space-3);
     }
 
-    .user-table thead .table-sort-button:hover,
-    .user-table thead .table-sort-button:focus-visible {
+    :global(.user-table thead .table-sort-button:hover),
+    :global(.user-table thead .table-sort-button:focus-visible) {
       background: var(--control-bg-hover);
       color: var(--text);
     }
 
-    .user-table tbody {
+    :global(.user-table tbody) {
       display: grid;
       gap: var(--space-2);
     }
 
-    .user-table tbody tr {
+    :global(.user-table tbody tr) {
       background: var(--surface-raised);
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-control);
@@ -3020,19 +2931,19 @@
       position: relative;
     }
 
-    .user-table th,
-    .user-table td {
+    :global(.user-table th),
+    :global(.user-table td) {
       border: 0;
       display: grid;
       gap: var(--space-1);
       padding: 0;
     }
 
-    .user-table tbody th {
+    :global(.user-table tbody th) {
       grid-column: 1 / -1;
     }
 
-    .user-table td:not(.row-actions)::before {
+    :global(.user-table td:not(.row-actions)::before) {
       color: var(--text-muted);
       content: attr(data-label);
       font: 650 var(--font-size-compact) / 1 var(--sans);
@@ -3040,13 +2951,13 @@
       text-transform: uppercase;
     }
 
-    .user-table .row-actions {
+    :global(.user-table .row-actions) {
       position: absolute;
       right: var(--space-3);
       top: var(--space-3);
     }
 
-    .user-table .user-identity {
+    :global(.user-table .user-identity) {
       min-width: 0;
       padding-right: 2.5rem;
     }
@@ -3073,7 +2984,7 @@
   }
 
   @media (max-width: 22rem) {
-    .user-table tbody tr {
+    :global(.user-table tbody tr) {
       grid-template-columns: minmax(0, 1fr);
     }
   }

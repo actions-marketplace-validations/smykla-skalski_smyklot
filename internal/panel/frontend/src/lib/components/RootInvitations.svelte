@@ -16,8 +16,17 @@
     PanelInvitation,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
+  import Button, { type ButtonTone } from './Button.svelte';
+  import CopyableLinkField from './CopyableLinkField.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
+  import FormError from './FormError.svelte';
+  import Select from './Select.svelte';
+  import Callout from './Callout.svelte';
+  import IdentityRow from './IdentityRow.svelte';
+  import Skeleton from './Skeleton.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
+  import DataTable from './DataTable.svelte';
   import FilterMenu from './FilterMenu.svelte';
   import Icon from './Icon.svelte';
   import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
@@ -45,6 +54,37 @@
     },
   ] satisfies readonly FilterSection[];
 
+  /**
+   * ## Why this is not merged with `UserManagement`'s invitation half
+   *
+   * The plan this branch followed called these two "one feature written twice" and
+   * counted fourteen concerns matching one for one - ~450 lines of markup and ~250 of
+   * CSS. That was true when it was written. It is not true now, and the reason is that
+   * the merge already happened, from underneath: **twelve of the fourteen are the same
+   * component in both files.** `DataTable`, `IdentityRow`, `Chip`, `TableEmptyState`,
+   * `InfiniteLoadSentinel`, `ConfirmDialog`, `Callout`, `Select`, `Button`,
+   * `CopyableLinkField`, `Skeleton` and `FormError` are imported by each. Extracting
+   * the primitives and the table shell did the work a wrapper component was going to.
+   *
+   * What is left is not duplication:
+   *
+   * - **Different features.** This one reissues AND revokes; the installation's half
+   *   only revokes. This one has a three-stage create - form, a confirmation when the
+   *   invitee has declined before, then the link - and the other has two. `createStage`
+   *   appears eleven times here and nowhere there.
+   * - **Different words for the same act.** "The current link stops working immediately
+   *   and its audit record remains" here; "The current link will stop working
+   *   immediately and the audit record will remain" there. Same meaning, and a merge
+   *   has to delete one of them - which is a copy decision, not a refactor. Both are
+   *   deployed and neither is wrong.
+   *
+   * A wrapper over what remains would take a `reissue?`, a `stages`, a `confirmCopy`
+   * and a `warning` - four props whose only job is to say which of the two callers is
+   * calling. That is a component that has learned nothing, and it would put a seam
+   * through the one part a reader of either page most needs to follow.
+   *
+   * Worth revisiting if the two features converge. Not worth forcing while they differ.
+   */
   const {
     fetchPage,
     create,
@@ -142,6 +182,11 @@
     const action = dialogRoute.param(ACTION_DIALOG, 'action');
     return action === 'reissue' || action === 'revoke' ? action : null;
   });
+  /* Reissuing hands an invitation back; revoking takes it away. One value rather
+     than two class toggles that nothing stopped from both being on. */
+  const confirmTone = $derived<ButtonTone>(
+    pendingAction === 'reissue' ? 'signal' : pendingAction === 'revoke' ? 'stop' : 'default',
+  );
 
   useInterval(30_000, { callback: () => (now = Date.now()) });
   const debouncedSearch = useDebounce((value: string) => (query = value), 180);
@@ -406,152 +451,131 @@
         onRetry={() => void loadPage(undefined, false)}
       />
     {:else if loading && page === null}
-      <div class="table-skeleton" aria-hidden="true">
-        {#each [0, 1, 2, 3, 4, 5] as index (index)}<span></span>{/each}
-      </div>
+      <Skeleton bars={false} --skeleton-min-height="10rem" />
     {:else}
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <div
-        class="table-scroll table-card"
-        role="region"
-        tabindex="0"
-        aria-label="Root invitations table"
+      <DataTable
+        class="table-scroll"
+        pinned
+        stacked
+        caption="Root role invitations"
+        regionLabel="Root invitations table"
+        rows={invitations}
+        rowKey={(invitation) => invitation.id}
+        columnCount={6}
+        onBodyScroll={loadFromScroll}
       >
-        <table>
-          <caption class="visually-hidden">Root role invitations</caption>
-          <thead>
-            <tr>
-              <th scope="col" aria-sort={sortDirection('name')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('name')}
-                  >
-                    <span class="table-heading-label">Invitee</span><SortIndicator />
-                  </button>
-                </div>
-              </th>
-              <th scope="col">
-                <div class="table-heading">
-                  <span class="table-heading-label">System role</span>
-                </div>
-              </th>
-              <th scope="col">
-                <div class="table-heading">
-                  <span class="table-heading-label">Status</span>
-                  <FilterMenu
-                    label="Invitation status"
-                    summary={statuses.length === 0 ? 'All statuses' : `${statuses.length} selected`}
-                    hint="Filter invitation lifecycle"
-                    sections={STATUS_FILTERS}
-                    selected={statuses}
-                    multiple
-                    align="end"
-                    onChange={selectStatuses}
-                  />
-                </div>
-              </th>
-              <th scope="col" aria-sort={sortDirection('expiry')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('expiry')}
-                  >
-                    <span class="table-heading-label">Expires</span><SortIndicator />
-                  </button>
-                </div>
-              </th>
-              <th scope="col" aria-sort={sortDirection('created')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('created')}
-                  >
-                    <span class="table-heading-label">Created</span><SortIndicator />
-                  </button>
-                </div>
-              </th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
-            </tr>
-          </thead>
-          <tbody data-panel-scroll onscroll={loadFromScroll}>
-            {#each invitations as invitation (invitation.id)}
-              <tr>
-                <td data-label="User">
-                  <span class="identity">
-                    <Avatar account={invitation.account} size={32} />
-                    <span class="band-trim-stack"
-                      ><strong>{invitation.account.display_name}</strong><span class="mono"
-                        >@{invitation.account.login}</span
-                      ></span
-                    >
-                  </span>
-                </td>
-                <td data-label="System role"><Chip tone="signal">Root</Chip></td>
-                <td data-label="Status">
-                  <Chip tone={statusTone(invitation.status)} dot
-                    >{statusLabel(invitation.status)}</Chip
-                  >
-                </td>
-                <td data-label="Expires">
-                  {#if invitation.status === 'pending'}
-                    <time
-                      class="expires-soon"
-                      datetime={invitation.expires_at}
-                      title={formatTimestamp(invitation.expires_at)}
-                    >
-                      {formatUntil(invitation.expires_at, now)}
-                    </time>
-                  {:else if invitation.status === 'expired'}
-                    <time
-                      datetime={invitation.expires_at}
-                      title={formatTimestamp(invitation.expires_at)}
-                    >
-                      {formatDateTime(invitation.expires_at)}
-                    </time>
-                  {:else}
-                    <!-- Expiry stops meaning anything once the invitation is resolved. -->
-                    <span class="cell-dash" aria-hidden="true">—</span>
-                  {/if}
-                </td>
-                <td data-label="Created">
-                  <time
-                    datetime={invitation.created_at}
-                    title={formatTimestamp(invitation.created_at)}
-                  >
-                    {formatRelative(invitation.created_at, now)}
-                  </time>
-                </td>
-                <td class="row-actions" data-label="Actions">
-                  {#if actionItems(invitation).length > 0}
-                    <ActionMenu
-                      label={`Actions for @${invitation.account.login} invitation`}
-                      items={actionItems(invitation)}
-                      onSelect={(action, trigger) => chooseAction(invitation, action, trigger)}
-                    />
-                  {/if}
-                </td>
-              </tr>
+        {#snippet head()}
+          <tr>
+            <th scope="col" aria-sort={sortDirection('name')}>
+              <div class="table-heading">
+                <button class="table-sort-button" type="button" onclick={() => toggleSort('name')}>
+                  <span class="table-heading-label">Invitee</span><SortIndicator />
+                </button>
+              </div>
+            </th>
+            <th scope="col">
+              <div class="table-heading">
+                <span class="table-heading-label">System role</span>
+              </div>
+            </th>
+            <th scope="col">
+              <div class="table-heading">
+                <span class="table-heading-label">Status</span>
+                <FilterMenu
+                  label="Invitation status"
+                  summary={statuses.length === 0 ? 'All statuses' : `${statuses.length} selected`}
+                  hint="Filter invitation lifecycle"
+                  sections={STATUS_FILTERS}
+                  selected={statuses}
+                  multiple
+                  align="end"
+                  onChange={selectStatuses}
+                />
+              </div>
+            </th>
+            <th scope="col" aria-sort={sortDirection('expiry')}>
+              <div class="table-heading">
+                <button
+                  class="table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('expiry')}
+                >
+                  <span class="table-heading-label">Expires</span><SortIndicator />
+                </button>
+              </div>
+            </th>
+            <th scope="col" aria-sort={sortDirection('created')}>
+              <div class="table-heading">
+                <button
+                  class="table-sort-button"
+                  type="button"
+                  onclick={() => toggleSort('created')}
+                >
+                  <span class="table-heading-label">Created</span><SortIndicator />
+                </button>
+              </div>
+            </th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        {/snippet}
+        {#snippet cells(invitation)}
+          <td data-label="User">
+            <IdentityRow>
+              {#snippet mark()}<Avatar account={invitation.account} size={32} />{/snippet}
+              {#snippet name()}<strong>{invitation.account.display_name}</strong>{/snippet}
+              {#snippet handle()}
+                <span class="mono">@{invitation.account.login}</span>
+              {/snippet}
+            </IdentityRow>
+          </td>
+          <td data-label="System role"><Chip tone="signal">Root</Chip></td>
+          <td data-label="Status">
+            <Chip tone={statusTone(invitation.status)} dot>{statusLabel(invitation.status)}</Chip>
+          </td>
+          <td data-label="Expires">
+            {#if invitation.status === 'pending'}
+              <time
+                class="expires-soon"
+                datetime={invitation.expires_at}
+                title={formatTimestamp(invitation.expires_at)}
+              >
+                {formatUntil(invitation.expires_at, now)}
+              </time>
+            {:else if invitation.status === 'expired'}
+              <time datetime={invitation.expires_at} title={formatTimestamp(invitation.expires_at)}>
+                {formatDateTime(invitation.expires_at)}
+              </time>
             {:else}
-              <tr class="empty-row">
-                <td colspan="6">
-                  <TableEmptyState
-                    title={hasFilters ? 'No invitations match' : 'No Root invitations'}
-                    description={hasFilters
-                      ? 'Try another search or clear the active filters'
-                      : 'Pending Root invitations will appear here'}
-                    actionLabel={hasFilters ? 'Clear filters' : undefined}
-                    onAction={hasFilters ? clearFilters : undefined}
-                  />
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+              <!-- Expiry stops meaning anything once the invitation is resolved. -->
+              <span class="cell-dash" aria-hidden="true">—</span>
+            {/if}
+          </td>
+          <td data-label="Created">
+            <time datetime={invitation.created_at} title={formatTimestamp(invitation.created_at)}>
+              {formatRelative(invitation.created_at, now)}
+            </time>
+          </td>
+          <td class="row-actions" data-label="Actions">
+            {#if actionItems(invitation).length > 0}
+              <ActionMenu
+                label={`Actions for @${invitation.account.login} invitation`}
+                items={actionItems(invitation)}
+                onSelect={(action, trigger) => chooseAction(invitation, action, trigger)}
+              />
+            {/if}
+          </td>
+        {/snippet}
+        {#snippet empty()}
+          <TableEmptyState
+            title={hasFilters ? 'No invitations match' : 'No Root invitations'}
+            description={hasFilters
+              ? 'Try another search or clear the active filters'
+              : 'Pending Root invitations will appear here'}
+            actionLabel={hasFilters ? 'Clear filters' : undefined}
+            onAction={hasFilters ? clearFilters : undefined}
+          />
+        {/snippet}
+      </DataTable>
     {/if}
     <InfiniteLoadSentinel
       active={!loading && loadMoreProblem === null && page?.next_cursor != null}
@@ -561,7 +585,7 @@
     {#if loadMoreProblem !== null}
       <div class="load-more-alert" role="alert">
         <span>{loadMoreProblem}</span>
-        <button class="btn" type="button" onclick={loadNext}>Try again</button>
+        <Button onclick={loadNext}>Try again</Button>
       </div>
     {/if}
   </div>
@@ -584,94 +608,77 @@
   onClose={closeCreate}
 >
   {#if createStage === 'confirm'}
-    <div class="root-warning">
-      <Icon name="warning" size={19} />
+    <Callout class="root-warning">
+      {#snippet icon()}<Icon name="warning" size={19} />{/snippet}
       <span
         >Declining was an answer. A new link reaches the same GitHub identity, and asking twice is
         visible to them and in the audit record</span
       >
-    </div>
-    {#if createProblem !== null}<p class="form-error" role="alert">{createProblem}</p>{/if}
+    </Callout>
+    <FormError message={createProblem} />
   {:else if createStage === 'form'}
     <form id="root-invitation-form" class="invitation-form" onsubmit={submitCreate}>
       <label>
         <span>GitHub login</span>
-        <input
-          autocomplete="off"
-          placeholder="octocat"
-          bind:value={login}
-          required
-          data-modal-focus
-        />
+        <input autocomplete="off" placeholder="octocat" bind:value={login} required />
         {#if namingSelf}
           <small class="field-refusal">You cannot invite yourself</small>
         {/if}
       </label>
       <label>
         <span>Expires after</span>
-        <span class="select-wrap">
-          <select
-            class="select-input"
-            bind:value={expiresInDays}
-            aria-label="Root invitation expiry"
-          >
-            <option value={1}>1 day</option>
-            <option value={7}>7 days</option>
-            <option value={30}>30 days</option>
-          </select>
-          <Icon name="chevron-down" size={14} strokeWidth={2} />
-        </span>
+        <Select
+          bind:value={expiresInDays}
+          aria-label="Root invitation expiry"
+          options={[
+            { value: 1, label: '1 day' },
+            { value: 7, label: '7 days' },
+            { value: 30, label: '30 days' },
+          ]}
+        />
       </label>
-      <div class="root-warning">
-        <Icon name="warning" size={19} />
+      <Callout class="root-warning">
+        {#snippet icon()}<Icon name="warning" size={19} />{/snippet}
         <span>The recipient becomes a Root only after signing in and accepting this invitation</span
         >
-      </div>
-      {#if createProblem !== null}<p class="form-error" role="alert">{createProblem}</p>{/if}
+      </Callout>
+      <FormError message={createProblem} />
     </form>
   {:else}
-    <label class="link-field">
-      <span>Invitation link</span>
-      <input class="mono" readonly value={generatedLink} data-modal-focus />
-    </label>
-    {#if copyProblem !== null}<p class="form-error" role="alert">{copyProblem}</p>{/if}
+    <CopyableLinkField
+      label="Invitation link"
+      value={generatedLink}
+      failed={copyProblem !== null}
+    />
   {/if}
 
   {#snippet footer()}
     {#if createStage === 'confirm'}
-      <button class="btn btn-ghost" type="button" onclick={() => (declinedLogin = null)}>
-        Back
-      </button>
-      <button
-        class="btn btn-signal"
-        type="button"
-        disabled={creating}
-        onclick={() => void sendInvitation(true)}
-      >
+      <Button tone="ghost" onclick={() => (declinedLogin = null)}>Back</Button>
+      <Button tone="signal" disabled={creating} onclick={() => void sendInvitation(true)}>
         {creating ? 'Creating…' : 'Invite again'}
-      </button>
+      </Button>
     {:else}
-      <button class="btn btn-ghost" type="button" onclick={closeCreate}>
+      <Button tone="ghost" onclick={closeCreate}>
         {createStage === 'form' ? 'Cancel' : 'Done'}
-      </button>
+      </Button>
     {/if}
     {#if createStage === 'form'}
-      <button
-        class="btn btn-signal"
+      <Button
+        tone="signal"
         type="submit"
         form="root-invitation-form"
         disabled={creating || login.trim() === '' || namingSelf}
       >
         {creating ? 'Creating…' : 'Create invitation'}
-      </button>
+      </Button>
     {:else if createStage === 'link'}
-      <button class="btn btn-signal" type="button" onclick={() => void copyLink()}>Copy link</button
-      >
+      <Button tone="signal" onclick={() => void copyLink()}>Copy link</Button>
     {/if}
   {/snippet}
 </Modal>
 
-<Modal
+<ConfirmDialog
   id={ACTION_DIALOG}
   open={actionInvitation !== null && pendingAction !== null}
   title={pendingAction === 'reissue'
@@ -682,27 +689,18 @@
     : 'The current link stops working immediately and its audit record remains'}
   returnFocus={actionTrigger}
   onClose={closeAction}
+  onConfirm={() => void confirmAction()}
+  {confirmTone}
+  busy={actionBusy}
 >
-  <div class="root-warning" data-modal-focus tabindex="-1">
-    <Icon name={pendingAction === 'reissue' ? 'refresh' : 'warning'} size={19} />
+  <Callout class="root-warning">
+    {#snippet icon()}
+      <Icon name={pendingAction === 'reissue' ? 'refresh' : 'warning'} size={19} />
+    {/snippet}
     <span>Confirm this system-role invitation change</span>
-  </div>
-  {#if actionProblem !== null}<p class="form-error" role="alert">{actionProblem}</p>{/if}
-
-  {#snippet footer()}
-    <button class="btn btn-ghost" type="button" onclick={closeAction}>Cancel</button>
-    <button
-      class="btn"
-      class:btn-signal={pendingAction === 'reissue'}
-      class:btn-stop={pendingAction === 'revoke'}
-      type="button"
-      disabled={actionBusy}
-      onclick={() => void confirmAction()}
-    >
-      {actionBusy ? 'Saving…' : 'Confirm'}
-    </button>
-  {/snippet}
-</Modal>
+  </Callout>
+  <FormError message={actionProblem} />
+</ConfirmDialog>
 
 <style>
   .root-invitations {
@@ -729,53 +727,31 @@
     min-height: 8rem;
   }
 
-  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
-  .table-scroll {
+  /* Surface, keyline and corner come from `.table-card`; the scroll shell, the cell
+     padding and the separator from `DataTable` and `.data-table`. These are this
+     table's own settings for them. */
+  :global(.table-scroll) {
+    --table-cell-pad-block: 0.625rem;
+    --table-cell-pad-inline: 0.75rem;
+    --table-empty-height: 10rem;
+    --table-heading-height: 2.5rem;
+    --table-layout: fixed;
+    --table-min-width: 48rem;
+
     flex: 1;
     max-width: 100%;
     min-height: 0;
   }
 
-  table {
-    background: var(--surface-base);
-    /* Separated, not collapsed: a collapsed border is shared between adjacent
-       rows, so each cell owns half of it and every row box lands on a .5. */
-    border-collapse: separate;
-    border-spacing: 0;
-    min-width: 48rem;
-    table-layout: fixed;
-    width: 100%;
-  }
-
-  /* The header's rule comes from `thead th` in `app.css`; this is the row
-     separator. */
-  td {
-    border-bottom: 1px solid var(--rule);
-  }
-
-  th,
-  td {
-    text-align: left;
-    vertical-align: middle;
-  }
-
-  /* `td` alone: a heading's padding belongs to whatever fills it - see `thead th`
-     in `app.css` - and a class-scoped rule here takes it back without saying so. */
-  td {
-    padding: 0.625rem 0.75rem;
-  }
-
+  /* The first column's wider inset, on both halves so the band and the rows below
+     it start on the same edge. */
   td:first-child {
     padding-left: var(--space-4);
   }
 
-  /* Typography, ground and the heading's whole shape come from `app.css`. Only
-     the band's height and the first column's wider inset are this table's own. */
-  thead th {
-    height: 2.5rem;
-  }
-
-  thead th:first-child {
+  /* `:global`, because `thead` is `DataTable`'s element - the `th` inside it is
+     this file's, but a descendant selector needs both ends to match. */
+  :global(.table-scroll thead th:first-child) {
     --heading-pad-start: var(--space-4);
   }
 
@@ -811,32 +787,6 @@
      rotationally-symmetric `sort` glyph, which says a column can be sorted and
      never which way it is. */
 
-  .identity {
-    align-items: center;
-    display: flex;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-
-  .identity > span:last-child {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .identity strong,
-  .identity .mono {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .identity strong {
-    font-size: var(--font-size-body);
-    line-height: 1.2;
-  }
-
-  .identity .mono,
   time {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
@@ -861,38 +811,18 @@
     padding-inline: var(--space-1);
   }
 
-  .empty-row td {
-    height: 10rem;
-  }
-
-  .table-skeleton {
-    min-height: 10rem;
-  }
-
-  .table-skeleton {
-    display: grid;
-  }
-
-  .table-skeleton span {
-    animation: root-invitation-pulse 1.35s ease-in-out infinite alternate;
-    border-bottom: 1px solid var(--rule);
-    height: 3.5rem;
-  }
-
   .invitation-form {
     display: grid;
     gap: var(--space-4);
     grid-template-columns: minmax(0, 1fr) 9rem;
   }
 
-  .invitation-form label,
-  .link-field {
+  .invitation-form label {
     display: grid;
     gap: var(--space-2);
   }
 
-  .invitation-form label > span,
-  .link-field > span {
+  .invitation-form label > span {
     font-weight: 650;
   }
 
@@ -906,9 +836,13 @@
     margin-top: calc(var(--space-2) * -1 + 0.25rem);
   }
 
+  /* The generated link is no longer in this list. It goes through
+     `CopyableLinkField`, which dresses it as `.text-input` like every other input in
+     the panel - this form's own taller treatment was the one place that disagreed,
+     and matching it here would have meant teaching a shared component about one
+     dialog. */
   .invitation-form input,
-  .invitation-form select,
-  .link-field input {
+  .invitation-form :global(select) {
     background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--radius-control);
@@ -919,67 +853,16 @@
     width: 100%;
   }
 
-  .root-warning {
-    align-items: center;
-    background: var(--interactive-hover);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-control);
-    color: var(--text-secondary);
-    display: flex;
-    gap: var(--space-3);
+  /* The box itself is `Callout` now; what is left is where it sits in this form's
+     grid, which is this component's business and not the callout's. `:global`
+     because the element is the child component's. */
+  :global(.root-warning) {
     grid-column: 1 / -1;
-    padding: var(--space-3);
   }
 
-  .form-error {
-    color: var(--danger);
-    font-size: var(--font-size-meta);
+  /* The form is a grid; the message spans it. */
+  :global(.form-error) {
     grid-column: 1 / -1;
-    margin: 0;
-  }
-
-  @keyframes root-invitation-pulse {
-    from {
-      opacity: 0.48;
-    }
-    to {
-      opacity: 0.88;
-    }
-  }
-
-  @media (min-width: 64.001rem) {
-    .table-scroll,
-    table {
-      display: flex;
-      flex: 1;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    thead {
-      display: block;
-      flex: none;
-    }
-
-    tbody {
-      background: var(--table-filler-bg);
-      display: block;
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-    }
-
-    thead tr,
-    tbody tr {
-      display: table;
-      table-layout: fixed;
-      width: 100%;
-    }
-
-    tbody tr {
-      background: var(--surface-base);
-      transition: background-color var(--duration-fast) var(--ease-standard);
-    }
   }
 
   /* Only where the column headings are not: the Status heading carries the same
@@ -997,60 +880,11 @@
       grid-template-columns: 1fr;
     }
 
-    table {
-      min-width: 0;
-    }
-
-    thead {
-      display: none;
-    }
-
-    tbody,
-    tr,
-    td {
-      display: block;
-      width: 100% !important;
-    }
-
-    tbody tr {
-      border-bottom: 1px solid var(--rule);
-      padding: var(--space-3);
-    }
-
-    td {
-      align-items: center;
-      border: 0;
-      display: grid;
-      gap: var(--space-3);
-      grid-template-columns: 7rem minmax(0, 1fr);
-      padding: var(--space-2) 0;
-      text-align: left !important;
-    }
-
-    td::before {
-      color: var(--text-muted);
-      content: attr(data-label);
-      font: 650 var(--font-size-compact) / 1.2 var(--sans);
-    }
-
-    .empty-row td {
-      display: flex;
-      height: 12rem;
-      justify-content: center;
-    }
-
-    .empty-row td::before {
-      content: none;
-    }
-
     .invitation-form {
       grid-template-columns: 1fr;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .table-skeleton span {
-      animation: none;
-    }
   }
 </style>

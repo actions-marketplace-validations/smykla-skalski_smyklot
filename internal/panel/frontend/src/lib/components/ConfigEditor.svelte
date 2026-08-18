@@ -17,7 +17,11 @@
   import type { BooleanField } from '../config';
   import { COMMANDS } from '../types';
   import type { ConfigKey, ConfigPatch, ConfigValues } from '../types';
-  import AppTooltip from './AppTooltip.svelte';
+  import Select from './Select.svelte';
+  import ChangedMarker from './ChangedMarker.svelte';
+  import AliasChip from './AliasChip.svelte';
+  import CheckTile from './CheckTile.svelte';
+  import SaveBar from './SaveBar.svelte';
   import HelpTip from './HelpTip.svelte';
   import Icon from './Icon.svelte';
   import InheritControl from './InheritControl.svelte';
@@ -230,13 +234,7 @@
                    name it marks, so it rides the label's own 0.45rem gap
                    instead of the row's wider one. -->
               {#if changed}
-                <AppTooltip text="Unsaved">
-                  {#snippet children(props)}
-                    <span {...props} class="changed-marker" aria-label="Unsaved">
-                      <span class="changed-marker-dot"></span>
-                    </span>
-                  {/snippet}
-                </AppTooltip>
+                <ChangedMarker />
               {/if}
               <span class="label-text">{field.label}</span>
               <HelpTip
@@ -296,13 +294,7 @@
             </span>
             <span class="row-spacer"></span>
             {#if keyChanged('command_prefix')}
-              <AppTooltip text="Unsaved">
-                {#snippet children(props)}
-                  <span {...props} class="changed-marker" aria-label="Unsaved">
-                    <span class="changed-marker-dot"></span>
-                  </span>
-                {/snippet}
-              </AppTooltip>
+              <ChangedMarker />
             {/if}
             <input
               id="config-{scope}-{idPrefix}-prefix"
@@ -338,13 +330,7 @@
             </span>
             <span class="row-spacer"></span>
             {#if keyChanged('allowed_commands')}
-              <AppTooltip text="Unsaved">
-                {#snippet children(props)}
-                  <span {...props} class="changed-marker" aria-label="Unsaved">
-                    <span class="changed-marker-dot"></span>
-                  </span>
-                {/snippet}
-              </AppTooltip>
+              <ChangedMarker />
             {/if}
             <InheritControl
               label="Allowed commands source"
@@ -362,18 +348,12 @@
             <div class="cmd-flow">
               {#each COMMANDS as command (command)}
                 {@const checked = commandIsAllowed(allowedList, command)}
-                <label class="check-tile">
-                  <input
-                    type="checkbox"
-                    {checked}
-                    disabled={editorDisabled || (checked && allowedCount === 1)}
-                    onchange={() => toggleCommand(command)}
-                  />
-                  <span class="check-box" aria-hidden="true">
-                    <svg viewBox="0 0 12 12"><path d="M2.2 6.4 4.9 9 9.8 3.2" /></svg>
-                  </span>
-                  <code>{command}</code>
-                </label>
+                <CheckTile
+                  label={command}
+                  {checked}
+                  disabled={editorDisabled || (checked && allowedCount === 1)}
+                  onchange={() => toggleCommand(command)}
+                />
               {/each}
             </div>
           </div>
@@ -392,13 +372,7 @@
             </span>
             <span class="row-spacer"></span>
             {#if keyChanged('command_aliases')}
-              <AppTooltip text="Unsaved">
-                {#snippet children(props)}
-                  <span {...props} class="changed-marker" aria-label="Unsaved">
-                    <span class="changed-marker-dot"></span>
-                  </span>
-                {/snippet}
-              </AppTooltip>
+              <ChangedMarker />
             {/if}
             <InheritControl
               label="Command aliases source"
@@ -421,20 +395,13 @@
             aria-labelledby="config-{scope}-{idPrefix}-aliases-heading"
           >
             {#each aliasEntries as [name, command] (name)}
-              <span class="word-chip" class:added={savedAliases[name] !== command}>
-                <span class="chip-from">{name}</span>
-                <span class="chip-arrow" aria-hidden="true">→</span>
-                <span class="chip-to">{command}</span>
-                <button
-                  class="chip-x"
-                  aria-label="Delete alias {name}"
-                  title="Delete alias {name}"
-                  disabled={editorDisabled}
-                  onclick={() => removeAlias(name)}
-                >
-                  <Icon name="close" size={13} />
-                </button>
-              </span>
+              <AliasChip
+                from={name}
+                to={command}
+                added={savedAliases[name] !== command}
+                disabled={editorDisabled}
+                onRemove={() => removeAlias(name)}
+              />
             {:else}
               <span class="alias-empty">No aliases yet</span>
             {/each}
@@ -463,19 +430,16 @@
                 <label class="visually-hidden" for="config-{scope}-{idPrefix}-alias-command">
                   Command
                 </label>
-                <span class="select-wrap">
-                  <select
-                    id="config-{scope}-{idPrefix}-alias-command"
-                    class="select-input mono"
-                    bind:value={aliasCommand}
-                    disabled={editorDisabled}
-                  >
-                    {#each COMMANDS as command (command)}
-                      <option value={command}>{command}</option>
-                    {/each}
-                  </select>
-                  <Icon name="chevron-down" size={14} strokeWidth={2} />
-                </span>
+                <Select
+                  id="config-{scope}-{idPrefix}-alias-command"
+                  class="mono"
+                  bind:value={aliasCommand}
+                  disabled={editorDisabled}
+                >
+                  {#each COMMANDS as command (command)}
+                    <option value={command}>{command}</option>
+                  {/each}
+                </Select>
                 <button
                   type="submit"
                   class="composer-ok"
@@ -510,18 +474,14 @@
   {/if}
 
   {#if dirty}
-    <div class="save-bar" class:save-bar-inline={scope === 'repository'} role="status">
-      <span class="save-dot" aria-hidden="true"></span>
-      <span class="save-count">
-        {changedKeys.length} unsaved {changedKeys.length === 1 ? 'change' : 'changes'}
-      </span>
-      <button class="bar-ghost" type="button" disabled={editorDisabled} onclick={discard}>
-        Discard
-      </button>
-      <button class="btn btn-signal" disabled={editorDisabled} onclick={save}>
-        <span class="btn-label">{saving ? 'Saving…' : 'Save'}</span>
-      </button>
-    </div>
+    <SaveBar
+      count={changedKeys.length}
+      {saving}
+      disabled={editorDisabled}
+      inline={scope === 'repository'}
+      onSave={save}
+      onDiscard={discard}
+    />
   {/if}
 </div>
 
@@ -642,26 +602,6 @@
     background: color-mix(in srgb, var(--warning) 4%, var(--surface-base));
   }
 
-  /* One marker per meaning: the broken chain marks the override, this ringed dot
-     marks the unsaved edit; the word lives in its tooltip. */
-  .changed-marker {
-    align-items: center;
-    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-    border-radius: 999px;
-    color: var(--warning);
-    display: inline-flex;
-    flex: none;
-    padding: 4px;
-  }
-
-  .changed-marker-dot {
-    background: currentcolor;
-    border-radius: var(--r-chip);
-    display: block;
-    height: 0.35rem;
-    width: 0.35rem;
-  }
-
   .prefix-input {
     background: var(--strip-lift);
     border: 1px solid var(--border-strong);
@@ -686,151 +626,11 @@
     gap: var(--space-2);
   }
 
-  .check-tile {
-    align-items: center;
-    background: var(--strip-lift);
-    border: 1px solid var(--rule);
-    border-radius: var(--r-ctl);
-    cursor: pointer;
-    display: inline-flex;
-    gap: 0.5625rem;
-    min-height: 2.25rem;
-    padding: 0 0.8125rem 0 0.625rem;
-    transition:
-      background-color 120ms ease-out,
-      border-color 120ms ease-out;
-  }
-
-  .check-tile:hover:not(:has(input:disabled)) {
-    border-color: var(--border-strong);
-  }
-
-  .check-tile:has(input:disabled) {
-    cursor: default;
-  }
-
-  .check-tile input {
-    height: 1px;
-    opacity: 0;
-    position: absolute;
-    width: 1px;
-  }
-
-  .check-box {
-    background: var(--strip);
-    border: 1.5px solid var(--border-strong);
-    border-radius: 5px;
-    flex: none;
-    height: 1.125rem;
-    position: relative;
-    transition:
-      background-color 130ms ease-out,
-      border-color 130ms ease-out;
-    width: 1.125rem;
-  }
-
-  .check-box svg {
-    fill: none;
-    height: 12px;
-    inset: 0;
-    margin: auto;
-    position: absolute;
-    stroke: var(--on-admin);
-    stroke-dasharray: 14;
-    stroke-dashoffset: 14;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2.4;
-    transition: stroke-dashoffset 160ms var(--ease-standard) 40ms;
-    width: 12px;
-  }
-
-  .check-tile input:checked + .check-box {
-    background: var(--admin);
-    border-color: var(--admin);
-  }
-
-  .check-tile input:checked + .check-box svg {
-    stroke-dashoffset: 0;
-  }
-
-  .check-tile input:focus-visible + .check-box {
-    outline: 2px solid var(--brand);
-    outline-offset: 2px;
-  }
-
-  .check-tile input:disabled + .check-box {
-    opacity: 0.7;
-  }
-
-  .check-tile code {
-    background: transparent;
-    color: var(--dim);
-    font-size: var(--font-size-control);
-    padding: 0;
-    transition: color 120ms ease-out;
-  }
-
-  .check-tile input:checked ~ code {
-    color: var(--text);
-    font-weight: 500;
-  }
-
   .alias-flow {
     align-items: center;
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2);
-  }
-
-  .word-chip {
-    align-items: center;
-    background: var(--strip-lift);
-    border: 1px solid var(--rule);
-    border-radius: var(--r-chip);
-    display: inline-flex;
-    font: 500 var(--font-size-control) / 1 var(--mono);
-    gap: 0.4375rem;
-    min-height: 2rem;
-    padding: 0 0.375rem 0 0.875rem;
-  }
-
-  .word-chip.added {
-    background: var(--brand-action-tint);
-    border-color: var(--brand-action);
-  }
-
-  .chip-from {
-    color: var(--text);
-    font-weight: 500;
-  }
-
-  .chip-arrow {
-    color: var(--dim);
-    font-size: var(--font-size-micro);
-  }
-
-  .chip-to {
-    color: var(--brand-action-text);
-  }
-
-  .chip-x {
-    align-items: center;
-    background: none;
-    border: 0;
-    border-radius: 50%;
-    color: var(--dim);
-    cursor: pointer;
-    display: inline-flex;
-    height: 1.25rem;
-    justify-content: center;
-    padding: 0;
-    width: 1.25rem;
-  }
-
-  .chip-x:hover:not(:disabled) {
-    background: var(--stop-tint);
-    color: var(--stop);
   }
 
   .alias-empty {
@@ -874,7 +674,7 @@
   }
 
   .composer input,
-  .composer select {
+  .composer :global(select) {
     background: var(--strip);
     border: 0;
     border-radius: var(--r-chip);
@@ -892,7 +692,7 @@
     outline: none;
   }
 
-  .composer select {
+  .composer :global(select) {
     padding: 0 0.375rem;
   }
 
@@ -926,36 +726,13 @@
     color: var(--text);
   }
 
-  .save-bar {
-    align-items: center;
-    animation: save-bar-rise 240ms var(--ease-standard);
-    background: var(--text-primary);
-    border-radius: 12px;
-    bottom: 1.25rem;
-    box-shadow: 0 12px 32px rgb(0 0 0 / 30%);
-    color: var(--canvas);
-    display: flex;
-    font: 600 var(--font-size-control) / 1 var(--sans);
-    gap: 0.875rem;
-    left: 50%;
-    padding: 0.625rem 0.75rem 0.625rem 1rem;
-    position: fixed;
-    transform: translateX(-50%);
-    z-index: var(--layer-sticky);
-  }
-
   /* Trim text boxes to glyph bounds so flex centering is visually exact.
      Labels inside flex containers need their own span: trimming must happen
      on the flex item that holds the text, not on the container. */
-  .save-count,
-  .bar-ghost,
-  .save-bar .btn-label,
+  /* The save button's own label is not in this list any more: `Button` wraps it in
+     `.button-label`, which `app.css` trims the same way. One copy, not two. */
   .row-label .label-text,
   .row-label label,
-  .check-tile code,
-  .chip-from,
-  .chip-arrow,
-  .chip-to,
   .alias-empty,
   .add-chip span,
   .composer-ok {
@@ -965,104 +742,16 @@
   /* Inline, the bar is not a floating slab: no vertical padding of its own, the
      approved 12px gap, and the trailing inset that lines its Save up with the
      rows' right edge. */
-  .save-bar-inline {
-    animation: none;
-    bottom: auto;
-    font-size: var(--font-size-compact);
-    gap: var(--space-3);
-    justify-content: flex-end;
-    left: auto;
-    margin-top: 1.125rem;
-    padding: 0 calc(0.875rem + 1px) 0 0;
-    position: static;
-    transform: none;
-  }
-
-  @keyframes save-bar-rise {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 1rem);
-    }
-
-    to {
-      opacity: 1;
-      transform: translate(-50%, 0);
-    }
-  }
-
-  .save-dot {
-    animation: save-dot-pulse 1.6s ease-in-out infinite;
-    background: var(--pending-inverse);
-    border-radius: 50%;
-    flex: none;
-    height: 8px;
-    width: 8px;
-  }
-
-  @keyframes save-dot-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  .bar-ghost {
-    background: none;
-    border: 0;
-    border-radius: var(--r-ctl);
-    color: inherit;
-    cursor: pointer;
-    font: 600 var(--font-size-control) / 1 var(--sans);
-    opacity: 0.75;
-    padding: 0.5rem 0.625rem;
-  }
 
   /* The inline bar carries no status dot: it sits directly under the row it
      belongs to, and the row already has its unsaved marker. */
-  .save-bar-inline .save-dot {
-    display: none;
-  }
 
   /* Regular weight inline: the count is a sentence under the row, not a label
      on a dark slab where 600 is what keeps it legible. */
-  .save-bar-inline .save-count {
-    color: var(--text-secondary);
-    font-weight: 400;
-  }
 
   /* Full-strength text, like the mock's ghost button - a Discard that reads as
      disabled is a Discard nobody dares press. It also wears the button's own
      box here, so it stands the same 34px as the Save beside it. */
-  .save-bar-inline .bar-ghost {
-    /* The transparent border is load-bearing, same as the segmented control:
-       the button recipe beside it is 1px border + 0.9rem, so padding alone
-       leaves this one 2px narrower than the Save it sits next to. */
-    border: 1px solid transparent;
-    color: var(--text-primary);
-    font: 600 var(--font-size-compact) / 1 var(--sans);
-    height: var(--control-height-compact);
-    opacity: 1;
-    padding: 0 0.9rem;
-  }
-
-  .save-bar-inline {
-    background: transparent;
-    box-shadow: none;
-    color: var(--text-secondary);
-  }
-
-  .bar-ghost:hover:not(:disabled) {
-    background: rgb(255 255 255 / 12%);
-    opacity: 1;
-  }
-
-  .save-bar-inline .bar-ghost:hover:not(:disabled) {
-    background: var(--well);
-  }
 
   /* On a phone the row's parts do not fit on one line. The control holds a fixed
      width - a segmented control does not shrink - and the label is the only part
@@ -1093,16 +782,5 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .save-bar {
-      animation: none;
-    }
-
-    .save-dot {
-      animation: none;
-    }
-
-    .check-box svg {
-      transition: none;
-    }
   }
 </style>

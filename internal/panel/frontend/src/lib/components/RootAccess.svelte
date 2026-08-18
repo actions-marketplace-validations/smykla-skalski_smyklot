@@ -25,6 +25,13 @@
     UpdateRootUserInput,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
+  import Button, { type ButtonTone } from './Button.svelte';
+  import ConfirmDialog from './ConfirmDialog.svelte';
+  import DataTable from './DataTable.svelte';
+  import Select from './Select.svelte';
+  import Callout from './Callout.svelte';
+  import IdentityRow from './IdentityRow.svelte';
+  import Skeleton from './Skeleton.svelte';
   import SortIndicator from './SortIndicator.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
@@ -172,6 +179,16 @@
   });
   const pendingAction = $derived(
     actionUser === null ? null : userAction(dialogRoute.param(ACTION_DIALOG, 'action')),
+  );
+  /* What the confirmation button reads as: taking something away is destructive,
+     giving something is the action the dialog is here for, and anything else is a
+     plain control. One value rather than two class toggles that could both be on. */
+  const confirmTone = $derived<ButtonTone>(
+    pendingAction === 'ban' || pendingAction === 'remove' || pendingAction === 'demote_root'
+      ? 'stop'
+      : pendingAction === 'promote_root' || pendingAction === 'restore'
+        ? 'signal'
+        : 'default',
   );
   const installationsQuery = createQuery(() => ({
     queryKey: ['root-installations'],
@@ -487,21 +504,20 @@
   >
     {#if section === 'invitations'}
       {#if canManageInvitations}
-        <button
-          class="btn btn-signal"
-          type="button"
-          bind:this={inviteTrigger}
+        <Button
+          tone="signal"
+          bind:element={inviteTrigger}
           onclick={() => invitations?.openCreate(inviteTrigger)}
         >
-          <Icon name="user-plus" size={14} strokeWidth={2} />
-          <span class="button-label">Invite Root user</span>
-        </button>
+          {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
+          Invite Root user
+        </Button>
       {/if}
     {:else}
-      <button class="btn btn-signal" type="button" bind:this={addTrigger} onclick={openAddUser}>
-        <Icon name="user-plus" size={14} strokeWidth={2} />
-        <span class="button-label">Add user</span>
-      </button>
+      <Button tone="signal" bind:element={addTrigger} onclick={openAddUser}>
+        {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
+        Add user
+      </Button>
     {/if}
   </RootPageHeader>
 
@@ -573,158 +589,144 @@
           onRetry={() => void loadPage(undefined, false)}
         />
       {:else if loading && page === null}
-        <div class="table-skeleton" aria-hidden="true">
-          {#each [0, 1, 2, 3, 4, 5] as index (index)}<span></span>{/each}
-        </div>
+        <Skeleton bars={false} --skeleton-min-height="10rem" />
       {:else}
-        <!-- Keyboard focus lets users scroll columns that overflow the viewport. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          class="table-scroll table-card"
-          role="region"
-          tabindex="0"
-          aria-label="Root users table"
+        <DataTable
+          class="table-scroll"
+          pinned
+          stacked
+          caption="Application accounts"
+          regionLabel="Root users table"
+          rows={users}
+          rowKey={(user) => String(user.account.id)}
+          columnCount={6}
+          onBodyScroll={loadFromScroll}
         >
-          <table>
-            <caption class="visually-hidden">Application accounts</caption>
-            <thead>
-              <tr>
-                <th scope="col" aria-sort={sortDirection('name')}>
-                  <div class="table-heading">
-                    <button
-                      class="table-sort-button"
-                      type="button"
-                      onclick={() => toggleSort('name')}
-                    >
-                      <span class="table-heading-label">User</span><SortIndicator />
-                    </button>
-                  </div>
-                </th>
-                <th scope="col" aria-sort={sortDirection('role')}>
-                  <div class="table-heading">
-                    <button
-                      class="table-sort-button"
-                      type="button"
-                      onclick={() => toggleSort('role')}
-                    >
-                      <span class="table-heading-label">System role</span><SortIndicator />
-                    </button>
-                    <FilterMenu
-                      label="System role"
-                      summary={systemRoles.length === 0
-                        ? 'All system roles'
-                        : `${systemRoles.length} selected`}
-                      hint="Filter application-level privileges"
-                      sections={ROLE_FILTERS}
-                      selected={systemRoles}
-                      multiple
-                      align="end"
-                      onChange={selectRoles}
-                    />
-                  </div>
-                </th>
-                <th scope="col">
-                  <div class="table-heading">
-                    <span class="table-heading-label">Status</span>
-                    <FilterMenu
-                      label="Status"
-                      summary={statuses.length === 0
-                        ? 'All statuses'
-                        : `${statuses.length} selected`}
-                      hint="Filter account lifecycle state"
-                      sections={STATUS_FILTERS}
-                      selected={statuses}
-                      multiple
-                      align="end"
-                      onChange={selectStatuses}
-                    />
-                  </div>
-                </th>
-                <th scope="col">
-                  <div class="table-heading">
-                    <span class="table-heading-label">Installations</span>
-                  </div>
-                </th>
-                <th scope="col" aria-sort={sortDirection('last_login')}>
-                  <div class="table-heading">
-                    <button
-                      class="table-sort-button"
-                      type="button"
-                      onclick={() => toggleSort('last_login')}
-                    >
-                      <span class="table-heading-label">Last login</span><SortIndicator />
-                    </button>
-                  </div>
-                </th>
-                <th scope="col"><span class="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody data-panel-scroll onscroll={loadFromScroll}>
-              {#each users as user (user.account.id)}
-                <tr>
-                  <td data-label="User">
-                    <span class="identity">
-                      <Avatar account={user.account} size={32} />
-                      <span
-                        ><strong>{user.account.display_name}</strong><span class="mono"
-                          >@{user.account.login}</span
-                        ></span
-                      >
-                    </span>
-                  </td>
-                  <td data-label="System role">
-                    <Chip tone={systemRoleTone(user.system_role)}
-                      >{systemRoleLabel(user.system_role)}</Chip
-                    >
-                  </td>
-                  <td data-label="Status">
-                    <Chip tone={statusTone(user.status)} dot={user.status === 'active'}
-                      >{statusLabel(user.status)}</Chip
-                    >
-                  </td>
-                  <td class="band-trim-stack" data-label="Installations">
-                    <span class="relationship-count">{installationSummary(user)}</span>
-                    <span class="relationship-meta"
-                      >{user.owned_installations} owned · {user.assigned_installations} assigned</span
-                    >
-                  </td>
-                  <td data-label="Last login">
-                    {#if user.last_login_at !== undefined}
-                      <time
-                        class="band-trim"
-                        datetime={user.last_login_at}
-                        title={formatTimestamp(user.last_login_at)}
-                        >{formatRelative(user.last_login_at, now)}</time
-                      >
-                    {:else}<span class="dim band-trim">Never</span>{/if}
-                  </td>
-                  <td class="row-actions" data-label="Actions">
-                    {#if userActions(user).length > 0}
-                      <ActionMenu
-                        label={`Actions for @${user.account.login}`}
-                        items={userActions(user)}
-                        onSelect={(action, trigger) => chooseUserAction(user, action, trigger)}
-                      />
-                    {/if}
-                  </td>
-                </tr>
-              {:else}
-                <tr class="empty-row">
-                  <td colspan="6">
-                    <TableEmptyState
-                      title="No accounts found"
-                      description={hasFilters
-                        ? 'Try another search or clear the active filters'
-                        : 'Accounts appear after their first authenticated session'}
-                      actionLabel={hasFilters ? 'Clear filters' : undefined}
-                      onAction={hasFilters ? clearFilters : undefined}
-                    />
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+          {#snippet head()}
+            <tr>
+              <th scope="col" aria-sort={sortDirection('name')}>
+                <div class="table-heading">
+                  <button
+                    class="table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('name')}
+                  >
+                    <span class="table-heading-label">User</span><SortIndicator />
+                  </button>
+                </div>
+              </th>
+              <th scope="col" aria-sort={sortDirection('role')}>
+                <div class="table-heading">
+                  <button
+                    class="table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('role')}
+                  >
+                    <span class="table-heading-label">System role</span><SortIndicator />
+                  </button>
+                  <FilterMenu
+                    label="System role"
+                    summary={systemRoles.length === 0
+                      ? 'All system roles'
+                      : `${systemRoles.length} selected`}
+                    hint="Filter application-level privileges"
+                    sections={ROLE_FILTERS}
+                    selected={systemRoles}
+                    multiple
+                    align="end"
+                    onChange={selectRoles}
+                  />
+                </div>
+              </th>
+              <th scope="col">
+                <div class="table-heading">
+                  <span class="table-heading-label">Status</span>
+                  <FilterMenu
+                    label="Status"
+                    summary={statuses.length === 0 ? 'All statuses' : `${statuses.length} selected`}
+                    hint="Filter account lifecycle state"
+                    sections={STATUS_FILTERS}
+                    selected={statuses}
+                    multiple
+                    align="end"
+                    onChange={selectStatuses}
+                  />
+                </div>
+              </th>
+              <th scope="col">
+                <div class="table-heading">
+                  <span class="table-heading-label">Installations</span>
+                </div>
+              </th>
+              <th scope="col" aria-sort={sortDirection('last_login')}>
+                <div class="table-heading">
+                  <button
+                    class="table-sort-button"
+                    type="button"
+                    onclick={() => toggleSort('last_login')}
+                  >
+                    <span class="table-heading-label">Last login</span><SortIndicator />
+                  </button>
+                </div>
+              </th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          {/snippet}
+          {#snippet cells(user)}
+            <td data-label="User">
+              <IdentityRow>
+                {#snippet mark()}<Avatar account={user.account} size={32} />{/snippet}
+                {#snippet name()}<strong>{user.account.display_name}</strong>{/snippet}
+                {#snippet handle()}<span class="mono">@{user.account.login}</span>{/snippet}
+              </IdentityRow>
+            </td>
+            <td data-label="System role">
+              <Chip tone={systemRoleTone(user.system_role)}
+                >{systemRoleLabel(user.system_role)}</Chip
+              >
+            </td>
+            <td data-label="Status">
+              <Chip tone={statusTone(user.status)} dot={user.status === 'active'}
+                >{statusLabel(user.status)}</Chip
+              >
+            </td>
+            <td class="band-trim-stack" data-label="Installations">
+              <span class="relationship-count">{installationSummary(user)}</span>
+              <span class="relationship-meta"
+                >{user.owned_installations} owned · {user.assigned_installations} assigned</span
+              >
+            </td>
+            <td data-label="Last login">
+              {#if user.last_login_at !== undefined}
+                <time
+                  class="band-trim"
+                  datetime={user.last_login_at}
+                  title={formatTimestamp(user.last_login_at)}
+                  >{formatRelative(user.last_login_at, now)}</time
+                >
+              {:else}<span class="dim band-trim">Never</span>{/if}
+            </td>
+            <td class="row-actions" data-label="Actions">
+              {#if userActions(user).length > 0}
+                <ActionMenu
+                  label={`Actions for @${user.account.login}`}
+                  items={userActions(user)}
+                  onSelect={(action, trigger) => chooseUserAction(user, action, trigger)}
+                />
+              {/if}
+            </td>
+          {/snippet}
+          {#snippet empty()}
+            <TableEmptyState
+              title="No accounts found"
+              description={hasFilters
+                ? 'Try another search or clear the active filters'
+                : 'Accounts appear after their first authenticated session'}
+              actionLabel={hasFilters ? 'Clear filters' : undefined}
+              onAction={hasFilters ? clearFilters : undefined}
+            />
+          {/snippet}
+        </DataTable>
       {/if}
       <InfiniteLoadSentinel
         active={!loading && loadMoreProblem === null && page?.next_cursor != null}
@@ -733,22 +735,23 @@
       />
       {#if loadMoreProblem !== null}
         <div class="load-more-alert" role="alert">
-          <span>{loadMoreProblem}</span><button class="btn" type="button" onclick={loadNext}
-            >Try again</button
-          >
+          <span>{loadMoreProblem}</span><Button onclick={loadNext}>Try again</Button>
         </div>
       {/if}
     </div>
   {/if}
 </section>
 
-<Modal
+<ConfirmDialog
   id={ACTION_DIALOG}
   open={actionUser !== null && pendingAction !== null}
   title={actionTitle()}
   description={actionDescription()}
   returnFocus={actionTrigger}
   onClose={closeUserAction}
+  onConfirm={() => void confirmUserAction()}
+  {confirmTone}
+  busy={saving}
 >
   {#if pendingAction === 'ban' || pendingAction === 'remove'}
     <label class="reason-field">
@@ -757,36 +760,19 @@
         placeholder="Add context to the immutable audit record"
         maxlength="500"
         rows="4"
-        bind:value={reason}
-        data-modal-focus></textarea>
+        bind:value={reason}></textarea>
       <small>{reason.length}/500 characters</small>
     </label>
   {:else}
-    <div class="confirmation-note" data-modal-focus tabindex="-1">
-      <Icon name={pendingAction === 'promote_root' ? 'warning' : 'info'} size={20} />
+    <Callout tabindex={-1}>
+      {#snippet icon()}
+        <Icon name={pendingAction === 'promote_root' ? 'warning' : 'info'} size={20} />
+      {/snippet}
       <span>Review the account and effect before confirming.</span>
-    </div>
+    </Callout>
   {/if}
   {#if actionProblem !== null}<p class="action-error" role="alert">{actionProblem}</p>{/if}
-
-  {#snippet footer()}
-    <button class="btn btn-ghost" type="button" data-modal-focus onclick={closeUserAction}
-      >Cancel</button
-    >
-    <button
-      class="btn"
-      class:btn-stop={pendingAction === 'ban' ||
-        pendingAction === 'remove' ||
-        pendingAction === 'demote_root'}
-      class:btn-signal={pendingAction === 'promote_root' || pendingAction === 'restore'}
-      type="button"
-      disabled={saving}
-      onclick={() => void confirmUserAction()}
-    >
-      {saving ? 'Saving…' : 'Confirm'}
-    </button>
-  {/snippet}
-</Modal>
+</ConfirmDialog>
 
 <Modal
   id={ADD_DIALOG}
@@ -832,11 +818,7 @@
       {:else if installationsProblem !== null}
         <div class="installation-state installation-problem" role="alert">
           <span>{installationsProblem}</span>
-          <button
-            class="btn btn-quiet"
-            type="button"
-            onclick={() => void installationsQuery.refetch()}>Try again</button
-          >
+          <Button tone="quiet" onclick={() => void installationsQuery.refetch()}>Try again</Button>
         </div>
       {:else if filteredInstallations.length === 0}
         <div class="installation-state">No installations match this search.</div>
@@ -877,34 +859,32 @@
 
     <label>
       <span>Installation role</span>
-      <span class="select-wrap">
-        <select class="select-input" bind:value={addRole}>
-          <option value="viewer">Viewer</option>
-          <option value="editor">Editor</option>
-          <option value="admin">Admin</option>
-        </select>
-        <Icon name="chevron-down" size={14} strokeWidth={2} />
-      </span>
+      <Select
+        bind:value={addRole}
+        options={[
+          { value: 'viewer', label: 'Viewer' },
+          { value: 'editor', label: 'Editor' },
+          { value: 'admin', label: 'Admin' },
+        ]}
+      />
     </label>
 
     {#if selectedInstallation !== null && !selectedInstallation.owned_by_viewer}
-      <div class="elevation-note">
-        <Icon name="warning" size={18} />
+      <Callout tone="warning">
+        {#snippet icon()}<Icon name="warning" size={18} />{/snippet}
         <span>
           This installation is not yours. Continue to its Access view to acknowledge and start the
           audited 15-minute elevation before adding the user.
         </span>
-      </div>
+      </Callout>
     {/if}
     {#if addProblem !== null}<p class="action-error" role="alert">{addProblem}</p>{/if}
   </form>
 
   {#snippet footer()}
-    <button class="btn btn-ghost" type="button" disabled={addSaving} onclick={closeAddUser}
-      >Cancel</button
-    >
-    <button
-      class="btn btn-signal"
+    <Button tone="ghost" disabled={addSaving} onclick={closeAddUser}>Cancel</Button>
+    <Button
+      tone="signal"
       type="submit"
       form="root-add-installation-user-form"
       disabled={addSaving ||
@@ -917,7 +897,7 @@
         : selectedInstallation?.owned_by_viewer === false
           ? 'Open audited access'
           : 'Add user'}
-    </button>
+    </Button>
   {/snippet}
 </Modal>
 
@@ -1049,63 +1029,30 @@
     text-align: center;
   }
 
-  .elevation-note {
-    align-items: flex-start;
-    background: var(--warning-tint);
-    border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--warning-tint));
-    border-radius: var(--radius-control);
-    color: var(--text-secondary);
-    display: flex;
-    font-size: var(--font-size-compact);
-    gap: var(--space-2);
-    padding: var(--space-3);
-  }
-
   /* Layout, keyline and corner come from `.table-region` in `app.css`. */
   .user-results {
     min-height: 8rem;
   }
 
-  /* Surface, keyline, corner and lift come from `.table-card` in `app.css`. */
-  .table-scroll {
+  /* Surface, keyline, corner and lift come from `.table-card`; the scroll shell,
+     the cell padding and the separator from `DataTable` and `.data-table`. What
+     is left is this table's own settings for them.
+
+     `--cell-pad-block` is still named once, because the row height below is
+     derived from it and a padding changed in one place and not the other would
+     silently un-state the row height. */
+  :global(.table-scroll) {
+    --cell-pad-block: 0.625rem;
+    --table-cell-pad-block: var(--cell-pad-block);
+    --table-empty-height: 10rem;
+    --table-cell-pad-inline: 0.75rem;
+    --table-heading-height: 2.5rem;
+    --table-layout: fixed;
+    --table-min-width: 46rem;
+
     flex: 1;
     max-width: 100%;
     min-height: 0;
-  }
-
-  table {
-    /* Named once: the row height below is derived from it, and a padding changed
-       in one place and not the other would silently un-state the row height. */
-    --cell-pad-block: 0.625rem;
-
-    background: var(--surface-base);
-    /* Separated, not collapsed: a collapsed border is shared between adjacent
-       rows, so each cell owns half of it and every row box lands on a .5. */
-    border-collapse: separate;
-    border-spacing: 0;
-    min-width: 46rem;
-    table-layout: fixed;
-    width: 100%;
-  }
-
-  /* The header's rule comes from `thead th` in `app.css`; this is the row
-     separator. */
-  td {
-    border-bottom: 1px solid var(--rule);
-  }
-
-  th,
-  td {
-    text-align: left;
-    vertical-align: middle;
-  }
-
-  /* `td` alone: a heading's padding belongs to whatever fills it - see `thead th`
-     in `app.css` - and a class-scoped rule here takes it back without saying so,
-     which is how this table's sort target came out 24px narrower and 20px
-     shorter than the cell it lights up. */
-  td {
-    padding: var(--cell-pad-block) 0.75rem;
   }
 
   /* Stated, not inherited from whatever the tallest cell happens to hold.
@@ -1116,22 +1063,24 @@
      that row to 54px and left one short row in the middle of the table. A row's
      height is a decision: the tallest control it has to hold, plus its own
      padding and rule. */
-  tbody tr {
+  /* Stated, not inherited from whatever the tallest cell happens to hold. It used
+     to come out at 61px because the row menu is 40px tall, and at 60.9px on the
+     viewer's own row - which has no menu, since nobody may act on themselves -
+     where two lines of untrimmed leading happened to measure the same. Trimming
+     those lines to their band took that row to 54px and left one short row in the
+     middle of the table. A row's height is a decision: the tallest control it has
+     to hold, plus its own padding and rule. */
+  :global(.table-scroll tbody tr) {
     height: calc(var(--control-height) + 2 * var(--cell-pad-block) + 1px);
   }
 
-  td:first-child {
+  /* The first column's wider inset, on both halves of the table so the band and
+     the rows below it start on the same edge. */
+  :global(.table-scroll td:first-child) {
     padding-left: var(--space-4);
   }
 
-  /* Typography, ground and the heading's whole shape come from `app.css`, shared
-     with the other five tables. Only the band's height and the first column's
-     wider inset are this table's own. */
-  thead th {
-    height: 2.5rem;
-  }
-
-  thead th:first-child {
+  :global(.table-scroll thead th:first-child) {
     --heading-pad-start: var(--space-4);
   }
 
@@ -1182,32 +1131,6 @@
      against a raw `<svg>`, and a `:global(.header-filter)` addressed to a class
      the popover stopped rendering. */
 
-  .identity {
-    align-items: center;
-    display: flex;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-
-  .identity > span:last-child {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-
-  .identity strong,
-  .identity .mono {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .identity strong {
-    font-size: var(--font-size-body);
-    line-height: 1.2;
-  }
-
-  .identity .mono,
   .relationship-meta,
   time {
     color: var(--text-muted);
@@ -1260,83 +1183,10 @@
     resize: vertical;
   }
 
-  .confirmation-note {
-    align-items: center;
-    background: var(--interactive-hover);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-control);
-    color: var(--text-secondary);
-    display: flex;
-    gap: var(--space-3);
-    padding: var(--space-3);
-  }
-
   .action-error {
     color: var(--danger);
     font-size: var(--font-size-meta);
     margin: var(--space-3) 0 0;
-  }
-
-  .empty-row td {
-    height: 10rem;
-  }
-
-  .table-skeleton {
-    min-height: 10rem;
-  }
-
-  .table-skeleton {
-    display: grid;
-  }
-
-  .table-skeleton span {
-    animation: root-access-pulse 1.35s ease-in-out infinite alternate;
-    border-bottom: 1px solid var(--rule);
-    height: 3.5rem;
-  }
-
-  @keyframes root-access-pulse {
-    from {
-      opacity: 0.48;
-    }
-    to {
-      opacity: 0.88;
-    }
-  }
-
-  @media (min-width: 64.001rem) {
-    .table-scroll,
-    table {
-      display: flex;
-      flex: 1;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    thead {
-      display: block;
-      flex: none;
-    }
-
-    tbody {
-      background: var(--table-filler-bg);
-      display: block;
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-    }
-
-    thead tr,
-    tbody tr {
-      display: table;
-      table-layout: fixed;
-      width: 100%;
-    }
-
-    tbody tr {
-      background: var(--surface-base);
-      transition: background-color var(--duration-fast) var(--ease-standard);
-    }
   }
 
   /* Only where the column headings are not: they carry the same two filters while
@@ -1349,68 +1199,8 @@
     .access-toolbar :global(.tools-trigger) {
       display: inline-flex;
     }
-
-    table {
-      min-width: 0;
-    }
-
-    thead {
-      display: none;
-    }
-
-    tbody,
-    tr,
-    td {
-      display: block;
-      width: 100% !important;
-    }
-
-    tbody tr {
-      border-bottom: 1px solid var(--rule);
-      padding: var(--space-3);
-    }
-
-    td {
-      align-items: center;
-      border: 0;
-      display: grid;
-      gap: var(--space-3);
-      grid-template-columns: 7rem minmax(0, 1fr);
-      padding: var(--space-2) 0;
-      text-align: left !important;
-    }
-
-    td::before {
-      color: var(--text-muted);
-      content: attr(data-label);
-      font: 650 var(--font-size-compact) / 1.2 var(--sans);
-    }
-
-    .empty-row td {
-      display: flex;
-      height: 12rem;
-      justify-content: center;
-    }
-
-    .empty-row td::before {
-      content: none;
-    }
-  }
-
-  /* The label column is a fixed 7rem, which is affordable until it is not: at
-     320 it left the value 90px and every name longer than "Ada Lovelace" was
-     cut. The label goes above the value rather than beside it, which is what
-     the other tables already do at this width. */
-  @media (max-width: 22rem) {
-    td {
-      gap: var(--space-1);
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .table-skeleton span {
-      animation: none;
-    }
   }
 </style>
