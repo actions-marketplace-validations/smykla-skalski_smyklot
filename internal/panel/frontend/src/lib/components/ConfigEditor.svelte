@@ -236,7 +236,7 @@
               {#if changed}
                 <ChangedMarker />
               {/if}
-              <span class="label-text">{field.label}</span>
+              <span class="label-text band-trim">{field.label}</span>
               <HelpTip
                 id="config-{scope}-{idPrefix}-{field.key}-tooltip"
                 label="About {field.label.toLowerCase()}"
@@ -281,7 +281,7 @@
         <div class="row-group" class:changed={keyChanged('command_prefix')}>
           <div class="row-line">
             <span class="row-label">
-              <label for="config-{scope}-{idPrefix}-prefix">Prefix</label>
+              <label class="band-trim" for="config-{scope}-{idPrefix}-prefix">Prefix</label>
               <HelpTip
                 id="config-{scope}-{idPrefix}-prefix-tooltip"
                 label="About the command prefix"
@@ -320,7 +320,7 @@
         <div class="row-group" class:changed={keyChanged('allowed_commands')}>
           <div class="row-line">
             <span class="row-label">
-              <span class="label-text">Allowed commands</span>
+              <span class="label-text band-trim">Allowed commands</span>
               <HelpTip
                 id="config-{scope}-{idPrefix}-commands-tooltip"
                 label="About allowed commands"
@@ -362,7 +362,7 @@
         <div class="row-group" class:changed={keyChanged('command_aliases')}>
           <div class="row-line">
             <span class="row-label" id="config-{scope}-{idPrefix}-aliases-heading">
-              <span class="label-text">Aliases</span>
+              <span class="label-text band-trim">Aliases</span>
               <HelpTip
                 id="config-{scope}-{idPrefix}-aliases-tooltip"
                 label="About command aliases"
@@ -403,7 +403,7 @@
                 onRemove={() => removeAlias(name)}
               />
             {:else}
-              <span class="alias-empty">No aliases yet</span>
+              <span class="alias-empty band-trim">No aliases yet</span>
             {/each}
 
             {#if composerOpen}
@@ -442,7 +442,7 @@
                 </Select>
                 <button
                   type="submit"
-                  class="composer-ok"
+                  class="composer-ok band-trim"
                   disabled={editorDisabled || aliasName.trim() === ''}
                 >
                   Add
@@ -464,7 +464,7 @@
                 onclick={openComposer}
               >
                 <Icon name="plus" size={13} />
-                <span>Add alias</span>
+                <span class="band-trim">Add alias</span>
               </button>
             {/if}
           </div>
@@ -638,26 +638,10 @@
     font-size: var(--font-size-meta);
   }
 
-  .add-chip {
-    align-items: center;
-    background: none;
-    border: 1.5px dashed var(--border-strong);
-    border-radius: var(--r-chip);
-    color: var(--text-secondary);
-    cursor: pointer;
-    display: inline-flex;
-    font: 600 var(--font-size-compact) / 1 var(--sans);
-    gap: 0.375rem;
-    min-height: 2rem;
-    padding: 0 0.875rem;
-  }
-
-  .add-chip:hover:not(:disabled) {
-    background: var(--brand-action-tint);
-    border-color: var(--brand-action);
-    color: var(--brand-action-text);
-  }
-
+  /* `.add-chip` is in `app.css` and this restated it, height included - so
+     raising the shared control left this one page behind at 24px beside the
+     34px chip it adds to. The local copy said in a comment that it was keeping
+     the shared height, which is exactly what a second copy cannot do. */
   .composer {
     align-items: center;
     background: var(--strip-lift);
@@ -724,19 +708,6 @@
   .composer-cancel:hover {
     background: var(--well);
     color: var(--text);
-  }
-
-  /* Trim text boxes to glyph bounds so flex centering is visually exact.
-     Labels inside flex containers need their own span: trimming must happen
-     on the flex item that holds the text, not on the container. */
-  /* The save button's own label is not in this list any more: `Button` wraps it in
-     `.button-label`, which `app.css` trims the same way. One copy, not two. */
-  .row-label .label-text,
-  .row-label label,
-  .alias-empty,
-  .add-chip span,
-  .composer-ok {
-    text-box: trim-both cap alphabetic;
   }
 
   /* Inline, the bar is not a floating slab: no vertical padding of its own, the

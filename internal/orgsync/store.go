@@ -125,6 +125,47 @@ type RepositoryState struct {
 	Problem string
 }
 
+// RepositoryPaths is every path one repository is known to hold.
+//
+// Read to answer the panel's path finder, which offers what exists rather than
+// asking somebody to type a string from memory that has to match, character for
+// character, something they cannot see.
+//
+// It is a picture rather than a fact: it is whatever the default branch held
+// when it was last looked at. Nothing is planned from it and nothing is
+// enforced with it - a path the finder does not know is still a path somebody
+// may configure.
+type RepositoryPaths struct {
+	RepositoryID string
+	TargetID     string
+	Paths        []string
+	ObservedAt   time.Time
+
+	// HeadSHA is the commit the list was read at, so a refresh can tell that
+	// nothing has changed without reading the tree again. Empty is a list read
+	// before this was recorded, which is rescanned once.
+	HeadSHA string
+
+	// Partial records that GitHub declined to list the tree whole, so this is
+	// some of what the repository holds rather than all of it. Nothing here
+	// drops a path on purpose; this is the one limit that is not ours, and it
+	// is written down so the panel can say it instead of showing a short list
+	// that looks complete.
+	Partial bool
+}
+
+// RepositoryPathScan is one stored list described, rather than read.
+//
+// Everything in RepositoryPaths except the paths. A refresh decides what to do
+// with a row from these four fields alone, and the field it leaves out is the
+// only one that is ever large.
+type RepositoryPathScan struct {
+	RepositoryID string
+	ObservedAt   time.Time
+	HeadSHA      string
+	Partial      bool
+}
+
 // PlanCreate records a computed plan and its actions together.
 //
 // One call rather than a plan then its actions, because a plan with no actions
@@ -256,6 +297,55 @@ type Store interface {
 	SetSyncRepositoryOverride(
 		context.Context, RepositoryOverrideChange,
 	) (RepositoryOverride, error)
+
+	// ListSyncRepositoryPaths reads every path an installation's repositories
+	// are known to hold, one row per repository.
+	//
+	// What the panel's path finder offers. Aggregated by the reader rather than
+	// stored aggregated: a repository's list is replaced whole when it is read
+	// again, and an installation-wide count that had to be recomputed on every
+	// one of those writes would be a write per repository per sweep to answer a
+	// question asked once a day.
+	ListSyncRepositoryPaths(context.Context, string) ([]RepositoryPaths, error)
+
+	// ListSyncRepositoryPathScans reads when each list was taken and at which
+	// commit, without reading the lists.
+	//
+	// What a refresh actually asks of a stored row: whether it is old enough to
+	// look at again, and which commit it was read at. Both are scalars sitting
+	// beside a blob that holds every path a repository has - so answering them
+	// through the read above decoded up to fifty thousand strings per
+	// repository, per tick, and threw every one of them away.
+	ListSyncRepositoryPathScans(context.Context, string) ([]RepositoryPathScan, error)
+
+	// SetSyncRepositoryPaths replaces one repository's list.
+	SetSyncRepositoryPaths(context.Context, RepositoryPaths) error
+
+	// TouchSyncRepositoryPaths records that a list was checked and had not
+	// changed, without rewriting it.
+	//
+	// The common case by a long way: a branch that has not moved since the last
+	// tick still holds the list that was read then, and the only thing to say
+	// about it is when it was last looked at. Writing that through the replace
+	// above re-encoded and rewrote the whole list to change one column.
+	//
+	// A repository with no row is not an error. It is a repository nothing has
+	// scanned yet, and the next scan writes one.
+	TouchSyncRepositoryPaths(context.Context, string, time.Time) error
+
+	// PruneSyncRepositoryPaths drops the lists of repositories an installation
+	// no longer synchronizes, answering how many went.
+	//
+	// A repository leaves an installation, or is archived, or its access is
+	// withdrawn - and its list stayed, so the finder went on offering paths
+	// from a repository nobody could configure a file at. Nothing else removes
+	// them: the sweep writes a list per repository it reads, and it reads none
+	// of these.
+	//
+	// The catalog decides, rather than a list of identifiers the caller passes:
+	// what is worth keeping is a query the database can answer about itself,
+	// and a caller assembling one would grow a parameter per repository.
+	PruneSyncRepositoryPaths(context.Context, string) (int64, error)
 
 	ListSyncRepositoryState(context.Context, string) ([]RepositoryState, error)
 

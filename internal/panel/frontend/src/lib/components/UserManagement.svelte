@@ -72,7 +72,7 @@
   import ResultProblem from './ResultProblem.svelte';
   import RolePicker, { type RolePickerOption } from './RolePicker.svelte';
   import SearchField from './SearchField.svelte';
-  import SegmentedControl from './SegmentedControl.svelte';
+  import SectionTabs from './SectionTabs.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
   type ManagementSection = 'users' | 'invitations';
@@ -170,6 +170,7 @@
     actorTargetRole,
     readOnly = false,
     onSection,
+    sectionHref,
     fetchTargetUsers,
     addTargetUser,
     suggestUsers,
@@ -189,6 +190,8 @@
     actorTargetRole: InstallationRole;
     readOnly?: boolean;
     onSection: (section: ManagementSection) => void;
+    /** Where each list lives; the strip is a strip of addresses. */
+    sectionHref?: (section: ManagementSection) => string;
     fetchTargetUsers: (targetId: string, request: PanelUserPageRequest) => Promise<Page<PanelUser>>;
     addTargetUser: (targetId: string, input: AddTargetUserInput) => Promise<PanelUser>;
     /** Completes a login as it is typed; returns none when no roster is readable. */
@@ -463,17 +466,11 @@
           ? null
           : invitationFailure),
   );
+  /* Two lists, which are two addresses: tabs rather than a segmented control,
+     which changes what is on screen and saves nothing. */
   const sectionOptions = $derived([
-    {
-      value: 'users',
-      label: 'Users',
-      tone: 'accent' as const,
-    },
-    {
-      value: 'invitations',
-      label: 'Invitations',
-      tone: 'accent' as const,
-    },
+    { id: 'users', label: 'Users', href: sectionHref?.('users') ?? '#' },
+    { id: 'invitations', label: 'Invitations', href: sectionHref?.('invitations') ?? '#' },
   ]);
   const addRoleOptions = $derived(
     addRoles().map((role) => ({ value: role, label: roleLabel(role), icon: roleIcon(role) })),
@@ -1316,13 +1313,11 @@
 
   <div class="user-management-body">
     <div class="management-navigation">
-      <SegmentedControl
-        name="user-management-section"
+      <SectionTabs
+        items={sectionOptions}
+        active={activeSection}
         label="User management lists"
-        variant="navigation"
-        options={sectionOptions}
-        value={activeSection}
-        onSelect={selectSection}
+        onNavigate={selectSection}
       />
       <div class="stable-feedback" aria-live="polite">{feedback}</div>
       {#if activeSection === 'users'}
@@ -1832,7 +1827,7 @@
         </div>
       </Callout>
     {:else if addStage === 'form'}
-      <div class="add-scope-summary">
+      <div class="add-scope-summary band-trim-kids">
         <span class="add-scope-icon" aria-hidden="true">
           <span class="cap-trim">{monogram(targetName, targetName).slice(0, 1)}</span>
         </span>
@@ -1856,7 +1851,7 @@
               <span class="method-icon" aria-hidden="true">
                 <Icon name={method.value === 'add' ? 'plus' : 'mail'} size={14} strokeWidth={2} />
               </span>
-              <span class="method-copy">
+              <span class="method-copy band-trim-kids">
                 <strong>{method.label}</strong>
                 <small>{method.description}</small>
               </span>
@@ -1908,7 +1903,10 @@
         {/if}
       </div>
     {:else}
-      <div class="invitation-created" aria-live="polite">
+      <!-- Both lines trimmed to their ink, so `align-items: center` centres what
+           you can see rather than two line boxes carrying half-leading the eye
+           does not read. -->
+      <div class="invitation-created band-trim-kids" aria-live="polite">
         <span class="success-mark" aria-hidden="true">✓</span>
         <div>
           <strong>Invitation ready</strong>
@@ -2528,7 +2526,6 @@
     display: block;
     font: 700 var(--font-size-micro) / 1 var(--sans);
     letter-spacing: 0.06em;
-    text-box: trim-both cap alphabetic;
     text-transform: uppercase;
   }
 
@@ -2537,7 +2534,6 @@
     font-size: var(--font-size-body);
     line-height: 1;
     margin-top: 0.65rem;
-    text-box: trim-both cap alphabetic;
   }
 
   .method-picker {
@@ -2631,7 +2627,6 @@
     display: block;
     font-size: 0.75rem;
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   .method-copy small {
@@ -2640,7 +2635,6 @@
     font-size: var(--font-size-micro);
     line-height: 1;
     margin-top: 0.75rem;
-    text-box: trim-both cap alphabetic;
   }
 
   .method-check {
@@ -2746,12 +2740,9 @@
     padding: 0.75rem;
   }
 
-  /* Both lines trimmed to their ink, so `align-items: center` centres what you can see rather than
-     two line boxes carrying half-leading the eye does not read. */
   .invitation-created strong {
     display: block;
     font-size: 0.8125rem;
-    text-box: trim-both cap alphabetic;
   }
 
   .invitation-created p,
@@ -2759,10 +2750,6 @@
     color: var(--dim);
     font-size: 0.75rem;
     margin: 0.15rem 0 0;
-  }
-
-  .invitation-created p {
-    text-box: trim-both cap alphabetic;
   }
 
   .link-clipboard {

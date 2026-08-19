@@ -63,6 +63,7 @@ func SeededTables() []string {
 		"user_preferences",
 		"sync_configs",
 		"sync_repository_overrides",
+		"sync_repository_paths",
 		"sync_repository_state",
 		"sync_plans",
 		"sync_plan_actions",
@@ -457,6 +458,26 @@ func (s *seeder) seedOrgSync() error {
 			Document: []byte(`{"excludes":["renovate.json"]}`),
 			ActorID:  s.owner.ID, Now: s.now,
 		}); err != nil {
+		return err
+	}
+
+	// What the panel's path finder offers. Two repositories rather than one, so
+	// a copy is proven on a list that has to be aggregated rather than on a
+	// single row that reads the same either way.
+	if err := s.store.SetSyncRepositoryPaths(s.ctx, orgsync.RepositoryPaths{
+		RepositoryID: "repo-1", TargetID: s.target.TargetID,
+		Paths:      []string{"README.md", ".github/workflows/test.yaml"},
+		ObservedAt: s.now,
+		HeadSHA:    "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+	}); err != nil {
+		return err
+	}
+	if err := s.store.SetSyncRepositoryPaths(s.ctx, orgsync.RepositoryPaths{
+		RepositoryID: "repo-2", TargetID: s.target.TargetID,
+		Paths:      []string{"README.md"},
+		ObservedAt: s.now,
+		HeadSHA:    "8765432109f8e7d6c5b4a3928170695f4e3d2c1b",
+	}); err != nil {
 		return err
 	}
 

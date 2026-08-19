@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { plainClick } from '#lib/follow.js';
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { untrack } from 'svelte';
   import { useInterval } from 'runed';
@@ -46,7 +47,7 @@
     api: PanelApi;
     actorLogin: string;
     listHref: string;
-    hrefFor: (account: string, view: RootInstallationView) => string;
+    hrefFor: (account: string, view: RootInstallationView, section?: HistorySection) => string;
     onList: () => void;
     onNavigate: (account: string, view: RootInstallationView) => void;
     historySection: HistorySection;
@@ -131,7 +132,7 @@
   }
 
   function navigate(event: MouseEvent, next: RootInstallationView): void {
-    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return;
+    if (!plainClick(event)) return;
     event.preventDefault();
     onNavigate(installation.account.login, next);
   }
@@ -306,7 +307,7 @@
   {/if}
 
   <nav
-    class="installation-navigation"
+    class="installation-navigation band-trim-kids"
     aria-label={`Root views for ${installation.account.display_name}`}
   >
     {#each ['settings', 'repositories', 'users', 'history'] as section (section)}
@@ -374,6 +375,7 @@
       actorTargetRole={canWrite ? 'owner' : 'none'}
       readOnly={!canWrite}
       onSection={selectAccessSection}
+      sectionHref={(next: 'users' | 'invitations') => hrefFor(installation.account.login, next)}
       fetchTargetUsers={api.fetchRootTargetUsers}
       addTargetUser={api.addRootTargetUser}
       suggestUsers={api.suggestRootTargetUsers}
@@ -389,6 +391,7 @@
       targetId={installation.id}
       section={historySection}
       onSection={onHistorySection}
+      sectionHref={(next: HistorySection) => hrefFor(installation.account.login, 'history', next)}
       fetchAudit={(request) => api.fetchRootTargetAudit(installation.id, request)}
       fetchFailures={(request) => api.fetchRootTargetFailures(installation.id, request)}
     />
@@ -596,7 +599,6 @@
     font-weight: 650;
     line-height: 1;
     padding: 0.4375rem var(--space-3);
-    text-box: trim-both cap alphabetic;
     text-decoration: none;
     white-space: nowrap;
   }

@@ -34,9 +34,9 @@
 </script>
 
 <span class="word-chip" class:added>
-  <span class="chip-from">{from}</span>
-  <span class="chip-arrow" aria-hidden="true">→</span>
-  <span class="chip-to">{to}</span>
+  <span class="chip-from band-trim">{from}</span>
+  <span class="chip-arrow band-trim" aria-hidden="true">→</span>
+  <span class="chip-to band-trim">{to}</span>
   <button
     class="chip-x"
     aria-label="Delete alias {from}"
@@ -49,18 +49,10 @@
 </span>
 
 <style>
-  .word-chip {
-    align-items: center;
-    background: var(--strip-lift);
-    border: 1px solid var(--rule);
-    border-radius: var(--r-chip);
-    display: inline-flex;
-    font: 500 var(--font-size-control) / 1 var(--mono);
-    gap: 0.4375rem;
-    min-height: 2rem;
-    padding: 0 0.375rem 0 0.875rem;
-  }
-
+  /* `.word-chip` and `.chip-x` live in `app.css`: they are the editable-entry
+     control, worn here and by `PatternList`, and each had its own copy at its
+     own height. What stays here is what an ALIAS adds to one - three words and
+     an arrow rather than a single string. */
   .word-chip.added {
     background: var(--brand-action-tint);
     border-color: var(--brand-action);
@@ -78,32 +70,5 @@
 
   .chip-to {
     color: var(--brand-action-text);
-  }
-
-  .chip-x {
-    align-items: center;
-    background: none;
-    border: 0;
-    border-radius: 50%;
-    color: var(--dim);
-    cursor: pointer;
-    display: inline-flex;
-    height: 1.25rem;
-    justify-content: center;
-    padding: 0;
-    width: 1.25rem;
-  }
-
-  .chip-x:hover:not(:disabled) {
-    background: var(--stop-tint);
-    color: var(--stop);
-  }
-
-  /* The trim the three words take. It sat in a list of every trimmed thing in the
-     editor, which is a list a chip in any other file would never have reached. */
-  .chip-from,
-  .chip-arrow,
-  .chip-to {
-    text-box: trim-both cap alphabetic;
   }
 </style>

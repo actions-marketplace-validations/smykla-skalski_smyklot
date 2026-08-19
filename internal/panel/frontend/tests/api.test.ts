@@ -84,6 +84,9 @@ const TARGET: PanelTarget = {
   pending_ci_mode_default: 'checks',
   pending_ci_branch_patterns_default: { include: ['~DEFAULT_BRANCH'], exclude: [] },
   pending_ci_quiet_period_seconds_override: null,
+  pending_ci_quiet_period_seconds_inherited: 30,
+  path_index_interval_seconds_override: null,
+  path_index_interval_seconds_inherited: 3600,
   pending_ci_permissions: {
     checks_write: true,
     administration_write: true,
@@ -132,7 +135,9 @@ const DETAIL: RepositoryDetail = {
   pending_ci_branch_patterns_override: null,
   pending_ci_branch_patterns_inherited: { include: ['~DEFAULT_BRANCH'], exclude: [] },
   pending_ci_quiet_period_seconds_override: null,
-  pending_ci_quiet_period_seconds_inherited: null,
+  pending_ci_quiet_period_seconds_inherited: 30,
+  path_index_interval_seconds_override: null,
+  path_index_interval_seconds_inherited: 3600,
   revision: 1,
 };
 
@@ -641,6 +646,11 @@ describe('Root runtime settings', () => {
         override_seconds: null,
         effective_seconds: 30,
       },
+      path_index_interval: {
+        deployment_seconds: 3_600,
+        override_seconds: null,
+        effective_seconds: 3_600,
+      },
       session_lifetime: {
         deployment_seconds: 86_400,
         override_seconds: null,
@@ -691,6 +701,7 @@ describe('Root runtime settings', () => {
         log_level: 'debug',
         reaction_poll_interval_seconds: 90,
         merge_after_ci_quiet_period_seconds: 45,
+        path_index_interval_seconds: 7_200,
         session_ttl_seconds: 3_600,
         expected_revision: 3,
       }),
@@ -706,6 +717,7 @@ describe('Root runtime settings', () => {
       log_level: 'debug',
       reaction_poll_interval_seconds: 90,
       merge_after_ci_quiet_period_seconds: 45,
+      path_index_interval_seconds: 7_200,
       session_ttl_seconds: 3_600,
       expected_revision: 3,
     });

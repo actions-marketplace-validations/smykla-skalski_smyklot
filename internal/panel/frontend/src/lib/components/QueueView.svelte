@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { plainClick } from '#lib/follow.js';
   import { createQuery } from '@tanstack/svelte-query';
   import { useDebounce, useInterval } from 'runed';
   import { untrack } from 'svelte';
@@ -29,7 +30,7 @@
   import ResultProblem from './ResultProblem.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
-  import SegmentedControl from './SegmentedControl.svelte';
+  import SectionTabs from './SectionTabs.svelte';
   import SortIndicator from './SortIndicator.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
   import TableToolsMenu from './TableToolsMenu.svelte';
@@ -116,12 +117,15 @@
     rootRole,
     section,
     onSection,
+    sectionHref,
     onOpenRequest,
   }: {
     api: PanelApi;
     rootRole: string;
     section: QueueSection;
     onSection: (section: QueueSection) => void;
+    /** Where each section lives; the strip is a strip of addresses. */
+    sectionHref?: (section: QueueSection) => string;
     onOpenRequest: (requestId: string) => void;
   } = $props();
 
@@ -589,8 +593,7 @@
   }
 
   function openRow(event: MouseEvent, request: PendingCIRequest): void {
-    if (event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!plainClick(event)) return;
     if ((event.target as HTMLElement).closest('a, button')) return;
     event.preventDefault();
     onOpenRequest(request.id);
@@ -640,16 +643,23 @@
   title="Queue"
   subtitle="Work the service is holding until it can act"
 >
-  <SegmentedControl
-    name="queue-section"
-    label="Queue section"
-    compact
-    options={[
-      { value: 'waiting', label: 'Waiting', tone: 'accent', badge: waiting.length },
-      { value: 'recent', label: 'Recent', tone: 'accent' },
+  <!-- Two addresses, so a strip of links: a segmented control changes what is
+       on screen and saves nothing, and these survive a reload and can be
+       copied. The count speaks only where it waits on the reader. -->
+  <SectionTabs
+    items={[
+      {
+        id: 'waiting',
+        label: 'Waiting',
+        href: sectionHref?.('waiting') ?? '#',
+        count: waiting.length > 0 ? String(waiting.length) : undefined,
+        signal: true,
+      },
+      { id: 'recent', label: 'Recent', href: sectionHref?.('recent') ?? '#' },
     ]}
-    value={section}
-    onSelect={(next) => onSection(next as QueueSection)}
+    active={section}
+    label="Queue section"
+    onNavigate={(next) => onSection(next as QueueSection)}
   />
 </RootPageHeader>
 
@@ -918,13 +928,13 @@
     </td>
     <td data-label="Pull request">
       <a
-        class="pr-name"
+        class="pr-name band-trim-kids"
         href={githubHref(request)}
         rel="noreferrer"
         target="_blank"
         title={`${request.repository_full_name} #${request.pull_request} on GitHub`}
       >
-        <span class="pr-owner"
+        <span class="pr-owner band-trim-kids"
           ><span class="owner-head">{ownerHead(request)}</span><span class="owner-tail"
             >{ownerTail(request)}</span
           ></span
@@ -933,7 +943,7 @@
         <span class="pr-num">#{request.pull_request}</span>
         <Icon name="link" size={14} strokeWidth={2} />
       </a>
-      <div class="pr-meta">
+      <div class="pr-meta band-trim-kids">
         <span class="contract">{contractOf(request)}</span>
         <span class="sep" aria-hidden="true">·</span>
         <span class="sha">{request.head_sha.slice(0, 8)}</span>
@@ -958,7 +968,7 @@
                  and this is for the reader who would rather not lean in: the type
                  is the smallest in the row. -->
       <td data-label="Why it ended" title={endReason(request)}>
-        <div class="reason">{endReason(request)}</div>
+        <div class="reason band-trim">{endReason(request)}</div>
       </td>
       <td class="finished-column" data-label="Finished">
         {#if request.finished_at === undefined}
@@ -1011,7 +1021,7 @@
           {/if}
           <span class="band-trim">{next.lead}</span>
         </div>
-        <div class="next-sub">{next.sub}</div>
+        <div class="next-sub band-trim">{next.sub}</div>
       </td>
       <td class="armed-column" data-label="Armed">
         <span class="age band-trim" title={formatTimestamp(request.requested_at)}
@@ -1203,7 +1213,6 @@
 
   .pr-name > :global(*) {
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   /* Gives up its room before anything beside it does: which org a pull request is
@@ -1227,7 +1236,6 @@
 
   .pr-owner > span {
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   /* The end of the name, held back from the shrink so the ellipsis lands before
@@ -1331,7 +1339,6 @@
   .pr-meta > :global(*) {
     flex: none;
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   .pr-meta .contract {
@@ -1405,7 +1412,6 @@
     color: var(--dim);
     font-size: var(--font-size-compact);
     margin-top: var(--line-gap);
-    text-box: trim-both cap alphabetic;
   }
 
   .age {
@@ -1426,7 +1432,6 @@
   .reason {
     color: var(--dim);
     font-size: var(--font-size-compact);
-    text-box: trim-both cap alphabetic;
   }
 
   /* A heading's own symbol, for the widths where its word does not fit. Drawn

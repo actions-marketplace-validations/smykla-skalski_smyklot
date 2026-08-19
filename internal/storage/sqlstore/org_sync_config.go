@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/orgsync"
 	"github.com/smykla-skalski/smyklot/internal/storage"
@@ -435,4 +436,186 @@ func scanSyncRepositoryState(scanner rowScanner) (orgsync.RepositoryState, error
 	state.AppliedAt = applied.Time()
 
 	return state, nil
+}
+
+// ListSyncRepositoryPaths reads every path an installation's repositories are
+// known to hold, one row per repository.
+//
+// Through the repositories join like every other read of these tables: the
+// scope of an installation is the catalog's, and a repository that moves cannot
+// leave a path list behind describing it.
+func (s *Store) ListSyncRepositoryPaths(
+	ctx context.Context,
+	targetID string,
+) ([]orgsync.RepositoryPaths, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT p.repository_id, p.target_id, p.paths, p.observed_at, p.head_sha, p.partial
+FROM sync_repository_paths p
+JOIN repositories r ON r.id = p.repository_id
+WHERE r.target_id = ?
+ORDER BY p.repository_id`, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("list sync repository paths: %w", err)
+	}
+
+	return collectRows(rows, scanSyncRepositoryPaths)
+}
+
+// ListSyncRepositoryPathScans reads when each list was taken and at which
+// commit, without reading the lists.
+//
+// The same rows as above with the one large column left out. A refresh decides
+// what to do with a row from these four fields alone, so selecting `paths` to
+// answer them read - and decoded - every path in the installation on every
+// tick, then discarded all of it.
+func (s *Store) ListSyncRepositoryPathScans(
+	ctx context.Context,
+	targetID string,
+) ([]orgsync.RepositoryPathScan, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT p.repository_id, p.observed_at, p.head_sha, p.partial
+FROM sync_repository_paths p
+JOIN repositories r ON r.id = p.repository_id
+WHERE r.target_id = ?
+ORDER BY p.repository_id`, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("list sync repository path scans: %w", err)
+	}
+
+	return collectRows(rows, scanSyncRepositoryPathScan)
+}
+
+// TouchSyncRepositoryPaths records that a list was checked and had not changed.
+//
+// An UPDATE rather than the insert-or-replace above, because the list is not
+// what is being written: a branch that has not moved still holds the paths that
+// were read from it, and re-encoding fifty thousand of them to move one
+// timestamp is the cost this avoids. A repository with no row yet matches
+// nothing, which is right - there is no list to still be current.
+func (s *Store) TouchSyncRepositoryPaths(
+	ctx context.Context,
+	repositoryID string,
+	observedAt time.Time,
+) error {
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE sync_repository_paths SET observed_at = ? WHERE repository_id = ?`,
+		observedAt, repositoryID,
+	); err != nil {
+		return fmt.Errorf("touch sync repository paths: %w", err)
+	}
+
+	return nil
+}
+
+// PruneSyncRepositoryPaths drops the lists of repositories an installation no
+// longer synchronizes.
+//
+// The catalog decides. A repository that left the installation has no row in
+// it at all, and one that is archived or whose access was withdrawn is there
+// with `available` clear - the sweep skips both, so nothing was ever going to
+// replace their lists, and the finder went on offering paths from repositories
+// nobody could configure a file at.
+//
+// Scoped to the installation and not to a moment: a row for a repository under
+// some other target is that target's business, and one written a second ago by
+// a sweep still running is kept because its repository is in the catalog.
+func (s *Store) PruneSyncRepositoryPaths(ctx context.Context, targetID string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM sync_repository_paths
+WHERE target_id = ?
+  AND repository_id NOT IN (
+      SELECT id FROM repositories WHERE target_id = ? AND available = ?
+  )`, targetID, targetID, true)
+	if err != nil {
+		return 0, fmt.Errorf("prune sync repository paths: %w", err)
+	}
+
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune sync repository paths: %w", err)
+	}
+
+	return dropped, nil
+}
+
+// SetSyncRepositoryPaths replaces one repository's list.
+//
+// Replaced whole rather than merged: this is a picture of what a repository
+// held when it was last looked at, and a merge would remember paths that have
+// since been deleted for ever.
+func (s *Store) SetSyncRepositoryPaths(
+	ctx context.Context,
+	paths orgsync.RepositoryPaths,
+) error {
+	// JSON rather than one string with a newline between the paths, which is a
+	// separator that can appear in the data: git permits a newline in a
+	// filename, and one such file came back as two paths that do not exist.
+	encoded, err := marshalPaths(paths.Paths)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO sync_repository_paths (
+    repository_id, target_id, paths, observed_at, head_sha, partial
+)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (repository_id) DO UPDATE SET
+    target_id = excluded.target_id,
+    paths = excluded.paths,
+    observed_at = excluded.observed_at,
+    head_sha = excluded.head_sha,
+    partial = excluded.partial`,
+		paths.RepositoryID,
+		paths.TargetID,
+		encoded,
+		paths.ObservedAt,
+		paths.HeadSHA,
+		paths.Partial,
+	)
+	if err != nil {
+		return fmt.Errorf("set sync repository paths: %w", err)
+	}
+
+	return nil
+}
+
+func scanSyncRepositoryPathScan(scanner rowScanner) (orgsync.RepositoryPathScan, error) {
+	var (
+		scan     orgsync.RepositoryPathScan
+		observed StoredTime
+	)
+	if err := scanner.Scan(
+		&scan.RepositoryID, &observed, &scan.HeadSHA, &scan.Partial,
+	); err != nil {
+		return orgsync.RepositoryPathScan{}, fmt.Errorf("scan sync repository path scan: %w", err)
+	}
+
+	scan.ObservedAt = observed.Time()
+
+	return scan, nil
+}
+
+func scanSyncRepositoryPaths(scanner rowScanner) (orgsync.RepositoryPaths, error) {
+	var (
+		paths    orgsync.RepositoryPaths
+		encoded  string
+		observed StoredTime
+	)
+	if err := scanner.Scan(
+		&paths.RepositoryID, &paths.TargetID, &encoded, &observed,
+		&paths.HeadSHA, &paths.Partial,
+	); err != nil {
+		return orgsync.RepositoryPaths{}, fmt.Errorf("scan sync repository paths: %w", err)
+	}
+
+	list, err := unmarshalPaths(encoded)
+	if err != nil {
+		return orgsync.RepositoryPaths{}, err
+	}
+
+	paths.Paths = list
+	paths.ObservedAt = observed.Time()
+
+	return paths, nil
 }

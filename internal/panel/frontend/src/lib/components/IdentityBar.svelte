@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { plainClick } from '#lib/follow.js';
   import { fuzzyCandidates } from '../fuzzy';
   import { handleLabel, readHandle } from '../identity';
   import type { ThemeDisplay } from '../preferences';
@@ -173,8 +174,7 @@
   }
 
   function selectTarget(event: MouseEvent, targetId: string): void {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
-      return;
+    if (!plainClick(event)) return;
     event.preventDefault();
     closeMenus();
     mobileNavigationOpen = false;
@@ -352,13 +352,13 @@
         <hr class="menu-divider" />
         <div class="theme-row">
           <span class="theme-icon" aria-hidden="true"><Icon name="sun-moon" size={15} /></span>
-          <span class="theme-label">Theme</span>
+          <span class="theme-label band-trim">Theme</span>
           <ThemeSwitch name="panel-theme" {theme} surface="sidebar" onSelect={onSelectTheme} />
         </div>
         <hr class="menu-divider" />
         <button class="account-action" type="button" onclick={signOut}>
           <span class="action-icon"><Icon name="sign-out" size={16} /></span>
-          <span class="action-text">Sign out</span>
+          <span class="action-text band-trim">Sign out</span>
         </button>
       </div>
     </Popover>
@@ -685,7 +685,6 @@
     color: var(--sidebar-menu-text);
     flex: 1;
     font: 500 var(--font-size-meta) / 1 var(--sans);
-    text-box: trim-both cap alphabetic;
   }
 
   .account-action {
@@ -729,10 +728,6 @@
   .account-action:hover .action-icon,
   .account-action:focus-visible .action-icon {
     color: var(--sidebar-stop);
-  }
-
-  .action-text {
-    text-box: trim-both cap alphabetic;
   }
 
   /* ---- collapsed rail ---- */

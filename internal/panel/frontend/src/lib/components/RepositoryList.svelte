@@ -829,6 +829,12 @@
     );
   }
 
+  async function setPathIndex(repositoryId: string, seconds: number | null): Promise<void> {
+    await save(repositoryId, (detail) =>
+      repositorySettingsInput(detail, { path_index_interval_seconds_override: seconds }),
+    );
+  }
+
   function repositorySettingsInput(
     detail: RepositoryDetail,
     overrides: Partial<RepositorySettingsInput>,
@@ -838,6 +844,7 @@
       pending_ci_mode_override: detail.pending_ci_mode_override,
       pending_ci_branch_patterns_override: detail.pending_ci_branch_patterns_override,
       pending_ci_quiet_period_seconds_override: detail.pending_ci_quiet_period_seconds_override,
+      path_index_interval_seconds_override: detail.path_index_interval_seconds_override,
       config_patch: detail.config_patch,
       ignore_repository_file: detail.ignore_repository_file,
       expected_revision: detail.revision,
@@ -931,6 +938,7 @@
     onBypass={(bypass) => setBypass(repository.id, bypass)}
     onSaveConfig={(patch) => setConfig(repository.id, patch)}
     onSavePendingCI={(mode, patterns, quiet) => setPendingCI(repository.id, mode, patterns, quiet)}
+    onSavePathIndex={(seconds) => setPathIndex(repository.id, seconds)}
     onResetMigration={() => resetConfigMigration(repository.id)}
     sections={availableSections}
     syncOverride={syncOverrideQuery.data}
@@ -1185,9 +1193,9 @@
                 href={session.repositoryHref(repository.name)}
                 title={repository.name}
               >
-                <strong>{repository.name}</strong>
+                <strong class="band-trim">{repository.name}</strong>
                 {#if repository.config_override_count > 0}
-                  <span class="override-chip">
+                  <span class="override-chip band-trim">
                     {repository.config_override_count}
                     {repository.config_override_count === 1 ? 'override' : 'overrides'}
                   </span>
@@ -1665,7 +1673,6 @@
     min-width: 0;
     overflow: clip;
     overflow-clip-margin: 0.35em;
-    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1679,7 +1686,6 @@
     flex: none;
     font: 500 var(--font-size-compact) / 1 var(--mono);
     padding: 0.34rem 0.5rem;
-    text-box: trim-both cap alphabetic;
     white-space: nowrap;
   }
 
@@ -1786,7 +1792,6 @@
          nothing here truncates, just gone. `anywhere` breaks mid-run, which is
          what a card can afford and a table row cannot. */
       overflow-wrap: anywhere;
-      text-box: trim-both cap alphabetic;
       white-space: normal;
     }
 

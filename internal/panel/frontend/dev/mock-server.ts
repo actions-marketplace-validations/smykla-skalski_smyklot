@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin } from 'vite';
 
 import { mockEnabled as enabled } from './mock-html.ts';
+import { syncPathIndex } from './path-index.ts';
 
 import type {
   AuditEntry,
@@ -52,7 +53,12 @@ import {
   capabilitiesFor,
   cycled,
   DEFAULT_CONFIG,
+  DEV_MAX_PATH_INDEX_SECONDS,
+  DEV_PATH_INDEX_SECONDS,
+  DEV_PENDING_CI_QUIET_SECONDS,
   MOCK_ORGANIZATION_ROSTER,
+  mockRepositoryPaths,
+  mockRepositoryScanAge,
   mockSyncConfig,
   ROOT_READ_CAPABILITIES,
   mockRootOwns,
@@ -993,6 +999,60 @@ async function handle(
       }
     }
 
+    // What the path finder offers, aggregated the way the server aggregates it:
+    // one row per path, carrying how many repositories already hold it.
+    const syncPathsMatch = /^\/api\/v1\/targets\/([^/]+)\/sync\/paths$/.exec(
+      path.slice(route('').length),
+    );
+    if (syncPathsMatch && method === 'GET') {
+      const target = findTarget(state, decodeURIComponent(syncPathsMatch[1] ?? ''));
+      const day = 24 * 60 * 60 * 1000;
+
+      respond(
+        res,
+        200,
+        syncPathIndex(
+          target.repositories.map((repository) => {
+            const name = repository.detail.repository.name;
+
+            return {
+              repository_id: repository.detail.repository.id,
+              paths: mockRepositoryPaths(name),
+              observed_at: new Date(Date.now() - mockRepositoryScanAge(name) * day).toISOString(),
+            };
+          }),
+        ),
+      );
+      return;
+    }
+
+    // Every repository's answer about one kind, which is what the page about a
+    // shared file reads: "who adjusts this" is a question about the whole
+    // installation.
+    const syncOverridesMatch = /^\/api\/v1\/targets\/([^/]+)\/sync\/overrides\/([^/]+)$/.exec(
+      path.slice(route('').length),
+    );
+    if (syncOverridesMatch && method === 'GET') {
+      const targetId = decodeURIComponent(syncOverridesMatch[1] ?? '');
+      const kind = decodeURIComponent(syncOverridesMatch[2] ?? '');
+      const owned = new Map(
+        findTarget(state, targetId).repositories.map((repository) => [
+          repository.detail.repository.id,
+          repository.detail.repository.name,
+        ]),
+      );
+      respond(res, 200, {
+        overrides: [...state.syncOverrides.entries()]
+          .filter(([key, override]) => override.kind === kind && owned.has(key.split('/')[0] ?? ''))
+          .map(([key, override]) => ({
+            repository_id: key.split('/')[0] ?? '',
+            repository_name: owned.get(key.split('/')[0] ?? '') ?? '',
+            ...override,
+          })),
+      });
+      return;
+    }
+
     const syncOverrideMatch =
       /^\/api\/v1\/targets\/([^/]+)\/repositories\/([^/]+)\/sync\/([^/]+)$/.exec(
         path.slice(route('').length),
@@ -1096,6 +1156,19 @@ async function handle(
       if (input.expected_revision !== state.runtime.revision) {
         throw new MockApiError(409, 'conflict', 'runtime settings changed; reload and try again');
       }
+      const pathIndexPresent = Object.hasOwn(input, 'path_index_interval_seconds');
+      const pathIndex = input.path_index_interval_seconds;
+      if (
+        pathIndexPresent &&
+        pathIndex !== null &&
+        (!Number.isInteger(pathIndex) || pathIndex < 0 || pathIndex > DEV_MAX_PATH_INDEX_SECONDS)
+      ) {
+        throw new MockApiError(
+          400,
+          'invalid_runtime_settings',
+          'file list refresh interval must be between 0 seconds and 7 days',
+        );
+      }
       const quietPeriodPresent = Object.hasOwn(input, 'merge_after_ci_quiet_period_seconds');
       const quietPeriod = input.merge_after_ci_quiet_period_seconds;
       if (
@@ -1113,6 +1186,7 @@ async function handle(
       state.runtime.logLevelOverride = input.log_level;
       state.runtime.pollIntervalOverride = input.reaction_poll_interval_seconds;
       if (quietPeriodPresent) state.runtime.pendingCIQuietPeriodOverride = quietPeriod;
+      if (pathIndexPresent) state.runtime.pathIndexIntervalOverride = pathIndex;
       state.runtime.sessionTTLOverride = input.session_ttl_seconds;
       state.runtime.revision += 1;
       state.runtime.updatedAt = new Date().toISOString();
@@ -1523,6 +1597,10 @@ async function handle(
       const input = await readBody<TargetSettingsInput>(req);
       requireRevision(target.value.revision, input.expected_revision);
       target.value.repository_default_enabled = input.repository_default_enabled;
+      if (Object.hasOwn(input, 'path_index_interval_seconds_override')) {
+        target.value.path_index_interval_seconds_override =
+          input.path_index_interval_seconds_override ?? null;
+      }
       target.value.config_patch = structuredClone(input.config_patch);
       target.value.revision += 1;
       recomputeTarget(target);
@@ -1547,6 +1625,10 @@ async function handle(
       const input = await readBody<RepositorySettingsInput>(req);
       requireRevision(stored.detail.revision, input.expected_revision);
       stored.detail.repository.enabled_override = input.enabled_override;
+      if (Object.hasOwn(input, 'path_index_interval_seconds_override')) {
+        stored.detail.path_index_interval_seconds_override =
+          input.path_index_interval_seconds_override ?? null;
+      }
       stored.detail.config_patch = structuredClone(input.config_patch);
       stored.detail.ignore_repository_file = input.ignore_repository_file;
       stored.detail.revision += 1;
@@ -1726,6 +1808,10 @@ async function handle(
       const input = await readBody<TargetSettingsInput>(req);
       requireRevision(target.value.revision, input.expected_revision);
       target.value.repository_default_enabled = input.repository_default_enabled;
+      if (Object.hasOwn(input, 'path_index_interval_seconds_override')) {
+        target.value.path_index_interval_seconds_override =
+          input.path_index_interval_seconds_override ?? null;
+      }
       target.value.config_patch = structuredClone(input.config_patch);
       target.value.revision += 1;
       recomputeTarget(target);
@@ -1750,6 +1836,10 @@ async function handle(
       const input = await readBody<RepositorySettingsInput>(req);
       requireRevision(stored.detail.revision, input.expected_revision);
       stored.detail.repository.enabled_override = input.enabled_override;
+      if (Object.hasOwn(input, 'path_index_interval_seconds_override')) {
+        stored.detail.path_index_interval_seconds_override =
+          input.path_index_interval_seconds_override ?? null;
+      }
       stored.detail.config_patch = structuredClone(input.config_patch);
       stored.detail.ignore_repository_file = input.ignore_repository_file;
       stored.detail.revision += 1;
@@ -1941,9 +2031,15 @@ function rootRuntimeSettingsValue(state: MockState): RootRuntimeSettings {
       effective_seconds: state.runtime.pollIntervalOverride ?? 300,
     },
     merge_after_ci_quiet_period: {
-      deployment_seconds: 30,
+      deployment_seconds: DEV_PENDING_CI_QUIET_SECONDS,
       override_seconds: state.runtime.pendingCIQuietPeriodOverride,
-      effective_seconds: state.runtime.pendingCIQuietPeriodOverride ?? 30,
+      effective_seconds: state.runtime.pendingCIQuietPeriodOverride ?? DEV_PENDING_CI_QUIET_SECONDS,
+    },
+    path_index_interval: {
+      deployment_seconds: DEV_PATH_INDEX_SECONDS,
+      override_seconds: state.runtime.pathIndexIntervalOverride,
+      effective_seconds: state.runtime.pathIndexIntervalOverride ?? DEV_PATH_INDEX_SECONDS,
+      max_seconds: DEV_MAX_PATH_INDEX_SECONDS,
     },
     session_lifetime: {
       deployment_seconds: 86_400,

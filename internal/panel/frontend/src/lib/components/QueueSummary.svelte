@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { plainClick } from '#lib/follow.js';
   import { bySoonest, queueNext, queueState } from '#lib/queue.js';
   import type { PendingCIRequest, RootOverview } from '#lib/types.js';
   import Chip from './Chip.svelte';
@@ -52,26 +53,14 @@
     return slash === -1 ? fullName : fullName.slice(slash + 1);
   }
 
-  /** A plain left click routes in place; everything else is the browser's to handle. */
-  function plain(event: MouseEvent): boolean {
-    return (
-      event.button === 0 &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.shiftKey &&
-      !event.altKey &&
-      !event.defaultPrevented
-    );
-  }
-
   function open(event: MouseEvent): void {
-    if (!plain(event)) return;
+    if (!plainClick(event)) return;
     event.preventDefault();
     onOpenQueue();
   }
 
   function openRequest(event: MouseEvent, requestId: string): void {
-    if (!plain(event)) return;
+    if (!plainClick(event)) return;
     event.preventDefault();
     onOpenRequest(requestId);
   }
@@ -86,7 +75,7 @@
      about to happen by itself. -->
 <article class="plate queue-panel" class:is-empty={waiting.length === 0}>
   <header class="panel-head">
-    <div>
+    <div class="band-trim-kids">
       <h3>Queue</h3>
       <p>{summary}</p>
     </div>
@@ -113,7 +102,7 @@
   </header>
 
   {#if next.length === 0}
-    <p class="panel-empty">
+    <p class="panel-empty band-trim">
       Nothing is armed. New <span class="mono">after ci</span> commands appear here.
     </p>
   {:else}
@@ -136,7 +125,7 @@
             onclick={(event) => openRequest(event, request.id)}
           >
             <Chip tone={state.tone} icon={state.icon}>{state.label}</Chip>
-            <span class="pr-name">
+            <span class="pr-name band-trim-kids">
               <span class="pr-owner">{ownerOf(request.repository_full_name)}</span>
               <span class="pr-repo">{repositoryOf(request.repository_full_name)}</span>
               <span class="pr-num">#{request.pull_request}</span>
@@ -212,7 +201,6 @@
     grid-area: 1 / 1;
     letter-spacing: -0.02em;
     margin: 0;
-    text-box: trim-both cap alphabetic;
   }
 
   .panel-head p {
@@ -220,7 +208,6 @@
     font-size: var(--font-size-meta);
     grid-area: 2 / 1;
     margin: var(--line-gap) 0 0;
-    text-box: trim-both cap alphabetic;
   }
 
   .panel-head-end {
@@ -342,7 +329,6 @@
 
   .pr-name > :global(*) {
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   .pr-owner {
@@ -449,7 +435,6 @@
     color: var(--text-soft);
     font-size: var(--font-size-meta);
     margin: 0;
-    text-box: trim-both cap alphabetic;
   }
 
   .mono {

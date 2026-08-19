@@ -1,11 +1,14 @@
 package panel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/orgsync"
@@ -49,6 +52,238 @@ type syncOverrideDTO struct {
 	// control that fixes it.
 	Problem   string     `json:"problem,omitempty"`
 	ProblemAt *time.Time `json:"problem_at,omitempty"`
+}
+
+// syncPathDTO is one path and how many of this installation's repositories
+// already hold it.
+//
+// The count is the whole point of aggregating: the same file across twenty-five
+// repositories is one thing being configured, not twenty-five facts, and a
+// finder listing it once per repository would be a finder nobody could read.
+type syncPathDTO struct {
+	Path         string `json:"path"`
+	Repositories int    `json:"repositories"`
+}
+
+// heldPathIndex is one installation's aggregated path list, and the reading of
+// the stored rows it was built from.
+//
+// Held rather than rebuilt because building it is the expensive part: the union
+// of two hundred repositories is up to ten million map operations and a sort of
+// a couple of hundred thousand entries, and the rows behind it change about
+// once a day. `stamp` is what says whether they have - see pathIndexStamp.
+type heldPathIndex struct {
+	stamp  string
+	answer map[string]any
+}
+
+// pathIndexStamp fingerprints the stored rows without reading a single path.
+//
+// Every field a scan carries, which is exactly what changes when a list is
+// rewritten: a repository appears or goes, a tree is read at a new commit, a
+// row is stamped as still current, or GitHub's truncation verdict moves. The
+// paths themselves cannot change without the commit changing, because that is
+// the whole premise of the refresh - so a fingerprint that never reads them
+// still catches every rewrite.
+func pathIndexStamp(scans []orgsync.RepositoryPathScan) string {
+	digest := sha256.New()
+	for _, scan := range scans {
+		// A hash's Write never fails, which is why the error is dropped rather
+		// than carried up through a function that has nothing to report.
+		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00%s\x00%t\x00",
+			scan.RepositoryID, scan.ObservedAt.UnixNano(), scan.HeadSHA, scan.Partial)
+	}
+
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+// listSyncPaths answers with every path this installation's repositories are
+// known to hold.
+//
+// Shipped whole and matched in the browser: it is a list this installation
+// already has, it changes about once a day, and a request per keystroke to
+// filter it would be a request per keystroke.
+//
+// A picture rather than a fact - whatever each default branch held when it was
+// last looked at. The panel says so, and offers a path nobody holds yet anyway.
+//
+// Aggregated once per version of the rows rather than once per request. The
+// cheap scan read decides: it carries no paths, so asking whether anything has
+// changed costs a few hundred bytes where answering from scratch costs the
+// whole index. A held answer is immutable and handed out as it is - nothing
+// writes into it after it is built.
+func (s *Server) listSyncPaths(w http.ResponseWriter, r *http.Request) {
+	_, target, _, ok := s.requireTarget(w, r, false)
+	if !ok {
+		return
+	}
+
+	scans, err := s.store.ListSyncRepositoryPathScans(r.Context(), target.ID)
+	if err != nil {
+		s.writeStorageError(w, err)
+
+		return
+	}
+
+	stamp := pathIndexStamp(scans)
+	if held, found := s.pathIndex.Load(target.ID); found {
+		if cached, sound := held.(heldPathIndex); sound && cached.stamp == stamp {
+			writeJSON(w, http.StatusOK, cached.answer)
+
+			return
+		}
+	}
+
+	rows, err := s.store.ListSyncRepositoryPaths(r.Context(), target.ID)
+	if err != nil {
+		s.writeStorageError(w, err)
+
+		return
+	}
+
+	answer := syncPathIndex(rows)
+
+	// Stamped with what was read BEFORE the aggregation, so a sweep that wrote
+	// a row while this was building leaves a stamp that no longer matches and
+	// the next reader rebuilds. Storing the stamp of a fresher read would pin a
+	// stale answer to it.
+	s.pathIndex.Store(target.ID, heldPathIndex{stamp: stamp, answer: answer})
+
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// syncPathIndex folds every repository's stored list into the one answer the
+// finder reads.
+//
+// Its own function, and a pure one, because the panel is not the only thing
+// that answers this address: the dev mock does too, and the two disagreed on
+// the two fields nothing on screen shows plainly - what `repositories` counts,
+// and which reading `observed_at` takes. Both are read by the notice above the
+// finder, so a mock that got them wrong made the stale-index notice untestable
+// in development and, in one direction, unreachable. `testdata/path-index.json`
+// is the one table both sides are run against - the mechanism `filemerge`
+// already uses for the composer.
+func syncPathIndex(rows []orgsync.RepositoryPaths) map[string]any {
+	counts := map[string]int{}
+	var (
+		observed time.Time
+		partial  bool
+	)
+	for _, row := range rows {
+		// The OLDEST, which is the same reading `partial` takes one line below:
+		// this answer is the union of every repository's list, so how far it can
+		// be trusted is decided by its weakest row rather than by its freshest.
+		// The newest would say "checked a minute ago" for a list holding one
+		// repository nothing has looked at in a week.
+		if observed.IsZero() || row.ObservedAt.Before(observed) {
+			observed = row.ObservedAt
+		}
+		// One repository GitHub would not finish listing makes the whole answer
+		// some of what this installation holds. Said rather than left to look
+		// like a short list that is complete.
+		partial = partial || row.Partial
+		for _, path := range row.Paths {
+			counts[path]++
+		}
+	}
+
+	paths := make([]syncPathDTO, 0, len(counts))
+	for path, held := range counts {
+		paths = append(paths, syncPathDTO{Path: path, Repositories: held})
+	}
+	// Held by most first, and by path where two are held by as many: the finder
+	// ranks by its own match, and this decides only which of two equal matches
+	// a reader sees first. Name order after that, so the list never shuffles.
+	slices.SortFunc(paths, func(left, right syncPathDTO) int {
+		if left.Repositories != right.Repositories {
+			return right.Repositories - left.Repositories
+		}
+
+		return strings.Compare(left.Path, right.Path)
+	})
+
+	// `repositories` counts the rows this was built FROM, not the installation's
+	// repositories: it is the denominator under "held by 4 of 6", and counting
+	// repositories nothing has ever looked at would put a ceiling there that no
+	// path can reach.
+	answer := map[string]any{
+		"paths": paths, "repositories": len(rows), "partial": partial,
+	}
+	if !observed.IsZero() {
+		answer["observed_at"] = observed
+	}
+
+	return answer
+}
+
+// syncOverrideRowDTO is one repository's answer, in a list of all of them.
+//
+// The name travels with it because the caller is a page about a file rather
+// than about a repository: "three repositories adjust renovate.json" is
+// answered by this list, and answering it with ids would mean a request per row
+// to turn each one back into a word.
+type syncOverrideRowDTO struct {
+	RepositoryID   string `json:"repository_id"`
+	RepositoryName string `json:"repository_name"`
+
+	syncOverrideDTO
+}
+
+// listSyncOverrides reads every repository's answer about one kind.
+//
+// One request rather than one per repository. The page that needs this is the
+// one about a shared file, which asks "who adjusts this, and how" - a question
+// about the whole installation that the per-repository endpoint can only answer
+// by being asked two hundred times.
+//
+// Repositories the installation no longer holds are left out by the store's own
+// join, so a name is always a repository somebody can still open.
+func (s *Server) listSyncOverrides(w http.ResponseWriter, r *http.Request) {
+	_, target, _, ok := s.requireTarget(w, r, false)
+	if !ok {
+		return
+	}
+	kind, ok := s.syncKind(w, r)
+	if !ok {
+		return
+	}
+
+	overrides, err := s.store.ListSyncRepositoryOverrides(r.Context(), target.ID)
+	if err != nil {
+		s.writeStorageError(w, err)
+
+		return
+	}
+
+	repositories, err := s.store.ListRepositories(r.Context(), target.ID)
+	if err != nil {
+		s.writeStorageError(w, err)
+
+		return
+	}
+
+	names := make(map[string]string, len(repositories))
+	for _, repository := range repositories {
+		names[repository.ID] = repository.Name
+	}
+
+	rows := make([]syncOverrideRowDTO, 0, len(overrides))
+	for _, override := range overrides {
+		if override.Kind != kind {
+			continue
+		}
+		name, known := names[override.RepositoryID]
+		if !known {
+			continue
+		}
+		rows = append(rows, syncOverrideRowDTO{
+			RepositoryID:    override.RepositoryID,
+			RepositoryName:  name,
+			syncOverrideDTO: syncOverrideToDTO(kind, &override),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"overrides": rows})
 }
 
 // getSyncOverride reads what one repository says about one kind.

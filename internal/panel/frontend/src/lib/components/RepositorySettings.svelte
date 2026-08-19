@@ -1,5 +1,15 @@
+<script module lang="ts">
+  import type { DurationUnit } from './DurationField.svelte';
+
+  /* The same three a whole installation offers, so the two pages read alike. */
+  const PATH_INDEX_UNITS: readonly DurationUnit[] = ['minutes', 'hours', 'days'];
+</script>
+
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import { BOOLEAN_FIELDS } from '../config';
+  import { durationParts, durationSeconds, formatDuration, type DurationParts } from '../duration';
   import { REPOSITORY_SECTIONS, type RepositorySection } from '../routes';
   import type {
     ConfigKey,
@@ -19,7 +29,9 @@
   import InheritControl from './InheritControl.svelte';
   import BackLink from './BackLink.svelte';
   import PageHeader from './PageHeader.svelte';
+  import DurationField from './DurationField.svelte';
   import Plate from './Plate.svelte';
+  import Switch from './Switch.svelte';
   import RepositorySyncPane from './RepositorySyncPane.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
@@ -57,6 +69,7 @@
     onBypass,
     onSaveConfig,
     onSavePendingCI,
+    onSavePathIndex = async () => {},
     onResetMigration,
     sections = REPOSITORY_SECTIONS,
     syncOverride = undefined,
@@ -84,6 +97,8 @@
       patterns: PendingCIBranchPatterns | null,
       quiet: number | null,
     ) => Promise<void>;
+    /** How often this repository's file list is checked; null inherits. */
+    onSavePathIndex?: (seconds: number | null) => Promise<void>;
     onResetMigration: () => void;
     /**
      * The panes this surface offers, in the order the switch shows them.
@@ -126,6 +141,54 @@
   let pendingCIIncludes = $state('');
   let pendingCIExcludes = $state('');
   let pendingCIQuiet = $state('');
+  let pathIndexCustom = $state(false);
+  let pathIndexDraft = $state<DurationParts>({ amount: 1, unit: 'hours' });
+  let savingPathIndex = $state(false);
+
+  /* What the field was last filled from, so a re-read is told from a change.
+     `undefined` is "never filled", which is not the same as a repository that
+     inherits. The guard used to be `savingPathIndex` alone, and every other
+     save on this page replaces `detail` - so saving anything else while an
+     interval was half typed put the server's value back under the hand. */
+  let seededPathIndex: number | null | undefined = undefined;
+
+  $effect(() => {
+    if (detail === undefined || savingPathIndex) return;
+    const seconds = detail.path_index_interval_seconds_override;
+    if (seconds === seededPathIndex) return;
+    seededPathIndex = seconds;
+    untrack(() => {
+      pathIndexCustom = seconds !== null;
+      /* What this repository inherits, resolved through the installation and
+         the process rather than a literal hour: a deployment running fifteen
+         minutes prefills fifteen minutes. */
+      pathIndexDraft = durationParts(
+        seconds ?? detail.path_index_interval_seconds_inherited,
+        PATH_INDEX_UNITS,
+      );
+    });
+  });
+
+  /* Applied only where the field is asking for a number: an emptied box binds
+     to null and a value past the float range to Infinity, and both used to save
+     silently - as 0, which is "check every sweep", and as inheriting. */
+  async function applyPathIndex(): Promise<void> {
+    const seconds = durationSeconds(pathIndexDraft);
+    if (seconds === null) return;
+    await savePathIndex(seconds);
+  }
+
+  /* Inheriting is a value rather than an absence, so switching it off writes a
+     null and the installation's answer applies again. */
+  async function savePathIndex(seconds: number | null): Promise<void> {
+    if (detail === undefined || savingPathIndex) return;
+    savingPathIndex = true;
+    try {
+      await onSavePathIndex(seconds);
+    } finally {
+      savingPathIndex = false;
+    }
+  }
 
   $effect(() => {
     if (detail === undefined || savingPendingCI) return;
@@ -247,6 +310,49 @@
   {#if detail === undefined}
     <p class="detail-loading dim" role="status">Reading repository settings…</p>
   {:else}
+    <Plate label="File list refresh">
+      {#snippet status()}
+        <span class="dim">
+          <!-- The inherited value is always a number now, resolved through
+               every level above, so the bare word "Inherited" - which said
+               nothing about what would happen - is gone. -->
+          {pathIndexCustom
+            ? formatDuration(pathIndexDraft)
+            : `Inherited - ${formatDuration(detail.path_index_interval_seconds_inherited)}`}
+        </span>
+      {/snippet}
+      <p class="dim">
+        How often this repository's file list is checked, so the path finder offers what it holds.
+        Only the commit its branch points at is read unless something moved
+      </p>
+      <div class="path-index-editor">
+        <Switch
+          label="Set this for this repository"
+          checked={pathIndexCustom}
+          disabled={readOnly || savingPathIndex}
+          onChange={(on) => {
+            if (!on) {
+              pathIndexCustom = false;
+              void savePathIndex(null);
+
+              return;
+            }
+            pathIndexCustom = true;
+          }}
+        />
+        {#if pathIndexCustom}
+          <DurationField
+            label="File list refresh interval"
+            bind:amount={pathIndexDraft.amount}
+            bind:unit={pathIndexDraft.unit}
+            units={PATH_INDEX_UNITS}
+            disabled={readOnly || savingPathIndex}
+            onApply={() => void applyPathIndex()}
+          />
+        {/if}
+      </div>
+    </Plate>
+
     <Plate label="Merge after CI">
       {#snippet status()}
         {#if detail.pending_ci_gate !== undefined}
@@ -285,7 +391,10 @@
           />
         </div>
         {#if detail.pending_ci_gate !== undefined}
-          <p class:gate-problem={detail.pending_ci_gate.readiness === 'blocked'} class="gate-note">
+          <p
+            class:gate-problem={detail.pending_ci_gate.readiness === 'blocked'}
+            class="gate-note band-trim"
+          >
             {detail.pending_ci_gate.reason}
           </p>
         {/if}
@@ -322,8 +431,7 @@
               step="1"
               bind:value={pendingCIQuiet}
               disabled={disabled || savingPendingCI}
-              placeholder={detail.pending_ci_quiet_period_seconds_inherited?.toString() ??
-                'Global default'}
+              placeholder={detail.pending_ci_quiet_period_seconds_inherited.toString()}
             />
             <small>Seconds; leave blank to inherit.</small>
           </label>
@@ -362,7 +470,14 @@
               <span class="file-card-icon status-{detail.repository.config_file_status}">
                 <Icon name="file" size={14} />
               </span>
-              <div class="f-copy">
+              <!-- Every line trimmed, and for one reason: the card centres this
+                   copy block as a BOX, so the block's box has to equal its ink
+                   or the centring is of something the reader cannot see. One
+                   untrimmed line carried its own leading and descender room and
+                   pulled the block 2.49px off the icon beside it - measured by
+                   the alignment sweep once the repository page was added to the
+                   routes it walks. -->
+              <div class="f-copy band-trim-kids">
                 <strong>Configuration path</strong>
                 <!-- The file is looked for in four places plus a chosen one, so
                    this names the one that won rather than the one that used to
@@ -533,7 +648,6 @@
     background: var(--surface-inset);
     border-radius: var(--radius-control);
     padding: var(--space-3);
-    text-box: trim-both cap alphabetic;
   }
 
   .gate-note.gate-problem {
@@ -562,6 +676,14 @@
     color: var(--text);
     font: var(--font-size-body) / 1.4 var(--mono);
     padding: 0.625rem 0.75rem;
+  }
+
+  /* A single-line field takes the panel's compact height like every other one.
+     The padding above is a textarea's, and on an input it made a 43px control
+     standing beside 34px buttons. */
+  .pending-ci-grid input {
+    block-size: var(--control-height-compact);
+    padding-block: 0;
   }
 
   .pending-ci-actions {
@@ -640,7 +762,6 @@
     display: block;
     font-size: var(--font-size-meta);
     line-height: 1;
-    text-box: trim-both cap alphabetic;
   }
 
   .f-copy code {
@@ -649,21 +770,13 @@
     font-size: var(--font-size-compact);
     line-height: 1;
     margin-top: 0.8rem;
-    text-box: trim-both cap alphabetic;
   }
 
-  /* Trimmed like the two lines above it, and for the same reason: the card
-     centres its copy block as a BOX, so the block's box has to equal its ink or
-     the centring is of something the reader cannot see. Untrimmed, this third
-     line carried its own leading and descender room below the words and pulled
-     the block 2.49px off the icon beside it - measured by the alignment sweep
-     once the repository page was added to the routes it walks. */
   .f-copy p {
     color: var(--danger);
     font-size: var(--font-size-compact);
     line-height: 1;
     margin: 0.5rem 0 0;
-    text-box: trim-both cap alphabetic;
   }
 
   /* A file the repository still carries and Smyklot is not reading is worth

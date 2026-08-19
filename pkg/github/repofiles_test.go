@@ -151,6 +151,211 @@ var _ = Describe("Repository files [Unit]", func() {
 		})
 	})
 
+	// GitHub declines to list a very large tree in one answer, and the walk
+	// that reads one directory at a time costs a request per directory - five
+	// thousand of them for a repository the size of Linux. Truncation is a
+	// property of a RESPONSE though, so a subtree of a tree too large to list
+	// is usually listable whole, and the division only has to go where it was
+	// actually refused. Measured on torvalds/linux: 95,056 files in 26
+	// requests, where the single truncated read reports 67,614.
+	Describe("ListWholeRepositoryTree", func() {
+		// Answers by tree and by whether the read asked for the whole thing,
+		// which the shared recorder cannot do: the division reads one address
+		// twice and needs a different answer each time.
+		divided := func(whole, level map[string]string) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {
+					requests = append(requests, r.URL.RequestURI())
+					at := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+
+					answers := level
+					if r.URL.Query().Get("recursive") == "1" {
+						answers = whole
+					}
+					if answer, known := answers[at]; known {
+						_, _ = io.WriteString(w, answer)
+
+						return
+					}
+
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+				}))
+		}
+
+		It("reads a listing GitHub finishes in one request", func() {
+			server = divided(map[string]string{
+				"main": `{"tree":[{"path":"README.md","type":"blob",
+					"mode":"100644","sha":"b1","size":7}],"truncated":false}`,
+			}, nil)
+
+			tree, err := client().ListWholeRepositoryTree(
+				context.Background(), "acme", "web", "main")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree.Truncated).To(BeFalse())
+			Expect(tree.Entries).To(HaveKey("README.md"))
+			Expect(requests).To(HaveLen(1))
+		})
+
+		// The point of the whole thing: the root will not be listed, so one
+		// level of it is read and each subdirectory is asked whole. Nothing is
+		// dropped and no directory that answered is read again.
+		It("divides where it was refused and keeps every path", func() {
+			server = divided(
+				map[string]string{
+					"main": `{"tree":[],"truncated":true}`,
+					"d1": `{"tree":[{"path":"guide.md","type":"blob",
+						"mode":"100644","sha":"b2","size":8}],"truncated":false}`,
+					"d2": `{"tree":[{"path":"deep/one.md","type":"blob",
+						"mode":"100644","sha":"b3","size":4}],"truncated":false}`,
+				},
+				map[string]string{
+					"main": `{"tree":[
+						{"path":"README.md","type":"blob","mode":"100644","sha":"b1","size":7},
+						{"path":"docs","type":"tree","mode":"040000","sha":"d1"},
+						{"path":"src","type":"tree","mode":"040000","sha":"d2"}]}`,
+				})
+
+			tree, err := client().ListWholeRepositoryTree(
+				context.Background(), "acme", "web", "main")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree.Truncated).To(BeFalse())
+			// Every entry from the root's own level, and every entry of each
+			// subtree under the name it sits at.
+			Expect(tree.Entries).To(HaveKey("README.md"))
+			Expect(tree.Entries).To(HaveKey("docs"))
+			Expect(tree.Entries).To(HaveKey("docs/guide.md"))
+			Expect(tree.Entries).To(HaveKey("src/deep/one.md"))
+			// The root whole, the root level, and one per subdirectory. The
+			// subdirectories answered, so neither is divided again.
+			Expect(requests).To(HaveLen(4))
+		})
+
+		// A subtree that is itself too large is divided the same way, which is
+		// what makes this a rule rather than one special case at the root.
+		It("divides a subtree that is refused as well", func() {
+			server = divided(
+				map[string]string{
+					"main": `{"tree":[],"truncated":true}`,
+					"d1":   `{"tree":[],"truncated":true}`,
+					"d2": `{"tree":[{"path":"one.md","type":"blob",
+						"mode":"100644","sha":"b1","size":4}],"truncated":false}`,
+				},
+				map[string]string{
+					"main": `{"tree":[{"path":"docs","type":"tree",
+						"mode":"040000","sha":"d1"}]}`,
+					"d1": `{"tree":[{"path":"deep","type":"tree",
+						"mode":"040000","sha":"d2"}]}`,
+				})
+
+			tree, err := client().ListWholeRepositoryTree(
+				context.Background(), "acme", "web", "main")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree.Entries).To(HaveKey("docs/deep/one.md"))
+		})
+
+		// The one truncation the division cannot answer: a single directory
+		// holding more entries than one response carries. There is nothing left
+		// to divide, so what comes back is a partial list - and it used to be
+		// recorded as a complete one, which is the reading a path finder then
+		// tells somebody every missing file does not exist on.
+		It("reports a level GitHub truncates as well", func() {
+			server = divided(
+				map[string]string{
+					"main": `{"tree":[],"truncated":true}`,
+					"d1": `{"tree":[{"path":"guide.md","type":"blob",
+						"mode":"100644","sha":"b2","size":8}],"truncated":false}`,
+				},
+				map[string]string{
+					"main": `{"tree":[{"path":"docs","type":"tree",
+						"mode":"040000","sha":"d1"}],"truncated":true}`,
+				})
+
+			tree, err := client().ListWholeRepositoryTree(
+				context.Background(), "acme", "web", "main")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree.Truncated).To(BeTrue())
+			// And what it did read is kept: a partial list is worth having,
+			// said to be partial.
+			Expect(tree.Entries).To(HaveKey("docs/guide.md"))
+		})
+
+		// A division reads the subtrees of a level it was refused, and the
+		// budget above it can run out part way through. Ranging the level's map
+		// meant which of them were reached first was Go's map iteration order,
+		// so the same repository listed twice came back holding different files
+		// - a difference nobody could reproduce and nothing could explain, in
+		// the one case the caller is already being told is incomplete.
+		//
+		// Asserted through the order the subtrees are asked for, which is what
+		// the descent actually decides, and read twice because one run of a map
+		// range looks perfectly ordered often enough to pass.
+		It("descends a refused level in name order", func() {
+			server = divided(
+				map[string]string{
+					"main": `{"tree":[],"truncated":true}`,
+					"t1":   `{"tree":[{"path":"a.md","type":"blob","mode":"100644","sha":"b1"}]}`,
+					"t2":   `{"tree":[{"path":"b.md","type":"blob","mode":"100644","sha":"b2"}]}`,
+					"t3":   `{"tree":[{"path":"c.md","type":"blob","mode":"100644","sha":"b3"}]}`,
+					"t4":   `{"tree":[{"path":"d.md","type":"blob","mode":"100644","sha":"b4"}]}`,
+					"t5":   `{"tree":[{"path":"e.md","type":"blob","mode":"100644","sha":"b5"}]}`,
+					"t6":   `{"tree":[{"path":"f.md","type":"blob","mode":"100644","sha":"b6"}]}`,
+				},
+				// Listed in an order that is neither the names' nor the SHAs',
+				// and six of them: with three, one run of a randomised map range
+				// comes out sorted often enough to pass by luck.
+				map[string]string{
+					"main": `{"tree":[
+						{"path":"zeta","type":"tree","mode":"040000","sha":"t6"},
+						{"path":"alpha","type":"tree","mode":"040000","sha":"t1"},
+						{"path":"omega","type":"tree","mode":"040000","sha":"t4"},
+						{"path":"delta","type":"tree","mode":"040000","sha":"t2"},
+						{"path":"sigma","type":"tree","mode":"040000","sha":"t5"},
+						{"path":"kappa","type":"tree","mode":"040000","sha":"t3"}],
+						"truncated":false}`,
+				})
+
+			descents := func() []string {
+				requests = nil
+				_, err := client().ListWholeRepositoryTree(
+					context.Background(), "acme", "web", "main")
+				Expect(err).NotTo(HaveOccurred())
+
+				asked := []string{}
+				for _, one := range requests {
+					for _, subtree := range []string{"t1", "t2", "t3", "t4", "t5", "t6"} {
+						if strings.Contains(one, "/git/trees/"+subtree) {
+							asked = append(asked, subtree)
+						}
+					}
+				}
+
+				return asked
+			}
+
+			// Name order of the DIRECTORIES - alpha, delta, kappa, omega,
+			// sigma, zeta - which the SHAs above are numbered to spell out.
+			wanted := []string{"t1", "t2", "t3", "t4", "t5", "t6"}
+			Expect(descents()).To(Equal(wanted))
+			Expect(descents()).To(Equal(wanted))
+		})
+
+		It("reads a repository with no commits as an empty tree", func() {
+			server = divided(nil, nil)
+
+			tree, err := client().ListWholeRepositoryTree(
+				context.Background(), "acme", "web", "main")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree.Entries).To(BeEmpty())
+			Expect(tree.Missing).To(BeTrue())
+		})
+	})
+
 	// A listing and a level walk answer the same question, so they answer it
 	// in the same type. Held apart, the two came to different conclusions
 	// about a retired path whose parent had become a file.
@@ -328,5 +533,4 @@ var _ = Describe("Repository files [Unit]", func() {
 				`{"title":"New title","body":"New body"}`))
 		})
 	})
-
 })

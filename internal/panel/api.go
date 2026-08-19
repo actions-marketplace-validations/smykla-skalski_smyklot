@@ -61,6 +61,7 @@ type targetSettingsRequest struct {
 	PendingCIModeDefault           *storage.PendingCIMode           `json:"pending_ci_mode_default"`
 	PendingCIBranchPatternsDefault *storage.PendingCIBranchPatterns `json:"pending_ci_branch_patterns_default"`
 	PendingCIQuietPeriodSeconds    nullableValue[int64]             `json:"pending_ci_quiet_period_seconds_override"`
+	PathIndexIntervalSeconds       nullableValue[int64]             `json:"path_index_interval_seconds_override"`
 	ConfigPatch                    *config.Patch                    `json:"config_patch"`
 	ExpectedRevision               *int64                           `json:"expected_revision"`
 }
@@ -70,6 +71,7 @@ type repositorySettingsRequest struct {
 	PendingCIModeOverride           nullableValue[storage.PendingCIMode]           `json:"pending_ci_mode_override"`
 	PendingCIBranchPatternsOverride nullableValue[storage.PendingCIBranchPatterns] `json:"pending_ci_branch_patterns_override"`
 	PendingCIQuietPeriodSeconds     nullableValue[int64]                           `json:"pending_ci_quiet_period_seconds_override"`
+	PathIndexIntervalSeconds        nullableValue[int64]                           `json:"path_index_interval_seconds_override"`
 	ConfigPatch                     *config.Patch                                  `json:"config_patch"`
 	IgnoreRepositoryFile            *bool                                          `json:"ignore_repository_file"`
 	ExpectedRevision                *int64                                         `json:"expected_revision"`
@@ -118,7 +120,7 @@ func (s *Server) getTargets(w http.ResponseWriter, r *http.Request) {
 			s.writeInternal(w, accessErr)
 			return
 		}
-		response = append(response, targetDTO(s.processConfig(), target, access))
+		response = append(response, targetDTO(s.runtimeValues(), target, access))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"targets": response})
 }
@@ -175,6 +177,12 @@ func (s *Server) putTargetSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_pending_ci_settings", err.Error())
 		return
 	}
+	pathIndex, err := pathIndexOverride(
+		target.PathIndexIntervalOverride, input.PathIndexIntervalSeconds)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_path_index_interval", err.Error())
+		return
+	}
 	updated, err := s.updateTargetSettings(r.Context(), storage.TargetSettingsChange{
 		TargetID:                       r.PathValue("target"),
 		ActorAccountID:                 account.ID,
@@ -182,6 +190,7 @@ func (s *Server) putTargetSettings(w http.ResponseWriter, r *http.Request) {
 		PendingCIModeDefault:           mode,
 		PendingCIBranchPatternsDefault: patterns,
 		PendingCIQuietPeriodOverride:   quiet,
+		PathIndexIntervalOverride:      pathIndex,
 		RetunePendingCIQuietPeriod:     input.PendingCIQuietPeriodSeconds.Present,
 		DeploymentPendingCIQuietPeriod: s.cfg.PendingCIQuietPeriod,
 		ConfigPatch:                    *input.ConfigPatch,
@@ -195,7 +204,7 @@ func (s *Server) putTargetSettings(w http.ResponseWriter, r *http.Request) {
 	s.pendingCI.Wake()
 	s.wakePendingCIGates()
 	s.Announce(updated.ID, "")
-	writeJSON(w, http.StatusOK, targetDTO(s.processConfig(), updated, access))
+	writeJSON(w, http.StatusOK, targetDTO(s.runtimeValues(), updated, access))
 }
 
 func (s *Server) getRepositories(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +235,7 @@ func (s *Server) getRepository(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), target, repository))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.runtimeValues(), target, repository))
 }
 
 func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
@@ -270,6 +279,12 @@ func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_pending_ci_settings", err.Error())
 		return
 	}
+	pathIndex, err := pathIndexOverride(
+		repository.PathIndexIntervalOverride, input.PathIndexIntervalSeconds)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_path_index_interval", err.Error())
+		return
+	}
 	updated, err := s.updateRepositorySettings(r.Context(), storage.RepositorySettingsChange{
 		TargetID:                        target.ID,
 		RepositoryID:                    r.PathValue("repository"),
@@ -278,6 +293,7 @@ func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
 		PendingCIModeOverride:           mode,
 		PendingCIBranchPatternsOverride: patterns,
 		PendingCIQuietPeriodOverride:    quiet,
+		PathIndexIntervalOverride:       pathIndex,
 		RetunePendingCIQuietPeriod:      input.PendingCIQuietPeriodSeconds.Present,
 		DeploymentPendingCIQuietPeriod:  s.cfg.PendingCIQuietPeriod,
 		ConfigPatch:                     *input.ConfigPatch,
@@ -295,7 +311,31 @@ func (s *Server) putRepositorySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Announce(target.ID, updated.ID)
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), target, updated))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.runtimeValues(), target, updated))
+}
+
+// pathIndexOverride reads a refresh interval off the wire, keeping what is
+// stored where the request does not mention it.
+//
+// Four handlers decode a settings request carrying this field - an
+// installation's and one repository's, each from the panel and from the Root
+// console - and each spelled the same eight lines. The field lives on the
+// shared request struct and the check did not, so a fifth handler decoding
+// either struct would have accepted it with nothing looking at it.
+//
+// `runtimeDuration` does the work: it range-checks the seconds BEFORE
+// multiplying, which is the whole difficulty - a Duration is int64 nanoseconds,
+// so 18446744074 seconds multiplies to exactly 0, and 0 is "check every sweep",
+// the most expensive answer there is.
+func pathIndexOverride(
+	stored *time.Duration,
+	sent nullableValue[int64],
+) (*time.Duration, error) {
+	if !sent.Present {
+		return stored, nil
+	}
+
+	return runtimeDuration(sent.Value, 0, MaxPathIndexInterval, "file list refresh interval")
 }
 
 func pendingCIQuietDuration(seconds *int64) *time.Duration {
@@ -378,7 +418,7 @@ func (s *Server) resetConfigMigration(
 		return
 	}
 	s.Announce(target.ID, updated.ID)
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), target, updated))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.runtimeValues(), target, updated))
 }
 
 func (s *Server) repository(

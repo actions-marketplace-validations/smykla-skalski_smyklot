@@ -45,15 +45,24 @@
   import ResultProblem from './ResultProblem.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
-  import SegmentedControl from './SegmentedControl.svelte';
+  import SectionTabs from './SectionTabs.svelte';
   import TableEmptyState from './TableEmptyState.svelte';
 
   type HistoryType = 'audit' | 'failures';
   type HistoryContext = 'installation' | 'root';
 
+  /**
+   * The two tables, which are two addresses.
+   *
+   * Tabs rather than a segmented control: a segmented control changes what is
+   * on screen and saves nothing, and these survive a reload, can be linked and
+   * answer the browser's Back. Drawn as a strip of segments, the one thing a
+   * reader could not do with them was copy the address of the one they were
+   * looking at.
+   */
   const HISTORY_TYPES = [
-    { value: 'audit', label: 'Audit', tone: 'accent' },
-    { value: 'failures', label: 'Failures', tone: 'accent' },
+    { id: 'audit', label: 'Audit' },
+    { id: 'failures', label: 'Failures' },
   ] as const;
 
   const AUDIT_SCOPE_FILTERS = [
@@ -137,6 +146,7 @@
     rootRole = 'Root',
     section,
     onSection,
+    sectionHref,
     prefs = EPHEMERAL_PREFS,
   }: {
     targetId: string;
@@ -146,6 +156,8 @@
     rootRole?: string;
     section?: HistoryType;
     onSection?: (section: HistoryType) => void;
+    /** Where each table lives; the strip is a strip of addresses. */
+    sectionHref?: (section: HistoryType) => string;
     prefs?: PrefsAccessor;
   } = $props();
 
@@ -714,13 +726,14 @@
   <!-- The table switch sits at the head of the controls row, left of the
        search, the same place Access puts its Users/Invitations switch. -->
   <div class="history-tools">
-    <SegmentedControl
-      name="history-type"
+    <SectionTabs
+      items={HISTORY_TYPES.map((type) => ({
+        ...type,
+        href: sectionHref?.(type.id) ?? '#',
+      }))}
+      active={historyType}
       label="History type"
-      variant="navigation"
-      options={HISTORY_TYPES}
-      value={historyType}
-      onSelect={selectHistoryType}
+      onNavigate={selectHistoryType}
     />
 
     <SearchField
@@ -890,30 +903,32 @@
             <span class="actor">
               <Avatar account={entry.actor} size={24} />
               <span class="actor-copy">
-                <strong>{entry.actor.display_name}</strong>
-                <small class="actor-login mono">@{entry.actor.login}</small>
+                <strong class="band-trim">{entry.actor.display_name}</strong>
+                <small class="actor-login mono band-trim">@{entry.actor.login}</small>
               </span>
             </span>
           </td>
           <td data-label="Target">
             {#if context === 'root' && entry.installation !== undefined}
-              <span class="cell-primary" title={`@${entry.installation.login}`}>
+              <span class="cell-primary band-trim" title={`@${entry.installation.login}`}>
                 {entry.installation.display_name}
               </span>
             {:else if context === 'root'}
-              <span class="cell-primary">Smyklot</span>
+              <span class="cell-primary band-trim">Smyklot</span>
             {:else if entry.repository_full_name !== undefined}
-              <code title={entry.repository_full_name}>
+              <code class="band-trim" title={entry.repository_full_name}>
                 {repositoryName(entry.repository_full_name)}
               </code>
             {:else}
-              <span class="cell-primary">Account</span>
+              <span class="cell-primary band-trim">Account</span>
             {/if}
           </td>
           <td data-label="Change" title={auditDetail(entry)}>
             <span class="change-line">
               {#if entry.category !== undefined}
-                <span class="category-tag" aria-hidden="true">{entry.category}</span>
+                <!-- Symmetric about its own band, so the equal padding above and
+                     below is the whole of what centres the word on the tag. -->
+                <span class="category-tag band-trim" aria-hidden="true">{entry.category}</span>
               {/if}
               <span class="cell-primary band-trim">{auditSummary(entry.summary)}</span>
             </span>
@@ -1039,6 +1054,7 @@
           </td>
           <td data-label="Repository">
             <code
+              class="band-trim"
               title={failure.installation === undefined
                 ? failure.repository_full_name
                 : `${failure.repository_full_name} \u00b7 @${failure.installation.login}`}
@@ -1047,7 +1063,7 @@
             </code>
           </td>
           <td data-label="Failure" title={failureDetail(failure)}>
-            <span class="cell-primary">{sentenceCase(failure.reason)}</span>
+            <span class="cell-primary band-trim">{sentenceCase(failure.reason)}</span>
           </td>
           <td data-label="When">
             <time
@@ -1361,7 +1377,6 @@
     overflow: clip;
     overflow-clip-margin: 0.35em;
     padding: 0.34rem 0.5rem;
-    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     vertical-align: middle;
     white-space: nowrap;
@@ -1411,7 +1426,6 @@
        overflow would shave the descenders off a name like "Bart Smykla". */
     overflow: clip;
     overflow-clip-margin: 0.35em;
-    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1424,7 +1438,6 @@
     min-width: 0;
     overflow: clip;
     overflow-clip-margin: 0.35em;
-    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1470,9 +1483,6 @@
     font: 650 0.65rem / 1 var(--sans);
     letter-spacing: 0.04em;
     padding: 0.2rem 0.35rem;
-    /* Symmetric about its own band, so the equal padding above and below is the
-       whole of what centres the word on the tag. */
-    text-box: trim-both cap alphabetic;
     text-transform: uppercase;
   }
 
@@ -1491,7 +1501,6 @@
     overflow: clip;
     overflow-clip-margin: 0.35em;
     overflow-wrap: anywhere;
-    text-box: trim-both cap alphabetic;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

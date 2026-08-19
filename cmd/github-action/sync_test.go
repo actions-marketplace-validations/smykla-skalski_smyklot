@@ -2101,6 +2101,231 @@ var _ = Describe("Org sync [Unit]", func() {
 		})
 	})
 
+	// What the panel's path finder offers, and what it costs to keep current.
+	//
+	// The list is the expensive read - megabytes and a second's work for a
+	// repository holding thousands of files - and the commit its branch points
+	// at is a few hundred bytes. So the refresh asks the cheap question first
+	// and reads the tree only where the answer has changed, which is what makes
+	// the interval a choice rather than a budget.
+	Describe("the path index", func() {
+		var refresh func(storage.Target)
+		var indexed func() storage.Target
+
+		BeforeEach(func() {
+			stub.repoTree = `{"sha":"basetree","tree":[` +
+				`{"path":"README.md","type":"blob","mode":"100644","sha":"b1","size":7},` +
+				`{"path":"docs","type":"tree","mode":"040000","sha":"d1"}],"truncated":false}`
+
+			/* An installation that has configured nothing gets no index at
+			   all - the cost of one is a ref read per repository per interval
+			   and a whole tree wherever a branch has moved, and the majority of
+			   installations never use sync. So every spec here starts from one
+			   that HAS configured it, which is also the only state in which
+			   anybody is typing a path into the finder. */
+			indexed = func() storage.Target {
+				GinkgoHelper()
+
+				target := seed()
+				configureKind(target, orgsync.KindFiles,
+					`{"files":[{"path":"renovate.json","content":"{}\n"}]}`)
+
+				return target
+			}
+
+			refresh = func(target storage.Target) {
+				GinkgoHelper()
+
+				service.refreshSyncPaths(GinkgoT().Context(), client(), target.ID)
+			}
+		})
+
+		// Stored back in time, which is the only way a spec can say "a whole
+		// interval has passed" without waiting one.
+		due := func(target storage.Target) orgsync.RepositoryPaths {
+			GinkgoHelper()
+
+			rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+
+			row := rows[0]
+			row.ObservedAt = time.Now().UTC().Add(-2 * defaultPathIndexInterval)
+			Expect(service.store.SetSyncRepositoryPaths(GinkgoT().Context(), row)).To(Succeed())
+
+			return row
+		}
+
+		It("records the paths and the commit they were read at", func() {
+			target := indexed()
+
+			refresh(target)
+
+			rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+			// Ordinary files only: a directory is not somewhere a template can
+			// be written.
+			Expect(rows[0].Paths).To(Equal([]string{"README.md"}))
+			Expect(rows[0].HeadSHA).To(Equal("basecommit"))
+		})
+
+		It("reads no tree at all when the branch has not moved", func() {
+			target := indexed()
+			refresh(target)
+			due(target)
+
+			before := stub.countCalls(http.MethodGet, "/git/trees/main")
+			refresh(target)
+
+			Expect(stub.countCalls(http.MethodGet, "/git/trees/main")).To(Equal(before))
+			// And the list is still recorded as current, so the reader is told
+			// it was confirmed rather than that it is a day old.
+			rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows[0].ObservedAt).To(BeTemporally("~", time.Now().UTC(), time.Minute))
+			Expect(rows[0].Paths).To(Equal([]string{"README.md"}))
+		})
+
+		It("reads the tree again when the branch has moved", func() {
+			target := indexed()
+			refresh(target)
+			due(target)
+
+			stub.repoHead = "movedcommit"
+			stub.repoTree = `{"sha":"newtree","tree":[` +
+				`{"path":"CONTRIBUTING.md","type":"blob","mode":"100644",` +
+				`"sha":"b2","size":9}],"truncated":false}`
+			refresh(target)
+
+			rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows[0].Paths).To(Equal([]string{"CONTRIBUTING.md"}))
+			Expect(rows[0].HeadSHA).To(Equal("movedcommit"))
+		})
+
+		// A list written before the commit was recorded carries no commit, and
+		// an empty string is not a commit anything can be level with. Read once
+		// more rather than believed for ever.
+		It("reads the tree when the stored commit is unknown", func() {
+			target := indexed()
+			refresh(target)
+			row := due(target)
+			row.HeadSHA = ""
+			Expect(service.store.SetSyncRepositoryPaths(GinkgoT().Context(), row)).To(Succeed())
+
+			before := stub.countCalls(http.MethodGet, "/git/trees/main")
+			refresh(target)
+
+			Expect(stub.countCalls(http.MethodGet, "/git/trees/main")).To(Equal(before + 1))
+		})
+
+		// A repository with nothing in it has a default branch by name and no
+		// branch to point at. Nothing to offer, and nothing to say about it.
+		It("records an empty list for a repository with no commits", func() {
+			target := indexed()
+			stub.repoHead = ""
+			stub.treeNotFound = true
+
+			refresh(target)
+
+			rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0].Paths).To(BeEmpty())
+			Expect(rows[0].HeadSHA).To(BeEmpty())
+		})
+
+		// How often the check happens, which is a choice because the check is
+		// cheap. Nearest wins: the repository if it says, then its
+		// installation, then the process.
+		Describe("how often it looks", func() {
+			// The installation says hardly ever, so a repository due under the
+			// process's own interval is left alone.
+			It("takes the installation's interval over the process's", func() {
+				target := indexed()
+				refresh(target)
+				due(target)
+
+				_, err := service.store.UpdateTargetSettings(
+					GinkgoT().Context(), targetSettingsWithPathIndex(target, 6*24*time.Hour))
+				Expect(err).NotTo(HaveOccurred())
+
+				before := stub.countCalls(http.MethodGet, "/git/ref/heads/main")
+				refresh(target)
+
+				Expect(stub.countCalls(http.MethodGet, "/git/ref/heads/main")).To(Equal(before))
+			})
+
+			// And the repository beats its installation, which is the level
+			// that exists for the one repository that is the exception.
+			It("takes the repository's interval over the installation's", func() {
+				target := indexed()
+				refresh(target)
+				due(target)
+
+				updated, err := service.store.UpdateTargetSettings(
+					GinkgoT().Context(), targetSettingsWithPathIndex(target, 6*24*time.Hour))
+				Expect(err).NotTo(HaveOccurred())
+
+				repositories, err := service.store.ListRepositories(
+					GinkgoT().Context(), updated.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(repositories).To(HaveLen(1))
+
+				every := time.Duration(0)
+				_, err = service.store.UpdateRepositorySettings(
+					GinkgoT().Context(), storage.RepositorySettingsChange{
+						TargetID: updated.ID, RepositoryID: repositories[0].ID,
+						ActorAccountID:            updated.Account.ID,
+						PathIndexIntervalOverride: &every,
+						ExpectedRevision:          repositories[0].Revision,
+						ChangedAt:                 time.Now().UTC(),
+					})
+				Expect(err).NotTo(HaveOccurred())
+
+				before := stub.countCalls(http.MethodGet, "/git/ref/heads/main")
+				refresh(target)
+
+				Expect(stub.countCalls(http.MethodGet, "/git/ref/heads/main")).
+					To(Equal(before + 1))
+			})
+		})
+
+		// GitHub will not list a very large tree in one answer, and the list it
+		// does give says only that there is more. Divided rather than accepted:
+		// truncation is a property of a RESPONSE, so a subtree of a tree too
+		// large to list is usually listable whole.
+		Describe("a tree GitHub will not list whole", func() {
+			BeforeEach(func() {
+				stub.repoTree = `{"sha":"basetree","tree":[],"truncated":true}`
+				stub.repoLevels = map[string]string{
+					"main": `{"tree":[` +
+						`{"path":"README.md","type":"blob","mode":"100644","sha":"b1","size":7},` +
+						`{"path":"docs","type":"tree","mode":"040000","sha":"d1"}]}`,
+				}
+				stub.repoTrees = map[string]string{
+					"d1": `{"sha":"d1","tree":[` +
+						`{"path":"guide.md","type":"blob","mode":"100644","sha":"b2","size":8}],` +
+						`"truncated":false}`,
+				}
+			})
+
+			It("divides it and keeps every path", func() {
+				target := indexed()
+
+				refresh(target)
+
+				rows, err := service.store.ListSyncRepositoryPaths(GinkgoT().Context(), target.ID)
+				Expect(err).NotTo(HaveOccurred())
+				// The subtree's own paths carry the directory they sit in,
+				// since a listing names its entries relative to itself.
+				Expect(rows[0].Paths).To(Equal([]string{"README.md", "docs/guide.md"}))
+				Expect(rows[0].Partial).To(BeFalse())
+			})
+		})
+	})
+
 	// Saving while a plan is on screen has to invalidate it, or somebody can
 	// approve work they never saw
 	It("retires a plan when the configuration changes underneath it", func() {
@@ -2128,6 +2353,25 @@ var _ = Describe("Org sync [Unit]", func() {
 		Expect(err).To(HaveOccurred())
 	})
 })
+
+// targetSettingsWithPathIndex says how often this installation's repositories
+// have their file lists checked, leaving its other settings as they are.
+func targetSettingsWithPathIndex(
+	target storage.Target,
+	every time.Duration,
+) storage.TargetSettingsChange {
+	return storage.TargetSettingsChange{
+		TargetID:                       target.ID,
+		ActorAccountID:                 target.Account.ID,
+		RepositoryDefaultEnabled:       target.RepositoryDefaultEnabled,
+		PendingCIModeDefault:           target.PendingCIModeDefault,
+		PendingCIBranchPatternsDefault: target.PendingCIBranchPatternsDefault,
+		PathIndexIntervalOverride:      &every,
+		ConfigPatch:                    target.ConfigPatch,
+		ExpectedRevision:               target.Revision,
+		ChangedAt:                      time.Now().UTC(),
+	}
+}
 
 // syncAuditActions reads which sync events an installation recorded.
 func syncAuditActions(service *server, target storage.Target) []string {

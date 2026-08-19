@@ -1,4 +1,5 @@
 import { panelUrl } from './base';
+import { parseJson, type JsonValue } from './merge';
 import type { PanelStreamHandle, PanelStreamHandlers, PanelWebSocketFactory } from './events';
 import { openPanelStream, panelStreamUrl } from './events';
 import type { RequestFlood } from './request-rate';
@@ -42,6 +43,8 @@ import type {
   SyncConfigInput,
   SyncOverride,
   SyncOverrideInput,
+  SyncOverrideRow,
+  SyncPathIndex,
   SyncPlan,
   TargetSettingsInput,
   InvitationDays,
@@ -172,6 +175,8 @@ export interface PanelApi {
   resetRootConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
   fetchSyncConfig(targetId: string, kind: string): Promise<SyncConfig>;
   saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig>;
+  fetchSyncPaths(targetId: string): Promise<SyncPathIndex>;
+  fetchSyncOverrides(targetId: string, kind: string): Promise<{ overrides: SyncOverrideRow[] }>;
   fetchSyncOverride(targetId: string, repositoryId: string, kind: string): Promise<SyncOverride>;
   saveSyncOverride(
     targetId: string,
@@ -273,6 +278,31 @@ export function createPanelApi(
   };
 
   /**
+   * A payload whose `document` fields keep their numbers as they were written.
+   *
+   * A sync adjustment is somebody's file, and the service composes it keeping
+   * every number's digits: `1.50` stays `1.50` and an identifier past 2^53
+   * keeps its last four. A JavaScript number holds neither, so a document read
+   * with `response.json()` came back a different document and the panel drew a
+   * file one digit from the one the repository would get.
+   *
+   * Read twice rather than with one clever reviver: the same body parsed
+   * normally, and again keeping every number's source text, with only the
+   * `document` grafted across. Everything else in these payloads is read as a
+   * number by something - `revision` is compared, `expected_revision` is sent
+   * back - and a box in one of those would break a comparison rather than a
+   * rendering.
+   */
+  const documentRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const body = await (await request(path, init)).text();
+    const payload = JSON.parse(body) as T;
+    const literal = parseJson(body);
+    if (literal === undefined) return payload;
+
+    return graftDocuments(payload, literal) as T;
+  };
+
+  /**
    * Reads a completion list, and never fails loudly.
    *
    * Completion is an offer beside a field that works without it, so a request
@@ -294,6 +324,23 @@ export function createPanelApi(
 
   const putJson = <T>(path: string, body: unknown): Promise<T> =>
     jsonRequest<T>(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  /**
+   * A PUT whose answer carries a document, read keeping every number's digits.
+   *
+   * The same read as `documentRequest`, on the way back out. A save answered
+   * through `putJson` came back through `response.json()`, so `12345678901234567890`
+   * returned as `...67000` and `1.50` as `1.5` - and the caller writes that
+   * answer straight into the query cache under the key the literal-preserving
+   * read fills, so one save degraded the document the pane then composed from
+   * and stored on the next one.
+   */
+  const putDocument = <T>(path: string, body: unknown): Promise<T> =>
+    documentRequest<T>(path, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -706,21 +753,49 @@ export function createPanelApi(
       );
     },
 
+    /* Through `documentRequest`, like the two override reads: this is the
+       TEMPLATE, which is what `composeFile` starts from, so a number that lost
+       its digits here loses them in every repository's composed file. */
     fetchSyncConfig(targetId: string, kind: string): Promise<SyncConfig> {
-      return jsonRequest(
+      return documentRequest(
         `/api/v1/targets/${pathSegment(targetId)}/sync/config/${pathSegment(kind)}`,
       );
     },
 
     saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig> {
-      return putJson(
+      return putDocument(
         `/api/v1/targets/${pathSegment(targetId)}/sync/config/${pathSegment(kind)}`,
         input,
       );
     },
 
+    /**
+     * Every repository's answer about one kind, in one request.
+     *
+     * The page that needs it is the one about a shared file - "who adjusts
+     * this, and how" is a question about the whole installation, and the
+     * per-repository endpoint can only answer it by being asked once per
+     * repository.
+     */
+    /**
+     * Every path this installation's repositories are known to hold.
+     *
+     * Fetched whole and matched in the browser: it is a list the installation
+     * already has, it changes about once a day, and a request per keystroke to
+     * filter it would be a request per keystroke.
+     */
+    fetchSyncPaths(targetId: string): Promise<SyncPathIndex> {
+      return jsonRequest(`/api/v1/targets/${pathSegment(targetId)}/sync/paths`);
+    },
+
+    fetchSyncOverrides(targetId: string, kind: string): Promise<{ overrides: SyncOverrideRow[] }> {
+      return documentRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/sync/overrides/${pathSegment(kind)}`,
+      );
+    },
+
     fetchSyncOverride(targetId: string, repositoryId: string, kind: string): Promise<SyncOverride> {
-      return jsonRequest(
+      return documentRequest(
         `/api/v1/targets/${pathSegment(targetId)}/repositories/` +
           `${pathSegment(repositoryId)}/sync/${pathSegment(kind)}`,
       );
@@ -732,7 +807,7 @@ export function createPanelApi(
       kind: string,
       input: SyncOverrideInput,
     ): Promise<SyncOverride> {
-      return putJson(
+      return putDocument(
         `/api/v1/targets/${pathSegment(targetId)}/repositories/` +
           `${pathSegment(repositoryId)}/sync/${pathSegment(kind)}`,
         input,
@@ -923,6 +998,30 @@ export function unreachable(cause: unknown): PanelApiError {
   const failure = new PanelApiError(0, 'unreachable', describeStatus(0));
 
   return Object.assign(failure, { cause });
+}
+
+/**
+ * Put the literal-preserving copy of every `document` back into the payload.
+ *
+ * Only that key, and only where both copies hold an object: this walks two
+ * readings of one body, so the shapes match by construction, and anything it
+ * does not recognise is left as the ordinary reading had it.
+ */
+function graftDocuments(payload: unknown, literal: JsonValue): unknown {
+  if (Array.isArray(payload) && Array.isArray(literal)) {
+    return payload.map((item, index) => graftDocuments(item, literal[index] ?? null));
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return payload;
+  if (typeof literal !== 'object' || literal === null || Array.isArray(literal)) return payload;
+
+  const grafted: Record<string, unknown> = { ...(payload as Record<string, unknown>) };
+  for (const key of Object.keys(grafted)) {
+    const beside = (literal as Record<string, JsonValue>)[key];
+    if (beside === undefined) continue;
+    grafted[key] = key === 'document' ? beside : graftDocuments(grafted[key], beside);
+  }
+
+  return grafted;
 }
 
 async function readError(response: Response): Promise<PanelApiError> {

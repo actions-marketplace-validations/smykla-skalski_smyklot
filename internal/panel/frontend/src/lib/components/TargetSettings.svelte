@@ -1,5 +1,16 @@
+<script module lang="ts">
+  import type { DurationUnit } from './DurationField.svelte';
+
+  /* Minutes at the fine end because the check is one small read, days at the
+     coarse end because a week is the ceiling the column holds. */
+  const PATH_INDEX_UNITS: readonly DurationUnit[] = ['minutes', 'hours', 'days'];
+</script>
+
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import { countOverrides } from '../config';
+  import { durationParts, durationSeconds, formatDuration } from '../duration';
   import type { ConfigPatch, PanelTarget, PendingCIMode, TargetSettingsInput } from '../types';
   import Button from './Button.svelte';
   import FormError from './FormError.svelte';
@@ -7,7 +18,9 @@
   import ConfigEditor from './ConfigEditor.svelte';
   import HelpTip from './HelpTip.svelte';
   import PageHeader from './PageHeader.svelte';
+  import DurationField from './DurationField.svelte';
   import Plate from './Plate.svelte';
+  import Switch from './Switch.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
   const REPOSITORY_DEFAULT_OPTIONS = [
@@ -43,6 +56,22 @@
   let pendingCIExcludes = $state(target.pending_ci_branch_patterns_default.exclude.join('\n'));
   // svelte-ignore state_referenced_locally
   let pendingCIQuiet = $state(target.pending_ci_quiet_period_seconds_override?.toString() ?? '');
+  // svelte-ignore state_referenced_locally
+  let pathIndexSource = $state<'inherited' | 'custom'>(
+    target.path_index_interval_seconds_override == null ? 'inherited' : 'custom',
+  );
+  /* Prefilled from what this installation inherits, which the service resolves
+     and sends: a deployment running fifteen minutes prefills fifteen minutes.
+     It was a literal hour here, so the box opened on a number nothing on the
+     system had ever agreed to. */
+  // svelte-ignore state_referenced_locally
+  let pathIndexDraft = $state(
+    durationParts(
+      target.path_index_interval_seconds_override ?? target.path_index_interval_seconds_inherited,
+      PATH_INDEX_UNITS,
+    ),
+  );
+  let savingPathIndex = $state(false);
   const defaultEnabled = $derived(pendingDefault ?? target.repository_default_enabled);
   const overrides = $derived(countOverrides(target.config_patch));
   const pendingCIPermissionsReady = $derived(
@@ -51,6 +80,27 @@
       target.pending_ci_permissions.merge_queues_read &&
       target.pending_ci_permissions.commit_statuses_read,
   );
+
+  /* What the field was last filled from, so a re-read is told from a change.
+     The guard used to be `savingPathIndex` alone, and every other save on this
+     page replaces `target` - so saving the pending-CI patterns while an
+     interval was half typed put the server's value back under the hand. */
+  // svelte-ignore state_referenced_locally
+  let seededPathIndex: number | null = target.path_index_interval_seconds_override;
+
+  $effect(() => {
+    if (savingPathIndex) return;
+    const seconds = target.path_index_interval_seconds_override;
+    if (seconds === seededPathIndex) return;
+    seededPathIndex = seconds;
+    untrack(() => {
+      pathIndexSource = seconds == null ? 'inherited' : 'custom';
+      pathIndexDraft = durationParts(
+        seconds ?? target.path_index_interval_seconds_inherited,
+        PATH_INDEX_UNITS,
+      );
+    });
+  });
 
   $effect(() => {
     if (savingPendingCI) return;
@@ -66,6 +116,7 @@
       pending_ci_mode_default: target.pending_ci_mode_default,
       pending_ci_branch_patterns_default: target.pending_ci_branch_patterns_default,
       pending_ci_quiet_period_seconds_override: target.pending_ci_quiet_period_seconds_override,
+      path_index_interval_seconds_override: target.path_index_interval_seconds_override,
       config_patch: target.config_patch,
       expected_revision: target.revision,
       ...overrides,
@@ -104,6 +155,34 @@
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '');
+  }
+
+  /* Applied only where the field is asking for a number. An emptied box binds
+     to null and a value past the float range binds to Infinity, and both used
+     to save silently - as 0, "check every sweep", and as inheriting. */
+  async function applyPathIndex(): Promise<void> {
+    const seconds = durationSeconds(pathIndexDraft);
+    if (seconds === null) {
+      failure = 'File list refresh interval must be a whole number of minutes, hours or days';
+
+      return;
+    }
+    await updatePathIndex(seconds);
+  }
+
+  /* The sweep asks how often to check this installation's file lists, and this
+     is where it says so. Inheriting is a value, not an absence: a null clears
+     the override and the process's answer applies again. */
+  async function updatePathIndex(override: number | null): Promise<void> {
+    savingPathIndex = true;
+    failure = null;
+    try {
+      await onUpdate(settingsInput({ path_index_interval_seconds_override: override }));
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    } finally {
+      savingPathIndex = false;
+    }
   }
 
   async function updatePendingCI(): Promise<void> {
@@ -154,7 +233,7 @@
           start disabled, so nothing runs before you decide
         </p>
       </div>
-      <span class="saved-flash" class:show={savedFlash} role="status">
+      <span class="saved-flash band-trim" class:show={savedFlash} role="status">
         {savedFlash ? 'Saved ✓' : ''}
       </span>
       <SegmentedControl
@@ -255,6 +334,44 @@
     </form>
   </Plate>
 
+  <Plate label="File list refresh">
+    {#snippet status()}
+      <span class="settings-note">
+        {pathIndexSource === 'inherited' ? 'Inherited' : formatDuration(pathIndexDraft)}
+      </span>
+    {/snippet}
+    <p class="section-intro">
+      How often each repository's file list is checked, so the path finder offers what exists. Only
+      the commit its branch points at is read unless something moved
+    </p>
+    <div class="path-index-editor">
+      <Switch
+        label="Set this for every repository here"
+        checked={pathIndexSource === 'custom'}
+        disabled={readOnly || savingPathIndex}
+        onChange={(on) => {
+          if (!on) {
+            pathIndexSource = 'inherited';
+            void updatePathIndex(null);
+
+            return;
+          }
+          pathIndexSource = 'custom';
+        }}
+      />
+      {#if pathIndexSource === 'custom'}
+        <DurationField
+          label="File list refresh interval"
+          bind:amount={pathIndexDraft.amount}
+          bind:unit={pathIndexDraft.unit}
+          units={PATH_INDEX_UNITS}
+          disabled={readOnly || savingPathIndex}
+          onApply={() => void applyPathIndex()}
+        />
+      {/if}
+    </div>
+  </Plate>
+
   <Plate label="Configuration defaults">
     {#snippet status()}
       <div class="header-actions">
@@ -337,6 +454,14 @@
     padding: 0.625rem 0.75rem;
   }
 
+  /* A single-line field takes the panel's compact height like every other one.
+     The padding above is a textarea's, and on an input it made a 43px control
+     standing beside 34px buttons. */
+  .pending-ci-grid input {
+    block-size: var(--control-height-compact);
+    padding-block: 0;
+  }
+
   .pending-ci-actions {
     display: flex;
     justify-content: flex-end;
@@ -377,7 +502,6 @@
     min-width: 3.5rem;
     opacity: 0;
     text-align: end;
-    text-box: trim-both cap alphabetic;
     transition: opacity 200ms ease-out;
   }
 

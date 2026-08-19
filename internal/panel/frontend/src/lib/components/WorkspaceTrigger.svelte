@@ -38,7 +38,13 @@
   {...attributes ?? {}}
 >
   <Avatar {account} size={28} shape="workspace" />
-  <span class="target-trigger-copy band-trim-stack">
+  <!-- `band-trim-kids`, not `band-trim-stack`: the stack trims a block's OUTER
+       edges so it sits on the avatar beside it and leaves the inner ones alone,
+       which left the kicker its 1.3px under the baseline and the name its 6.3px
+       above the cap - a 4.8px gap drawing as 12.4. Both rows want both edges.
+       The two cannot be worn together: `band-trim-stack > :first-child` is the
+       more specific rule and would win on the first row alone. -->
+  <span class="target-trigger-copy band-trim-kids">
     <span class="target-kicker">Workspace</span>
     <strong>{account.display_name}</strong>
   </span>
@@ -89,7 +95,9 @@
 
   .target-trigger-copy {
     display: grid;
-    gap: 0.3rem;
+    /* Cap band to cap band, because both rows are trimmed through below. The
+       declared value used to be 0.3rem and the gap somebody saw was 12.4px. */
+    gap: 0.25rem;
     min-width: 0;
     text-align: left;
   }
@@ -98,7 +106,6 @@
     color: var(--sidebar-text-muted);
     font: 700 0.625rem / 1 var(--sans);
     letter-spacing: 0.11em;
-    text-box: trim-both cap alphabetic;
     text-transform: uppercase;
   }
 

@@ -98,6 +98,19 @@ export const MOCK_ORGANIZATION_ROSTER: PanelAccount[] = [
   avatar_url: null,
 }));
 
+/**
+ * What the development deployment resolves for the durations that cascade.
+ *
+ * Named here rather than typed at each of the six places that need them: the
+ * mock has to agree with itself across the runtime settings, an installation
+ * and a repository, or the panel prefills one number and saves against another.
+ */
+export const DEV_PATH_INDEX_SECONDS = 3_600;
+export const DEV_PENDING_CI_QUIET_SECONDS = 30;
+
+/** The ceiling the service enforces - `panel.MaxPathIndexInterval`, in seconds. */
+export const DEV_MAX_PATH_INDEX_SECONDS = 604_800;
+
 export const OWNER_CAPABILITIES = {
   read: true,
   write: true,
@@ -162,6 +175,7 @@ export interface MockState {
     logLevelOverride: string | null;
     pollIntervalOverride: number | null;
     pendingCIQuietPeriodOverride: number | null;
+    pathIndexIntervalOverride: number | null;
     sessionTTLOverride: number | null;
     revision: number;
     updatedAt?: string;
@@ -240,6 +254,17 @@ export function seed(
       bypass: true,
       updatedAt: iso(-2 * 86_400_000),
     }),
+    /* The one repository the App can no longer see, so the board has a dashed
+       socket and the legend's fourth row is not permanently zero. */
+    repositorySeed(organization.value, {
+      id: '4005',
+      name: 'archived-tooling',
+      enabledOverride: null,
+      filePatch: {},
+      panelPatch: {},
+      available: false,
+      updatedAt: iso(-40 * 86_400_000),
+    }),
   ];
   const demoNames = [
     'api-gateway',
@@ -270,7 +295,7 @@ export function seed(
   for (const [index, name] of demoNames.entries()) {
     organization.repositories.push(
       repositorySeed(organization.value, {
-        id: `40${String(index + 5).padStart(2, '0')}`,
+        id: `40${String(index + 6).padStart(2, '0')}`,
         name,
         /* auth-service (index 1) INHERITS, which is what the approved table
            demos in its second row: an unbroken chain and a dashed target on the
@@ -479,6 +504,7 @@ export function seed(
       logLevelOverride: null,
       pollIntervalOverride: null,
       pendingCIQuietPeriodOverride: null,
+      pathIndexIntervalOverride: null,
       sessionTTLOverride: null,
       revision: 0,
       startedAt: now,
@@ -490,6 +516,7 @@ export function seed(
        list rendered nowhere and drifted out of the design unseen. */
     sync: new Map([
       [`${organization.value.id}/labels`, syncLabelsSeed(iso)],
+      [`${organization.value.id}/settings`, syncSettingsSeed(iso)],
       [`${organization.value.id}/rulesets`, syncRulesetsSeed(iso)],
       [`${organization.value.id}/files`, syncFilesSeed(iso)],
     ]),
@@ -588,6 +615,39 @@ export function syncLabelsSeed(iso: (offsetMs: number) => string): SyncConfig {
 }
 
 /**
+ * Nine of the seventeen settings managed, which is the shape the page was
+ * designed against: a settings page is only worth reading when some of it is a
+ * policy and the rest follows each repository, and an empty one draws four
+ * cards that are all sentence and no row.
+ */
+export function syncSettingsSeed(iso: (offsetMs: number) => string): SyncConfig {
+  return {
+    kind: 'settings',
+    enabled: true,
+    labels: [],
+    allow_removal: false,
+    excludes: [],
+    revision: 6,
+    updated_by: 'bart',
+    updated_at: iso(-13 * 60 * 60_000),
+    digest: 'sha256:settings',
+    document: {
+      allow_squash_merge: true,
+      allow_merge_commit: false,
+      allow_auto_merge: true,
+      delete_branch_on_merge: true,
+      squash_merge_commit_title: 'PR_TITLE',
+      squash_merge_commit_message: 'COMMIT_MESSAGES',
+      has_issues: true,
+      has_wiki: false,
+      secret_scanning: true,
+    },
+    unreadable: false,
+    unavailable: '',
+  };
+}
+
+/**
  * The ruleset an organization actually runs, seeded for the same reason the
  * labels above are: a form nobody can look at except empty is a form that
  * drifts out of the design unseen, and this one has nested rows that only
@@ -680,25 +740,41 @@ export function syncFilesSeed(iso: (offsetMs: number) => string): SyncConfig {
  * addition, a change, a removal, a row that failed and a row that was never
  * tried because another failed first.
  */
+/**
+ * A plan against the repositories this fixture actually holds.
+ *
+ * Two things here are load-bearing and were both wrong. The `kind` is the
+ * service's own word - `labels`, `settings`, `rulesets`, `files` - and the
+ * panel filters by it to draw each kind card's strip; spelled `label` and
+ * `repository`, nothing matched and all four strips drew as if every
+ * repository were in step. And the `repository` has to be a name the fleet
+ * holds, or the board cannot mark it: `design-tokens` is in no seed, so the
+ * refusal showed in the out-of-step list and nowhere on the board.
+ *
+ * The spread is deliberate. Three repositories differ by different amounts so
+ * the tiles carry different numerals, one is refused, one is unwatched, and
+ * every kind owns at least one action so no strip is empty.
+ */
 export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
   return {
     id: 'plan-1',
     trigger: 'reconcile',
     state: 'computed',
     digest: 'sha256:plan',
-    counts: { create: 2, update: 1, delete: 1 },
+    counts: { create: 7, update: 5, delete: 2 },
     actions: [
+      // smyklot: six changes across three kinds.
       {
         repository: 'smyklot',
-        kind: 'label',
+        kind: 'labels',
         operation: 'create',
         subject: 'security',
         after: 'b60205',
         state: 'pending',
       },
       {
-        repository: 'platform-infra',
-        kind: 'label',
+        repository: 'smyklot',
+        kind: 'labels',
         operation: 'update',
         subject: 'bug',
         before: 'ee0701',
@@ -706,16 +782,105 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'platform-infra',
-        kind: 'label',
+        repository: 'smyklot',
+        kind: 'labels',
         operation: 'delete',
         subject: 'wontfix',
         before: 'ffffff',
         state: 'pending',
       },
       {
-        repository: 'design-tokens',
-        kind: 'repository',
+        repository: 'smyklot',
+        kind: 'settings',
+        operation: 'update',
+        subject: 'allow_squash_merge',
+        before: 'false',
+        after: 'true',
+        state: 'pending',
+      },
+      {
+        repository: 'smyklot',
+        kind: 'rulesets',
+        operation: 'update',
+        subject: 'main-branch-protection',
+        state: 'pending',
+      },
+      {
+        repository: 'smyklot',
+        kind: 'files',
+        operation: 'update',
+        subject: 'renovate.json',
+        state: 'pending',
+      },
+      // platform-infra: five, including the removal the foot line counts.
+      {
+        repository: 'platform-infra',
+        kind: 'labels',
+        operation: 'create',
+        subject: 'good first issue',
+        after: '7057ff',
+        state: 'pending',
+      },
+      {
+        repository: 'platform-infra',
+        kind: 'labels',
+        operation: 'delete',
+        subject: 'invalid',
+        before: 'e4e669',
+        state: 'pending',
+      },
+      {
+        repository: 'platform-infra',
+        kind: 'settings',
+        operation: 'update',
+        subject: 'delete_branch_on_merge',
+        before: 'false',
+        after: 'true',
+        state: 'pending',
+      },
+      {
+        repository: 'platform-infra',
+        kind: 'rulesets',
+        operation: 'create',
+        subject: 'release-tags',
+        state: 'pending',
+      },
+      {
+        repository: 'platform-infra',
+        kind: 'files',
+        operation: 'create',
+        subject: 'CONTRIBUTING.md',
+        state: 'pending',
+      },
+      // api-gateway: three.
+      {
+        repository: 'api-gateway',
+        kind: 'settings',
+        operation: 'update',
+        subject: 'has_wiki',
+        before: 'true',
+        after: 'false',
+        state: 'pending',
+      },
+      {
+        repository: 'api-gateway',
+        kind: 'files',
+        operation: 'update',
+        subject: 'renovate.json',
+        state: 'pending',
+      },
+      {
+        repository: 'api-gateway',
+        kind: 'labels',
+        operation: 'create',
+        subject: 'chore',
+        after: 'cfd3d7',
+        state: 'pending',
+      },
+      // legacy-service: refused, and the reason is the row's own words.
+      {
+        repository: 'legacy-service',
+        kind: 'settings',
         operation: 'update',
         subject: 'has_wiki',
         after: 'false',
@@ -723,8 +888,8 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         error: 'the app is not an administrator of this repository',
       },
       {
-        repository: 'design-tokens',
-        kind: 'label',
+        repository: 'legacy-service',
+        kind: 'labels',
         operation: 'create',
         subject: 'good first issue',
         after: '7057ff',
@@ -963,6 +1128,12 @@ export function targetSeed(input: {
       pending_ci_mode_default: 'checks',
       pending_ci_branch_patterns_default: { include: ['~DEFAULT_BRANCH'], exclude: [] },
       pending_ci_quiet_period_seconds_override: null,
+      // What the process resolved, which the service always sends and this mock
+      // has to send too - the panel prefills from it, so a null here is a page
+      // the mock renders differently from production.
+      pending_ci_quiet_period_seconds_inherited: DEV_PENDING_CI_QUIET_SECONDS,
+      path_index_interval_seconds_override: null,
+      path_index_interval_seconds_inherited: DEV_PATH_INDEX_SECONDS,
       pending_ci_permissions: {
         checks_write: true,
         administration_write: true,
@@ -985,6 +1156,25 @@ export function targetSeed(input: {
   };
 }
 
+/**
+ * The repositories the migration spec opens by name, whatever their id is.
+ *
+ * A repository that has been asked about the TOML migration and said no used to
+ * be every seventh id and nothing else. Then one repository was inserted into
+ * the fixture ahead of them, every id after it moved by one, and the pair the
+ * spec opens came back with nothing to press - `search-indexer` went from 4025
+ * to 4026 and stopped being a seventh. The pool keeps the arithmetic, because
+ * what it is for is giving the list variety; the two a test names are said
+ * here, because a spec should not have to know where the counting landed.
+ */
+const DECLINED_MIGRATION = new Set(['migration-demo', 'search-indexer']);
+
+function declinedMigration(input: { id: string; name: string }, status: string): boolean {
+  if (status === 'missing') return false;
+
+  return DECLINED_MIGRATION.has(input.name) || Number(input.id.replace(/\D/g, '')) % 7 === 0;
+}
+
 export function repositorySeed(
   target: PanelTarget,
   input: {
@@ -996,6 +1186,10 @@ export function repositorySeed(
     fileError?: string;
     bypass?: boolean;
     private?: boolean;
+    /* Whether the App can still see it. False is a repository sync does not
+       watch, which the board draws as a dashed socket - a state the fixture
+       could not produce at all, so that leg of the legend was always zero. */
+    available?: boolean;
     updatedAt: string;
   },
 ): MockRepository {
@@ -1015,7 +1209,7 @@ export function repositorySeed(
     full_name: `${target.account.login}/${input.name}`,
     private: input.private ?? false,
     default_branch: Number(input.id.replace(/\D/g, '')) % 5 === 0 ? 'develop' : 'main',
-    available: true,
+    available: input.available ?? true,
     enabled_override: input.enabledOverride,
     effective_enabled: input.enabledOverride ?? target.repository_default_enabled,
     enabled_source: input.enabledOverride === null ? 'target' : 'repository',
@@ -1044,18 +1238,23 @@ export function repositorySeed(
           ? undefined
           : ['.github/smyklot.yaml'],
       // Every seventh repository has already been asked and said no, so the
-      // detail pane's refusal line and its way back are both reachable
-      config_migration:
-        status === 'missing' || Number(input.id.replace(/\D/g, '')) % 7 !== 0 ? 'none' : 'declined',
-      config_migration_pr:
-        status === 'missing' || Number(input.id.replace(/\D/g, '')) % 7 !== 0 ? undefined : 42,
+      // detail pane's refusal line and its way back are both reachable - plus
+      // the two the migration spec opens by name.
+      config_migration: declinedMigration(input, status) ? 'declined' : 'none',
+      config_migration_pr: declinedMigration(input, status) ? 42 : undefined,
       ignore_repository_file: bypass,
       pending_ci_mode_override: null,
       pending_ci_mode_inherited: target.pending_ci_mode_default,
       pending_ci_branch_patterns_override: null,
       pending_ci_branch_patterns_inherited: target.pending_ci_branch_patterns_default,
       pending_ci_quiet_period_seconds_override: null,
-      pending_ci_quiet_period_seconds_inherited: target.pending_ci_quiet_period_seconds_override,
+      // The nearest level above that set one, or what the process resolved -
+      // the same fallback the service applies, never a bare null.
+      pending_ci_quiet_period_seconds_inherited:
+        target.pending_ci_quiet_period_seconds_override ?? DEV_PENDING_CI_QUIET_SECONDS,
+      path_index_interval_seconds_override: null,
+      path_index_interval_seconds_inherited:
+        target.path_index_interval_seconds_override ?? DEV_PATH_INDEX_SECONDS,
       pending_ci_gate: {
         desired_mode: target.pending_ci_mode_default,
         effective_mode: target.pending_ci_mode_default,
@@ -1440,4 +1639,50 @@ export function rootPanelUsers(state: MockState): RootPanelUser[] {
     manageable: user.account.id !== VIEWER.id && user.system_role === 'none',
     can_manage_system_role: user.account.id !== VIEWER.id && user.system_role !== 'super_root',
   }));
+}
+
+/**
+ * What one repository holds, for the path finder to offer.
+ *
+ * Derived from the name rather than listed per repository, because the finder
+ * is worth looking at when the same path is in most of them and a few are not -
+ * which is the shape it has to rank, and the shape a hand-written fixture never
+ * quite has.
+ */
+export function mockRepositoryPaths(name: string): string[] {
+  const everywhere = [
+    'README.md',
+    'LICENSE',
+    '.github/CODEOWNERS',
+    '.github/workflows/test.yaml',
+    '.gitignore',
+  ];
+  const some = [
+    'renovate.json',
+    'CONTRIBUTING.md',
+    '.github/workflows/release.yaml',
+    'docs/guide.md',
+    'internal/storage/sqlstore/store.go',
+    'Makefile',
+  ];
+
+  // A stable spread: the same repository always holds the same paths, so a
+  // reader comparing two visits is comparing the same list.
+  const seed = [...name].reduce((total, letter) => total + letter.charCodeAt(0), 0);
+
+  return [...everywhere, ...some.filter((_, index) => (seed + index) % 3 !== 0)];
+}
+
+/**
+ * When this repository's tree was last read, as an offset in days.
+ *
+ * Not all the same, and one of them old: the panel's answer takes its STALEST
+ * row, so a fixture where every reading is fresh makes the notice above the
+ * finder unreachable in development - which is where a developer would
+ * otherwise see it.
+ */
+export function mockRepositoryScanAge(name: string): number {
+  const seed = [...name].reduce((total, letter) => total + letter.charCodeAt(0), 0);
+
+  return seed % 7 === 0 ? 9 : seed % 3;
 }

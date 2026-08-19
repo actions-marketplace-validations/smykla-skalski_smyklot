@@ -1,3 +1,5 @@
+import type { ArrayStrategy } from '#lib/merge.js';
+
 export const COMMANDS = [
   'approve',
   'merge',
@@ -237,6 +239,15 @@ export interface PanelTarget {
   pending_ci_mode_default: PendingCIMode;
   pending_ci_branch_patterns_default: PendingCIBranchPatterns;
   pending_ci_quiet_period_seconds_override: number | null;
+  /**
+   * What this installation would use if it set nothing: what the running
+   * service resolved. Never null, so the panel prefills the deployment's own
+   * answer rather than a number typed into a component.
+   */
+  pending_ci_quiet_period_seconds_inherited: number;
+  /** How often this installation's repositories have their file lists checked. */
+  path_index_interval_seconds_override: number | null;
+  path_index_interval_seconds_inherited: number;
   pending_ci_permissions: PendingCIPermissions;
   config_patch: ConfigPatch;
   inherited_config: ConfigValues;
@@ -422,6 +433,18 @@ export interface RootRuntimeSettings {
     override_seconds: number | null;
     effective_seconds: number;
   };
+  /** How often a repository's file list is checked for changes. */
+  path_index_interval: {
+    deployment_seconds: number;
+    override_seconds: number | null;
+    effective_seconds: number;
+    /**
+     * The largest value this setting accepts. Sent rather than known here: the
+     * bound is enforced by the service and by a CHECK constraint, and a third
+     * copy typed into a component is the one that goes stale silently.
+     */
+    max_seconds: number;
+  };
   session_lifetime: {
     deployment_seconds: number;
     override_seconds: number | null;
@@ -447,6 +470,7 @@ export interface RootRuntimeSettingsInput {
   log_level: string | null;
   reaction_poll_interval_seconds: number | null;
   merge_after_ci_quiet_period_seconds: number | null;
+  path_index_interval_seconds: number | null;
   session_ttl_seconds: number | null;
   expected_revision: number;
 }
@@ -540,7 +564,15 @@ export interface RepositoryDetail {
   pending_ci_branch_patterns_override: PendingCIBranchPatterns | null;
   pending_ci_branch_patterns_inherited: PendingCIBranchPatterns;
   pending_ci_quiet_period_seconds_override: number | null;
-  pending_ci_quiet_period_seconds_inherited: number | null;
+  /**
+   * What this repository would use if it set nothing, resolved through every
+   * level above it. Never null: a page that had to invent a prefill invented
+   * the same one whatever the deployment ran with.
+   */
+  pending_ci_quiet_period_seconds_inherited: number;
+  /** How often this repository's file list is checked; null inherits. */
+  path_index_interval_seconds_override: number | null;
+  path_index_interval_seconds_inherited: number;
   pending_ci_gate?: PendingCIGate;
   revision: number;
 }
@@ -573,6 +605,7 @@ export interface TargetSettingsInput {
   pending_ci_mode_default?: PendingCIMode;
   pending_ci_branch_patterns_default?: PendingCIBranchPatterns;
   pending_ci_quiet_period_seconds_override?: number | null;
+  path_index_interval_seconds_override?: number | null;
   config_patch: ConfigPatch;
   expected_revision: number;
 }
@@ -582,6 +615,7 @@ export interface RepositorySettingsInput {
   pending_ci_mode_override?: PendingCIMode | null;
   pending_ci_branch_patterns_override?: PendingCIBranchPatterns | null;
   pending_ci_quiet_period_seconds_override?: number | null;
+  path_index_interval_seconds_override?: number | null;
   config_patch: ConfigPatch;
   ignore_repository_file: boolean;
   expected_revision: number;
@@ -800,8 +834,11 @@ export interface SyncFileMerge {
 /** What to do with the list at one path. */
 export interface SyncArrayRule {
   path: string;
-  /** replace, append or prepend. */
-  strategy: string;
+  /* The vocabulary rather than `string`: `filemerge` refuses a rule spelling
+     anything else, and the panel used to hand a Select's raw value straight
+     through - so the one place a typo could arrive is also the one place
+     nothing checked. */
+  strategy: ArrayStrategy;
 }
 
 /** A literal substitution inside a section. */
@@ -846,6 +883,46 @@ export interface SyncOverride {
 }
 
 /** What a repository's answer is saved as. */
+/**
+ * Every path this installation's repositories are known to hold, and how many
+ * hold each.
+ *
+ * A picture rather than a fact - whatever each default branch held when it was
+ * last looked at. A path it does not know is still a path the finder accepts.
+ */
+export interface SyncPathIndex {
+  paths: { path: string; repositories: number }[];
+  /** How many repositories contributed to it. */
+  repositories: number;
+  /**
+   * When the STALEST of those was read. Absent before anything has been.
+   *
+   * The union is only as current as its oldest member, which is the same
+   * reading `partial` takes: one repository nobody has looked at in a week is
+   * a week-old answer, whatever the others say.
+   */
+  observed_at?: string;
+  /**
+   * Whether GitHub declined to list one of those repositories whole, even
+   * after the listing was divided around its refusal. Nothing drops a path on
+   * purpose, so this is the only way the list can be short.
+   */
+  partial?: boolean;
+}
+
+/**
+ * One repository's answer, in a list of every repository's.
+ *
+ * The name travels with it because the page reading this is about a file rather
+ * than about a repository: "three repositories adjust renovate.json" is what
+ * this list answers, and ids would mean a request per row to turn each one back
+ * into a word.
+ */
+export interface SyncOverrideRow extends SyncOverride {
+  repository_id: string;
+  repository_name: string;
+}
+
 export interface SyncOverrideInput {
   enabled: boolean | null;
   document: Record<string, unknown>;

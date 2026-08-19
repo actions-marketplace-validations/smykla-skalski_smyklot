@@ -20,7 +20,7 @@ func (s *Server) getRootTargetSettings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, targetDTO(s.processConfig(), context.Target, context.Access))
+	writeJSON(w, http.StatusOK, targetDTO(s.runtimeValues(), context.Target, context.Access))
 }
 
 func (s *Server) putRootTargetSettings(w http.ResponseWriter, r *http.Request) {
@@ -59,6 +59,11 @@ func (s *Server) putRootTargetSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid_pending_ci_settings", err.Error())
 		return
 	}
+	pathIndex, err := pathIndexOverride(context.Target.PathIndexIntervalOverride, input.PathIndexIntervalSeconds)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_path_index_interval", err.Error())
+		return
+	}
 	updated, err := s.updateTargetSettings(r.Context(), storage.TargetSettingsChange{
 		TargetID: context.Target.ID, ActorAccountID: context.Account.ID,
 		ElevationID: elevationID(context.Elevation), SessionTokenHash: context.SessionHash,
@@ -66,6 +71,7 @@ func (s *Server) putRootTargetSettings(w http.ResponseWriter, r *http.Request) {
 		PendingCIModeDefault:           mode,
 		PendingCIBranchPatternsDefault: patterns,
 		PendingCIQuietPeriodOverride:   quiet,
+		PathIndexIntervalOverride:      pathIndex,
 		RetunePendingCIQuietPeriod:     input.PendingCIQuietPeriodSeconds.Present,
 		DeploymentPendingCIQuietPeriod: s.cfg.PendingCIQuietPeriod,
 		ConfigPatch:                    *input.ConfigPatch, ExpectedRevision: *input.ExpectedRevision,
@@ -78,7 +84,7 @@ func (s *Server) putRootTargetSettings(w http.ResponseWriter, r *http.Request) {
 	s.pendingCI.Wake()
 	s.wakePendingCIGates()
 	s.Announce(updated.ID, "")
-	writeJSON(w, http.StatusOK, targetDTO(s.processConfig(), updated, context.Access))
+	writeJSON(w, http.StatusOK, targetDTO(s.runtimeValues(), updated, context.Access))
 }
 
 func (s *Server) getRootRepositories(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +115,7 @@ func (s *Server) getRootRepository(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), context.Target, repository))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.runtimeValues(), context.Target, repository))
 }
 
 func (s *Server) putRootRepositorySettings(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +159,12 @@ func (s *Server) putRootRepositorySettings(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, http.StatusBadRequest, "invalid_pending_ci_settings", err.Error())
 		return
 	}
+	pathIndex, err := pathIndexOverride(
+		repository.PathIndexIntervalOverride, input.PathIndexIntervalSeconds)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_path_index_interval", err.Error())
+		return
+	}
 	updated, err := s.updateRepositorySettings(r.Context(), storage.RepositorySettingsChange{
 		TargetID: context.Target.ID, RepositoryID: r.PathValue("repository"),
 		ActorAccountID: context.Account.ID, ElevationID: elevationID(context.Elevation),
@@ -160,6 +172,7 @@ func (s *Server) putRootRepositorySettings(w http.ResponseWriter, r *http.Reques
 		PendingCIModeOverride:           mode,
 		PendingCIBranchPatternsOverride: patterns,
 		PendingCIQuietPeriodOverride:    quiet,
+		PathIndexIntervalOverride:       pathIndex,
 		RetunePendingCIQuietPeriod:      input.PendingCIQuietPeriodSeconds.Present,
 		DeploymentPendingCIQuietPeriod:  s.cfg.PendingCIQuietPeriod,
 		ConfigPatch:                     *input.ConfigPatch, IgnoreRepositoryFile: *input.IgnoreRepositoryFile,
@@ -175,7 +188,7 @@ func (s *Server) putRootRepositorySettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.Announce(context.Target.ID, updated.ID)
-	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.processConfig(), context.Target, updated))
+	writeJSON(w, http.StatusOK, repositoryDetailDTO(s.runtimeValues(), context.Target, updated))
 }
 
 func (s *Server) postRootRepositoryConfigMigrationReset(w http.ResponseWriter, r *http.Request) {
