@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.44.0](https://github.com/smykla-skalski/smyklot/compare/v1.43.1...v1.44.0) (2026-08-19)
+
+### Features
+
+* **sync:** the sync overhaul, and an index that rescans only what changed ([#282](https://github.com/smykla-skalski/smyklot/issues/282)) ([f3770d7](https://github.com/smykla-skalski/smyklot/commit/f3770d79f9835329950374c2c2d86b0dbefa4e36))
+
+### Bug Fixes
+
+* **deps:** update module modernc.org/sqlite to v1.57.0 ([#286](https://github.com/smykla-skalski/smyklot/issues/286)) ([ffc1ec1](https://github.com/smykla-skalski/smyklot/commit/ffc1ec118825e96f061fbf91a710cf3482b70b14))
+
 ## [1.43.1](https://github.com/smykla-skalski/smyklot/compare/v1.43.0...v1.43.1) (2026-08-18)
 
 ## [1.43.0](https://github.com/smykla-skalski/smyklot/compare/v1.42.0...v1.43.0) (2026-08-18)
