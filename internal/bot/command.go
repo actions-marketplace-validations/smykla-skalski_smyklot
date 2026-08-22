@@ -162,7 +162,7 @@ func ExecuteCommentWithEnvironment(
 		rc.RepoOwner,
 		rc.RepoName,
 		commentIDNum,
-		github.ReactionError,
+		ReactionError,
 		rc.BotUsername,
 	)
 
@@ -666,7 +666,7 @@ func executePendingCIMerge(
 			return nil, nil
 		}
 		_ = client.AddReaction(
-			ctx, rc.RepoOwner, rc.RepoName, commentID, github.ReactionPendingCI,
+			ctx, rc.RepoOwner, rc.RepoName, commentID, ReactionPendingCI,
 		)
 		if err := client.AddLabel(ctx, rc.RepoOwner, rc.RepoName, prNum, label); err != nil {
 			return feedback.NewMergeFailed("failed to record the pending CI request: " + err.Error()), nil
@@ -790,21 +790,21 @@ func getPendingCILabel(method github.MergeMethod, requiredOnly bool) string {
 	if requiredOnly {
 		switch method {
 		case github.MergeMethodSquash:
-			return github.LabelPendingCISquashRequired
+			return LabelPendingCISquashRequired
 		case github.MergeMethodRebase:
-			return github.LabelPendingCIRebaseRequired
+			return LabelPendingCIRebaseRequired
 		default:
-			return github.LabelPendingCIMergeRequired
+			return LabelPendingCIMergeRequired
 		}
 	}
 
 	switch method {
 	case github.MergeMethodSquash:
-		return github.LabelPendingCISquash
+		return LabelPendingCISquash
 	case github.MergeMethodRebase:
-		return github.LabelPendingCIRebase
+		return LabelPendingCIRebase
 	default:
-		return github.LabelPendingCIMerge
+		return LabelPendingCIMerge
 	}
 }
 
@@ -853,22 +853,11 @@ func executeCleanup(ctx context.Context, client *github.Client, rc *RuntimeConfi
 
 	// Delete all bot's comments (except the triggering one for now)
 	for _, comment := range comments {
-		user, ok := comment["user"].(map[string]interface{})
-		if !ok {
+		if comment.User.Login != botUsername {
 			continue
 		}
 
-		username, ok := user["login"].(string)
-		if !ok || username != botUsername {
-			continue
-		}
-
-		id, ok := comment["id"].(float64)
-		if !ok {
-			continue
-		}
-
-		commentIDInt := int(id)
+		commentIDInt := int(comment.ID)
 
 		// Skip the triggering comment for now (delete it last)
 		if commentIDInt == commentID {
@@ -982,7 +971,7 @@ func handleHelp(ctx context.Context, client *github.Client, rc *RuntimeConfig, p
 	// Post help feedback
 	fb := feedback.NewHelp()
 
-	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionSuccess)
+	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionSuccess)
 }
 
 func executeCoordinatedCleanup(

@@ -1,31 +1,5 @@
 package github
 
-// repoConfigPath is where a repository's own Smyklot configuration lives
-const repoConfigPath = ".github/smyklot.yaml"
-
-// RepoConfig is a repository's own configuration file, as found.
-//
-// The path is carried alongside the bytes because the caller has to know which
-// file it got: the format is decided by the name, and telling the decoder is
-// what keeps a TOML syntax error from being reported as bad YAML.
-type RepoConfig struct {
-	// Path is the file the content came from, relative to the repository root.
-	// Empty when the repository has no configuration file.
-	Path string
-
-	// Content is the file's decoded bytes, nil when no file was found.
-	Content []byte
-
-	// Superseded are the other paths that also hold a configuration file, in
-	// search order. They are read by nothing and reported to the repository,
-	// which is the point: a repository that migrated to TOML and left the
-	// YAML behind has a file it believes is in charge and is not.
-	Superseded []string
-}
-
-// Found reports whether the repository has a configuration file at all.
-func (c RepoConfig) Found() bool { return c.Path != "" }
-
 // Installation represents one installation of the GitHub App
 type Installation struct {
 	// ID identifies the installation, and is what an installation token is
@@ -187,34 +161,33 @@ type PullRequestState struct {
 // ReactionType represents the type of emoji reaction
 type ReactionType string
 
+// The eight contents GitHub accepts, spelled the way GitHub spells them. What
+// a reaction means to the application putting it there is the application's
+// word, not this package's.
 const (
-	// ReactionSuccess represents success (✅)
-	ReactionSuccess ReactionType = "+1"
+	// ReactionPlusOne is 👍
+	ReactionPlusOne ReactionType = "+1"
 
-	// ReactionError represents error (❌)
-	ReactionError ReactionType = "-1"
+	// ReactionMinusOne is 👎
+	ReactionMinusOne ReactionType = "-1"
 
-	// ReactionWarning represents warning (⚠️)
-	ReactionWarning ReactionType = "confused"
+	// ReactionLaugh is 😄
+	ReactionLaugh ReactionType = "laugh"
 
-	// ReactionEyes represents acknowledgment (👀)
+	// ReactionConfused is 😕
+	ReactionConfused ReactionType = "confused"
+
+	// ReactionHeart is ❤️
+	ReactionHeart ReactionType = "heart"
+
+	// ReactionHooray is 🎉
+	ReactionHooray ReactionType = "hooray"
+
+	// ReactionRocket is 🚀
+	ReactionRocket ReactionType = "rocket"
+
+	// ReactionEyes is 👀
 	ReactionEyes ReactionType = "eyes"
-
-	// ReactionApprove represents approve command (👍)
-	ReactionApprove ReactionType = "+1"
-
-	// ReactionMerge represents merge command (🚀)
-	ReactionMerge ReactionType = "rocket"
-
-	// ReactionCleanup represents cleanup command (❤️)
-	ReactionCleanup ReactionType = "heart"
-
-	// ReactionPendingCI represents waiting for CI (👀)
-	ReactionPendingCI ReactionType = "eyes"
-
-	// ReactionPendingCIService fences a service-owned wait from the Action
-	// runner without adding a second label to the pull request.
-	ReactionPendingCIService ReactionType = "hooray"
 )
 
 // Reaction represents a reaction on a comment
@@ -225,47 +198,6 @@ type Reaction struct {
 	// User is the username of the user who reacted
 	User string
 }
-
-const (
-	// LabelReactionApprove indicates PR was approved via 👍 reaction
-	LabelReactionApprove = "smyklot:reaction-approve"
-
-	// LabelReactionMerge indicates PR was merged via 🚀 reaction
-	LabelReactionMerge = "smyklot:reaction-merge"
-
-	// LabelReactionCleanup indicates cleanup was triggered via ❤️ reaction
-	LabelReactionCleanup = "smyklot:reaction-cleanup"
-
-	// LegacyLabelPendingCIServiceOwner is removed from pull requests created by
-	// older service versions. New requests use only their method label.
-	LegacyLabelPendingCIServiceOwner = "smyklot:pending:ci:service"
-
-	// LabelPendingCIMerge indicates PR is waiting for CI before merge
-	LabelPendingCIMerge = "smyklot:pending:ci"
-
-	// LabelPendingCISquash indicates PR is waiting for CI before squash merge
-	LabelPendingCISquash = "smyklot:pending:ci:squash"
-
-	// LabelPendingCIRebase indicates PR is waiting for CI before rebase merge
-	LabelPendingCIRebase = "smyklot:pending:ci:rebase"
-
-	// LabelPendingCIMergeRequired indicates PR is waiting for required CI only before merge
-	LabelPendingCIMergeRequired = "smyklot:pending:ci:required"
-
-	// LabelPendingCISquashRequired indicates PR is waiting for required CI only before squash merge
-	LabelPendingCISquashRequired = "smyklot:pending:ci:squash:required"
-
-	// LabelPendingCIRebaseRequired indicates PR is waiting for required CI only before rebase merge
-	LabelPendingCIRebaseRequired = "smyklot:pending:ci:rebase:required"
-
-	// Legacy pending-CI labels remain readable during the organization migration.
-	LegacyLabelPendingCIMerge          = "smyklot:pending-ci"
-	LegacyLabelPendingCISquash         = "smyklot:pending-ci:squash"
-	LegacyLabelPendingCIRebase         = "smyklot:pending-ci:rebase"
-	LegacyLabelPendingCIMergeRequired  = "smyklot:pending-ci:required"
-	LegacyLabelPendingCISquashRequired = "smyklot:pending-ci:squash:required"
-	LegacyLabelPendingCIRebaseRequired = "smyklot:pending-ci:rebase:required"
-)
 
 // MergeMethod represents the type of merge method to use
 type MergeMethod string

@@ -10,8 +10,8 @@ import (
 
 // AddReaction adds an emoji reaction to a comment
 //
-// The reaction parameter should be one of the ReactionType constants
-// (ReactionSuccess, ReactionError, ReactionWarning, ReactionEyes).
+// The reaction parameter is one of the eight ReactionType constants; GitHub
+// rejects anything else.
 func (c *Client) AddReaction(
 	ctx context.Context,
 	owner, repo string,
@@ -27,39 +27,14 @@ func (c *Client) AddReaction(
 	return wrapError(ErrAPIRequest, http.MethodPost, path, err)
 }
 
-// RemoveReaction removes an emoji reaction from a comment
-//
-// This retrieves all reactions on the comment and deletes matching ones,
-// whoever left them. RemoveReactionByUser is the narrower form.
-func (c *Client) RemoveReaction(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-	reaction ReactionType,
-) error {
-	return c.removeCommentReactions(ctx, owner, repo, commentID, reaction, "")
-}
-
-// RemoveReactionByUser removes a reaction left by one account.
-func (c *Client) RemoveReactionByUser(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-	reaction ReactionType,
-	username string,
-) error {
-	return c.removeCommentReactions(ctx, owner, repo, commentID, reaction, username)
-}
-
-// removeCommentReactions deletes every matching reaction on a comment.
-//
-// An empty username matches any author.
+// RemoveReactionByUser deletes every matching reaction one account left on a
+// comment.
 //
 // Every page is read before anything is deleted. The version this replaces read
 // one page and stopped, so a comment carrying more than thirty reactions kept
 // the ones that had spilled onto the second - and the bot's own cleanup then
 // left its marks behind on exactly the busy pull requests where they matter.
-func (c *Client) removeCommentReactions(
+func (c *Client) RemoveReactionByUser(
 	ctx context.Context,
 	owner, repo string,
 	commentID int,
@@ -78,7 +53,7 @@ func (c *Client) removeCommentReactions(
 			continue
 		}
 
-		if username != "" && item.GetUser().GetLogin() != username {
+		if item.GetUser().GetLogin() != username {
 			continue
 		}
 
@@ -96,6 +71,8 @@ func (c *Client) removeCommentReactions(
 // GetPRReactions retrieves all reactions on a pull request's own body.
 //
 // These are the reactions on the description, not on any of its comments.
+//
+//nolint:dupl // paginate-and-convert is the idiom every list read here follows
 func (c *Client) GetPRReactions(ctx context.Context, owner, repo string, prNumber int) ([]Reaction, error) {
 	op := fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, prNumber)
 

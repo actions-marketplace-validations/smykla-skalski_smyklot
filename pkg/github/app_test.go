@@ -2,6 +2,7 @@ package github_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +13,18 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/smykla-skalski/smyklot/internal/githubtest"
 	"github.com/smykla-skalski/smyklot/pkg/github"
 )
+
+func contentsResponse(content string) string {
+	payload, err := json.Marshal(map[string]string{
+		"content":  base64.StdEncoding.EncodeToString([]byte(content)),
+		"encoding": "base64",
+	})
+	Expect(err).NotTo(HaveOccurred())
+
+	return string(payload)
+}
 
 var _ = Describe("GitHub App Client [Unit]", func() {
 	var server *httptest.Server
@@ -397,13 +407,13 @@ var _ = Describe("GitHub App Client [Unit]", func() {
 		})
 	})
 
-	// GetCodeowners shares its body with GetRepoConfig, so its contract is
-	// re-checked here rather than assumed
+	// GetCodeowners is GetFileContent with one path and one size, so what is
+	// checked here is the decoding it inherits rather than a body of its own
 	Describe("GetCodeowners", func() {
 		It("should decode the file", func() {
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				Expect(r.URL.Path).To(Equal("/repos/owner/repo/contents/.github/CODEOWNERS"))
-				_, _ = w.Write([]byte(githubtest.ContentsResponse("* @bartsmykla\n")))
+				_, _ = w.Write([]byte(contentsResponse("* @bartsmykla\n")))
 			}))
 
 			client, err := github.NewClient("test-token", server.URL)
@@ -451,7 +461,7 @@ var _ = Describe("GitHub App Client [Unit]", func() {
 			client, err := github.NewClient("test-token", server.URL)
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = client.FindRepoConfig(context.Background(), "owner", "repo", "")
+			_, err = client.GetFileContent(context.Background(), "owner", "repo", "any", "", 1024)
 			Expect(err).To(MatchError(ContainSubstring("no content field")))
 		})
 	})

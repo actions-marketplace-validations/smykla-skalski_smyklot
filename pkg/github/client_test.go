@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -92,7 +93,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionPlusOne)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -112,7 +113,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 456, github.ReactionError)
+				err = client.AddReaction(context.Background(), "owner", "repo", 456, github.ReactionMinusOne)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -127,7 +128,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionPlusOne)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("401"))
 			})
@@ -158,12 +159,45 @@ var _ = Describe("GitHub Client [Unit]", func() {
 
 			err = client.RemoveReactionByUser(
 				context.Background(), "owner", "repo", 123,
-				github.ReactionPendingCI, "smyklot[bot]",
+				github.ReactionEyes, "smyklot[bot]",
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(deleted).To(Equal([]string{
 				"/repos/owner/repo/issues/comments/123/reactions/1",
 			}))
+		})
+	})
+
+	// GitHub answers thirty comments and the bot's own are the newest, so an
+	// unpaginated read finds none of them on exactly the busy pull requests
+	// where cleanup and the pending-CI reaction swap have work to do
+	Describe("GetPRComments", func() {
+		It("reads past the first page", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.URL.Path).To(Equal("/repos/owner/repo/issues/7/comments"))
+
+				if r.URL.Query().Get("page") == "2" {
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 2, "body": "second", "user": map[string]any{"login": "smyklot[bot]"}},
+					})
+
+					return
+				}
+
+				w.Header().Set("Link",
+					fmt.Sprintf(`<%s/repos/owner/repo/issues/7/comments?page=2>; rel="next"`, server.URL))
+				_ = json.NewEncoder(w).Encode([]map[string]any{
+					{"id": 1, "body": "first", "user": map[string]any{"login": "reviewer"}},
+				})
+			}))
+			client, err := github.NewClient("test-token", server.URL)
+			Expect(err).NotTo(HaveOccurred())
+
+			comments, err := client.GetPRComments(context.Background(), "owner", "repo", 7)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(2))
+			Expect(comments[1].ID).To(Equal(int64(2)))
+			Expect(comments[1].User.Login).To(Equal("smyklot[bot]"))
 		})
 	})
 
@@ -661,7 +695,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", address)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 1, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 1, github.ReactionPlusOne)
 				Expect(err).To(HaveOccurred())
 			})
 

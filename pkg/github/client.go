@@ -1,7 +1,7 @@
-// Package github provides a GitHub API client for Smyklot operations.
+// Package github is a GitHub API client over REST v3 and GraphQL.
 //
-// It supports PR operations (approve, merge, info), comment posting, and
-// emoji reactions through the GitHub REST API v3.
+// It knows GitHub and nothing about the application calling it; depguard
+// denies it every other package in this module.
 package github
 
 import (
@@ -24,7 +24,6 @@ const (
 	maxIdleConnsPerHost = 10
 	idleConnTimeout     = 90 * time.Second
 	maxCodeownersSize   = 1024 * 1024 // 1MB
-	maxRepoConfigSize   = 64 * 1024   // 64KB
 
 	// schemeToken authenticates as a user or an App installation
 	schemeToken = "token"
@@ -211,7 +210,7 @@ func (c *Client) EnableAutoMerge(
 // Returns the decoded content of .github/CODEOWNERS file.
 // Returns empty string (not error) if file doesn't exist (404).
 func (c *Client) GetCodeowners(ctx context.Context, owner, repo string) (string, error) {
-	decoded, err := c.getFileContent(ctx, owner, repo, ".github/CODEOWNERS", maxCodeownersSize)
+	decoded, err := c.GetFileContent(ctx, owner, repo, ".github/CODEOWNERS", "", maxCodeownersSize)
 	if err != nil {
 		return "", err
 	}
@@ -219,19 +218,11 @@ func (c *Client) GetCodeowners(ctx context.Context, owner, repo string) (string,
 	return string(decoded), nil
 }
 
-// getFileContent reads a file through the contents API.
-//
-// Returns nil content (not an error) when the file does not exist, so callers
-// can treat "no such file" as "nothing configured".
-func (c *Client) getFileContent(
-	ctx context.Context,
-	owner, repo, filePath string,
-	maxSize int,
-) ([]byte, error) {
-	return c.getFileContentAtRef(ctx, owner, repo, filePath, "", maxSize)
-}
-
-func (c *Client) getFileContentAtRef(
+// GetFileContent reads a file through the contents API, at ref when one is
+// given and from the default branch otherwise. Returns nil content (not an
+// error) when the file does not exist, so callers can treat "no such file" as
+// "nothing configured".
+func (c *Client) GetFileContent(
 	ctx context.Context,
 	owner, repo, filePath, ref string,
 	maxSize int,
@@ -280,6 +271,27 @@ func (c *Client) getFileContentAtRef(
 	}
 
 	return decoded, nil
+}
+
+// DirectoryEntry is one entry the contents API lists for a directory.
+type DirectoryEntry struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+}
+
+// ListRepositoryRoot lists the top level of a repository through the contents
+// API.
+//
+// The 404 is returned rather than read as emptiness, unlike GetFileContent: a
+// repository whose root is absent is one with no commits, which is a different
+// thing from a repository that does not hold a particular file.
+func (c *Client) ListRepositoryRoot(
+	ctx context.Context,
+	owner, repo string,
+) ([]DirectoryEntry, error) {
+	path := fmt.Sprintf("/repos/%s/%s/contents", owner, repo)
+
+	return doJSON[[]DirectoryEntry](ctx, c, http.MethodGet, path, nil)
 }
 
 // Ping reports whether the GitHub API answers and accepts these credentials.
@@ -596,19 +608,6 @@ func (c *Client) GetPRInfo(ctx context.Context, owner, repo string, prNumber int
 	return info, nil
 }
 
-// GetPRComments retrieves all comments on a pull request
-//
-// Returns a slice of comment data including ID, user, and body.
-func (c *Client) GetPRComments(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-) ([]map[string]interface{}, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
-
-	return doJSON[[]map[string]interface{}](ctx, c, http.MethodGet, path, nil)
-}
-
 // DeleteComment deletes a comment from a pull request
 func (c *Client) DeleteComment(ctx context.Context, owner, repo string, commentID int) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID)
@@ -616,61 +615,6 @@ func (c *Client) DeleteComment(ctx context.Context, owner, repo string, commentI
 	_, err := c.gh.Issues.DeleteComment(ctx, owner, repo, int64(commentID))
 
 	return wrapError(ErrAPIRequest, http.MethodDelete, path, err)
-}
-
-// UpdatePendingCIReaction finds comments with the bot's "eyes" reaction and replaces with "+1"
-//
-// This is used after a pending-ci merge succeeds to update the visual feedback.
-// It searches all comments on the PR, finds ones with "eyes" reaction from the bot,
-// removes the "eyes" reaction, and adds a "+1" (thumbs up) reaction.
-func (c *Client) UpdatePendingCIReaction(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-	botUsername string,
-) error {
-	// Get all comments on the PR
-	comments, err := c.GetPRComments(ctx, owner, repo, prNumber)
-	if err != nil {
-		return err
-	}
-
-	// Check each comment for bot's "eyes" reaction
-	for _, comment := range comments {
-		commentIDFloat, ok := comment["id"].(float64)
-		if !ok {
-			continue
-		}
-
-		commentID := int(commentIDFloat)
-
-		// Get reactions for this comment
-		reactions, err := c.GetCommentReactions(ctx, owner, repo, commentID)
-		if err != nil {
-			continue // Skip comments we can't get reactions for
-		}
-
-		// Check if bot has an "eyes" reaction on this comment
-		hasBotEyesReaction := false
-
-		for _, reaction := range reactions {
-			if reaction.User == botUsername && reaction.Type == ReactionPendingCI {
-				hasBotEyesReaction = true
-
-				break
-			}
-		}
-
-		if hasBotEyesReaction {
-			// Remove the "eyes" reaction
-			_ = c.RemoveReactionByUser(ctx, owner, repo, commentID, ReactionPendingCI, botUsername)
-
-			// Add "+1" (thumbs up) reaction
-			_ = c.AddReaction(ctx, owner, repo, commentID, ReactionSuccess)
-		}
-	}
-
-	return nil
 }
 
 // HasWritePermission checks if the user has write/admin permission to the repository

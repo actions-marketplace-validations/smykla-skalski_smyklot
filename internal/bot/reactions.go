@@ -11,6 +11,47 @@ import (
 	"github.com/smykla-skalski/smyklot/pkg/permissions"
 )
 
+const (
+	// LabelReactionApprove indicates PR was approved via 👍 reaction
+	LabelReactionApprove = "smyklot:reaction-approve"
+
+	// LabelReactionMerge indicates PR was merged via 🚀 reaction
+	LabelReactionMerge = "smyklot:reaction-merge"
+
+	// LabelReactionCleanup indicates cleanup was triggered via ❤️ reaction
+	LabelReactionCleanup = "smyklot:reaction-cleanup"
+)
+
+// What this bot means by each of GitHub's reactions. The client spells the
+// eight contents GitHub accepts and has no opinion about them; "success" and
+// "approve" are this bot's words for the same 👍.
+const (
+	// ReactionSuccess acknowledges a command that did what it was asked
+	ReactionSuccess = github.ReactionPlusOne
+
+	// ReactionError marks a command that could not be carried out
+	ReactionError = github.ReactionMinusOne
+
+	// ReactionWarning marks a command carried out with something worth saying
+	ReactionWarning = github.ReactionConfused
+
+	// ReactionApprove is the reaction a person leaves to approve a pull request
+	ReactionApprove = github.ReactionPlusOne
+
+	// ReactionMerge is the reaction a person leaves to merge a pull request
+	ReactionMerge = github.ReactionRocket
+
+	// ReactionCleanup is the reaction a person leaves to clean a pull request up
+	ReactionCleanup = github.ReactionHeart
+
+	// ReactionPendingCI marks a command waiting for CI
+	ReactionPendingCI = github.ReactionEyes
+
+	// ReactionPendingCIService fences a service-owned wait from the Action
+	// runner without adding a second label to the pull request.
+	ReactionPendingCIService = github.ReactionHooray
+)
+
 // handleReactions processes reaction-based approvals and merges.
 func handleReactions(
 	ctx context.Context,
@@ -99,21 +140,21 @@ func handleReactions(
 	// Process each reaction
 	for _, reaction := range permitted {
 		// Handle approve reaction
-		if reaction.Type == github.ReactionApprove {
+		if reaction.Type == ReactionApprove {
 			if err := handleReactionApprove(ctx, client, rc, bc, prNum, commentID, reaction.User); err != nil {
 				return err
 			}
 		}
 
 		// Handle merge reaction
-		if reaction.Type == github.ReactionMerge {
+		if reaction.Type == ReactionMerge {
 			if err := handleReactionMerge(ctx, client, rc, bc, prNum, commentID, reaction.User); err != nil {
 				return err
 			}
 		}
 
 		// Handle cleanup reaction
-		if reaction.Type == github.ReactionCleanup {
+		if reaction.Type == ReactionCleanup {
 			if err := handleReactionCleanup(
 				ctx, client, rc, bc, prNum, commentID, environment,
 			); err != nil {
@@ -136,8 +177,8 @@ func handleRemovedReactions(
 	labels []string,
 ) error {
 	// Check if approve reaction was removed
-	if slices.Contains(labels, github.LabelReactionApprove) &&
-		!reactionMap[github.ReactionApprove] {
+	if slices.Contains(labels, LabelReactionApprove) &&
+		!reactionMap[ReactionApprove] {
 		// Approve reaction was removed, unapprove the PR
 		if err := client.DismissReviewByUsername(
 			ctx,
@@ -156,13 +197,13 @@ func handleRemovedReactions(
 			rc.RepoOwner,
 			rc.RepoName,
 			prNum,
-			github.LabelReactionApprove,
+			LabelReactionApprove,
 		)
 	}
 
 	// Check if merge reaction was removed
-	if slices.Contains(labels, github.LabelReactionMerge) &&
-		!reactionMap[github.ReactionMerge] {
+	if slices.Contains(labels, LabelReactionMerge) &&
+		!reactionMap[ReactionMerge] {
 		// Get PR info to check if it's already merged
 		info, err := client.GetPRInfo(
 			ctx,
@@ -197,13 +238,13 @@ func handleRemovedReactions(
 			rc.RepoOwner,
 			rc.RepoName,
 			prNum,
-			github.LabelReactionMerge,
+			LabelReactionMerge,
 		)
 	}
 
 	// Check if cleanup reaction was removed
-	if slices.Contains(labels, github.LabelReactionCleanup) &&
-		!reactionMap[github.ReactionCleanup] {
+	if slices.Contains(labels, LabelReactionCleanup) &&
+		!reactionMap[ReactionCleanup] {
 		// Cleanup reaction was removed, just remove the label
 		// (no action needed since cleanup is one-time operation)
 		_ = client.RemoveLabel(
@@ -211,7 +252,7 @@ func handleRemovedReactions(
 			rc.RepoOwner,
 			rc.RepoName,
 			prNum,
-			github.LabelReactionCleanup,
+			LabelReactionCleanup,
 		)
 	}
 
@@ -245,7 +286,7 @@ func handleReactionApprove(
 	// Prevent self-approval unless explicitly allowed
 	if !bc.AllowSelfApproval && info.Author == approver {
 		fb := feedback.NewUnauthorized(approver, []string{selfApprovalNotAllowed})
-		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionError)
+		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionError)
 	}
 
 	// Check if bot already approved the PR (prevents duplicate approvals)
@@ -256,7 +297,7 @@ func handleReactionApprove(
 			rc.RepoOwner,
 			rc.RepoName,
 			prNum,
-			github.LabelReactionApprove,
+			LabelReactionApprove,
 		)
 		return nil
 	}
@@ -281,13 +322,13 @@ func handleReactionApprove(
 		rc.RepoOwner,
 		rc.RepoName,
 		prNum,
-		github.LabelReactionApprove,
+		LabelReactionApprove,
 	)
 
 	// Post success feedback
 	fb := feedback.NewReactionApprovalSuccess(approver, bc.QuietReactions)
 
-	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionSuccess)
+	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionSuccess)
 }
 
 // handleReactionMerge handles merge via 🚀 reaction.
@@ -317,7 +358,7 @@ func handleReactionMerge(
 	// Prevent self-approval unless explicitly allowed (merge also approves)
 	if !bc.AllowSelfApproval && info.Author == author {
 		fb := feedback.NewUnauthorized(author, []string{selfApprovalNotAllowed})
-		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionError)
+		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionError)
 	}
 
 	// Check if PR is mergeable
@@ -375,12 +416,12 @@ func handleReactionMerge(
 				rc.RepoOwner,
 				rc.RepoName,
 				prNum,
-				github.LabelReactionMerge,
+				LabelReactionMerge,
 			)
 
 			// Post auto-merge enabled feedback
 			fb := feedback.NewAutoMergeEnabled(author, bc.QuietReactions)
-			return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionSuccess)
+			return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionSuccess)
 		}
 
 		return postOperationFailure(
@@ -401,13 +442,13 @@ func handleReactionMerge(
 		rc.RepoOwner,
 		rc.RepoName,
 		prNum,
-		github.LabelReactionMerge,
+		LabelReactionMerge,
 	)
 
 	// Post success feedback
 	fb := feedback.NewReactionMergeSuccess(author, bc.QuietReactions)
 
-	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionSuccess)
+	return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionSuccess)
 }
 
 // handleReactionCleanup handles cleanup via ❤️ reaction.
@@ -432,7 +473,7 @@ func handleReactionCleanup(
 
 	// If cleanup failed, post error feedback
 	if fb.Type == feedback.Error {
-		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, github.ReactionError)
+		return PostFeedback(ctx, client, rc, prNum, commentID, fb.Message, ReactionError)
 	}
 
 	// Cleanup succeeded - the comment and reactions are already deleted by executeCleanup
@@ -442,7 +483,7 @@ func handleReactionCleanup(
 		rc.RepoOwner,
 		rc.RepoName,
 		prNum,
-		github.LabelReactionCleanup,
+		LabelReactionCleanup,
 	)
 
 	return nil

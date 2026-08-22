@@ -1,7 +1,6 @@
 package github_test
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,16 +22,16 @@ func TestPullRequestServiceReactionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := client.AddPullRequestReaction(
-		t.Context(), "owner", "repo", 42, github.ReactionPendingCIService,
+		t.Context(), "owner", "repo", 42, github.ReactionHooray,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if state.added != github.ReactionPendingCIService {
+	if state.added != github.ReactionHooray {
 		t.Fatalf("added reaction = %q", state.added)
 	}
 	found, err := client.HasPullRequestReaction(
 		t.Context(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
+		github.ReactionHooray,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +41,7 @@ func TestPullRequestServiceReactionLifecycle(t *testing.T) {
 	}
 	if err := client.RemovePullRequestReactionByUser(
 		t.Context(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
+		github.ReactionHooray,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func TestPullRequestServiceReactionRemovalRestartsAfterPageShift(t *testing.T) {
 	}
 	if err := client.RemovePullRequestReactionByUser(
 		t.Context(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
+		github.ReactionHooray,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -182,113 +181,6 @@ func (state *pullRequestReactionState) recordAddedReaction(
 	_, _ = w.Write([]byte(`{"id":501}`))
 }
 
-func TestHasPullRequestCommentReactionFindsBotReactionOnLaterPages(t *testing.T) {
-	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(paginatedPendingCIReactionHandler))
-	defer server.Close()
-
-	client, err := github.NewClient("test-token", server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found, err := client.HasPullRequestCommentReaction(
-		t.Context(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("bot eyes reaction was not found on later comment and reaction pages")
-	}
-}
-
-func paginatedPendingCIReactionHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/repos/owner/repo/issues/42/comments":
-		writePendingCICommentPage(w, r)
-	case "/repos/owner/repo/issues/comments/101/reactions":
-		writePendingCIReactionPage(w, r)
-	default:
-		writeEmptyPendingCIReactionPage(w, r)
-	}
-}
-
-func writePendingCICommentPage(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page != 1 {
-		_ = json.NewEncoder(w).Encode([]map[string]int{{"id": 101}})
-
-		return
-	}
-	comments := make([]map[string]int, 100)
-	for index := range comments {
-		comments[index] = map[string]int{"id": index + 1}
-	}
-	_ = json.NewEncoder(w).Encode(comments)
-}
-
-func writePendingCIReactionPage(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page != 1 {
-		_ = json.NewEncoder(w).Encode([]map[string]any{{
-			"content": "hooray", "user": map[string]any{"login": "smyklot[bot]"},
-		}})
-
-		return
-	}
-	reactions := make([]map[string]any, 100)
-	for index := range reactions {
-		reactions[index] = map[string]any{
-			"content": "eyes",
-			"user":    map[string]any{"login": fmt.Sprintf("reviewer-%d", index)},
-		}
-	}
-	_ = json.NewEncoder(w).Encode(reactions)
-}
-
-func writeEmptyPendingCIReactionPage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("page") == "1" {
-		_ = json.NewEncoder(w).Encode([]map[string]any{})
-
-		return
-	}
-	http.Error(w, "unexpected request", http.StatusNotFound)
-}
-
-func TestHasPullRequestCommentReactionIgnoresOtherReactions(t *testing.T) {
-	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/owner/repo/issues/42/comments":
-			_ = json.NewEncoder(w).Encode([]map[string]int{{"id": 101}})
-		case "/repos/owner/repo/issues/comments/101/reactions":
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"content": "eyes", "user": map[string]any{"login": "reviewer"}},
-				{"content": "+1", "user": map[string]any{"login": "smyklot[bot]"}},
-			})
-		default:
-			http.Error(w, "unexpected request", http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	client, err := github.NewClient("test-token", server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found, err := client.HasPullRequestCommentReaction(
-		context.Background(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if found {
-		t.Fatal("another user's eyes and the bot's success reaction claimed service ownership")
-	}
-}
-
 func TestRemovePullRequestCommentReactionsByUserRemovesEveryMatch(t *testing.T) {
 	t.Parallel()
 	var deleted []string
@@ -322,7 +214,7 @@ func TestRemovePullRequestCommentReactionsByUserRemovesEveryMatch(t *testing.T) 
 	}
 	if err := client.RemovePullRequestCommentReactionsByUser(
 		t.Context(), "owner", "repo", 42, "smyklot[bot]",
-		github.ReactionPendingCIService,
+		github.ReactionHooray,
 	); err != nil {
 		t.Fatal(err)
 	}
