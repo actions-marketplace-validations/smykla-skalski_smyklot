@@ -626,27 +626,6 @@ mise run deps
 mise run test
 ```
 
-### Project structure
-
-```text
-smyklot/
-├── cmd/
-│   └── github-action/       # Entrypoints: Action (default), poll, serve
-├── pkg/
-│   ├── commands/            # Command parser (slash, mention, bare)
-│   ├── config/              # Configuration management (Viper)
-│   ├── feedback/            # User feedback system (reactions, comments)
-│   ├── github/              # GitHub API client
-│   ├── githubapp/           # App and installation token minting
-│   ├── permissions/         # CODEOWNERS parser & permission checker
-│   └── webhook/             # Delivery parsing and de-duplication
-├── .github/workflows/       # GitHub Actions workflows
-├── .goreleaser.yml          # GoReleaser config for releases
-├── .mise.toml               # Tool versions and native tasks
-├── Dockerfile               # Docker image for GitHub Actions
-└── go.mod                   # Go module definition
-```
-
 ### Available tasks
 
 ```bash

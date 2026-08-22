@@ -1,11 +1,14 @@
 // Package githubtest builds the GitHub payloads and credentials the test
 // suites stand in for.
 //
-// The suites that need these live in different packages - cmd/github-action
-// exercises the entry points, pkg/github the client, pkg/webhook the parser -
-// so a Go-internal _test file cannot be shared between them. Without this
-// package each one grows its own copy of the same wire format, and the copies
-// drift.
+// The suites that need these live in different packages - cmd/smyklot
+// exercises the service, internal/bot the command engine, pkg/github the
+// client - so a Go-internal _test file cannot be shared between them. Without
+// this package each one grows its own copy of the same wire format, and the
+// copies drift.
+//
+// pkg/webhook is the exception, and builds its own: it is a library nothing in
+// this module may reach into, which depguard enforces on its tests too.
 package githubtest
 
 import (

@@ -21,14 +21,17 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 
 ## Architecture
 
-- `cmd/github-action/` — three entrypoints in one binary: the Action (`main.go`), the cron sweep (`poll.go`), and the webhook service (`serve.go`, `server.go`, `sweep.go`)
+- `cmd/smyklot/` — the cobra commands and the webhook service they start. `main.go` is the root and the Action's flags, `poll.go` and `serve.go` and `store.go` are one command each, and the rest is the long-running service: `server.go`, `sweep.go`, the panel wiring, the caches, and the four things it hands `pkg/webhook` in `deliveries.go`
+- `internal/bot/` — one pull request, one command, one answer. The layer all three entry points stand on, and the one that has to work with none of the rest of them present: a repository running the Action has no panel, no store to sweep and no worker to schedule. Nothing here imports upward, and `depguard` says so
+- `internal/pendingci/gate/` — the pending CI runtime: the loop that holds a pull request open until CI settles. A subpackage rather than a sibling because `internal/storage` imports its parent, so a sibling would have to route around that and a child does not
+- `internal/orgsync/apply/` — plans one installation's org-wide sync and applies it. Three fields, because that is what the whole subsystem read off the service it used to be part of
 - `pkg/commands/` — parses PR comments into `Command` structs; called by entrypoint handlers
 - `pkg/permissions/` — parses `.github/CODEOWNERS` (global `*` pattern only), checks if user is owner; called before approve/merge
 - `pkg/config/` — loads config via Viper (CLI flags > env vars > JSON > defaults); consumed by all handlers
 - `pkg/feedback/` — builds reaction/comment responses; called after each command execution
 - `pkg/github/` — GitHub API client (REST + GraphQL); used by all handlers for approvals, merges, reactions, comments. The only place that names go-github: `depguard` denies it everywhere else, so a new endpoint is a method here rather than an import there
 - `pkg/githubapp/` — mints and caches App JWTs and per-installation tokens; the service needs one token per installation
-- `pkg/webhook/` — parses `issue_comment` deliveries and de-duplicates them; re-exports signature verification from `go-githubauth/webhook`
+- `pkg/webhook/` — the whole webhook pipeline, as a library any GitHub App can import: signature verification, event parsing, an `Inbox` port with an in-memory implementation, the HTTP receiver, the lease loop and the worker pool. `Receiver()` hands back an already-verified handler, so `go-githubauth/webhook` is wrapped in `New` rather than re-exported — a consumer never names it. It knows GitHub and nothing about this bot; what to run is a `Handler`, what to skip is a `Screen`, what to count is an `Observer`. `depguard` denies it every other package in this module, tests included
 - `pkg/logging/` — builds the `slog` logger, carries it on the context, and redacts known secrets from every line
 - `pkg/metrics/` — the Prometheus collectors the service reports, on a registry it owns rather than the default one
 - `internal/orgsync/filemerge/` — builds the copy of a shared template one repository should hold, from bytes and a spec. Reaches nothing, remembers nothing, and returns an error rather than a fallback wherever it cannot do what it was asked
@@ -38,8 +41,8 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 - `internal/storage/open/` — picks the engine from a connection string; the only thing above the port that names one
 - `internal/storage/storagetest/` — the conformance suite both engines run, and `Seed`, which fills every table through the port
 - `internal/storage/transfer/` — copies a database between engines; behind `smyklot store migrate`
-- Data flow (Action): env vars → `run()` → client → repo config → `executeComment`
-- Data flow (service): signed delivery → `handleDelivery` → dedupe → worker → installation token → client → repo config → `executeComment`
+- Data flow (Action): env vars → `run()` → client → repo config → `bot.ExecuteComment`
+- Data flow (service): signed delivery → `webhook.Pipeline` receiver → screen → claim → lease → worker → `server.executeDelivery` → installation token → client → repo config → `bot.ExecuteCommentWithEnvironment`
 
 ## Gotchas
 
@@ -51,9 +54,11 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 - All GitHub Action inputs come via **environment variables**, not CLI args (security: no shell interpolation)
 - Workflow files use `.yaml` extension (not `.yml`) for consistency
 - `serve` **refuses to start** without `SMYKLOT_WEBHOOK_SECRET` — fail closed, or anyone reaching the port could drive the bot
-- Webhook signatures cover the **body only**; header values like `X-GitHub-Delivery` are unverified (`cmd/github-action/server.go:safeDeliveryID`)
-- Delivery dedupe currently keys on comment id + `updated_at`; service deliveries should use the durable webhook inbox instead of assuming an accepted in-memory job survives restart
+- Webhook signatures cover the **body only**; header values like `X-GitHub-Delivery` are unverified, so they are scrubbed before they reach a log line, a metric label or a row (`sanitizeDeliveryID` in `pkg/webhook/delivery.go`)
+- Delivery dedupe is the **durable inbox**, not a map: the partial unique index on `deliveries.claim_key` is the mechanism, and a claim conflict is how a redelivery is recognised. The key is GitHub's delivery GUID, which survives a redelivery; a caller that sends no `X-GitHub-Delivery` falls back to a digest of the body (`claimKey` in `pkg/webhook/delivery.go`)
+- A delivery is **claimed before it is queued**, which is what makes the queue disposable: acceptance writes a row, the lease loop feeds the workers from rows, and a process that dies loses nothing but time. An expired lease is leasable again, so recovering a crashed process's work is an optimisation rather than a requirement
 - Nothing above `internal/storage/**` may import `database/sql`, `modernc.org/sqlite` or `github.com/jackc/pgx`, and nothing outside `internal/storage/**` or `internal/storage/open/**` may import an engine package. `depguard` in `.golangci.yml` enforces both — decoupling that is not enforced decays
+- Three more seams are enforced the same way, and for the same reason. `pkg/webhook` may import nothing else in this module, tests included, or it stops being a library anybody else can take. `internal/bot` may not reach the panel, the pending CI runtime or org sync, because a repository running the Action has none of them. And the two service workers — `internal/pendingci/gate` and `internal/orgsync/apply` — may not reach each other or the panel: they share a store and nothing else, and the first import between them is somebody borrowing one helper
 - A query goes in `sqlstore` and must run on both engines. What they spell differently goes through the `Dialect`; what one does *better* goes in an override on that engine's `Store`, which embeds the shared one. The shared core is a floor, not a ceiling
 - SQLite stores timestamps as fixed-width text (`2006-01-02T15:04:05.000000000Z`) so string order equals time order. `RFC3339Nano` trims trailing zeros and silently breaks `ORDER BY` and expiry comparisons — never format a stored timestamp with it (`internal/storage/sqlstore/time.go`)
 - PostgreSQL's `?` is a jsonb operator, so `JSONHasKey` renders the **function** form `jsonb_exists(col, ?)`. The operator form would collide with placeholder rebinding
@@ -62,21 +67,24 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 - Pool pressure is deliberately **not** part of the database's health state. `InUse == Max` is a busy instant, not a fault, and a light that flapped on one would teach an operator to ignore it. `ConnectionStats.WaitCount` is the durable evidence instead - it only grows, so it records a stall the sampled counts have already forgotten
 - A read-then-write outside a transaction is only safe on SQLite, which runs one connection. Under PostgreSQL's pool each caller reads its own snapshot — this is how the session cap silently stopped holding. Lock the row (`Dialect.RowLock`) or wrap the pair
 - The PostgreSQL specs skip themselves without `SMYKLOT_TEST_POSTGRES_DSN`. `mise run db:dev` prints one; `mise run test:storage:postgres` fails if any spec skipped, because a skip is not proof
-- The `runner` key in `.github/smyklot.yaml` decides who acts, and it defaults to **`service`** — the Action stands down unless a repo sets `runner: action`. Both entry points check it, at all four places work starts: `run`, `runPoll`, `handleIssueComment`, `sweepRepo` (`cmd/github-action/runner.go`)
+- The `runner` key in `.github/smyklot.yaml` decides who acts, and it defaults to **`service`** — the Action stands down unless a repo sets `runner: action`. Both entry points check it, at all four places work starts: `run`, `runPoll`, `handleIssueComment`, `sweepRepo` (`internal/bot/runner.go`)
 - Standing down is **silent on the PR** — the other entry point has already reacted. The Action's reason goes to the job summary instead
-- `repoConfigTTL` (30s) is deliberately far shorter than `codeownersTTL` (1h) and shorter than the sweep interval. CODEOWNERS decides who may approve; `.github/smyklot.yaml` decides whether the service acts at all, so a stale copy means a rolled-back repo gets answered by both (`cmd/github-action/server.go`)
+- `repoConfigTTL` (30s) is deliberately far shorter than `codeownersTTL` (1h) and shorter than the sweep interval. CODEOWNERS decides who may approve; `.github/smyklot.yaml` decides whether the service acts at all, so a stale copy means a rolled-back repo gets answered by both (`cmd/smyklot/server.go`)
 - An unparseable `.github/smyklot.yaml` is **fail-closed with feedback** — no command runs, and the bot says why. Never fall back to defaults: the file is where `allowed_commands` is narrowed
-- `dispatch` must never send on `s.jobs` directly — use `enqueue`, which holds `queueMu` for read. `Shutdown` abandons a running handler once its deadline passes, and a bare send on the closed queue panics rather than taking `default` (`cmd/github-action/server.go`)
+- The pipeline **stops leasing before it closes the queue**, in that order: only the lease loop sends on it, so closing first would let a lease already in flight send on a closed channel. A delivery arriving after shutdown is still claimed — the row is what survives — it is simply never queued (`Pipeline.closeQueue` in `pkg/webhook/pipeline.go`)
+- A stored failure's `Retryable` says whether **that kind of error** could ever have succeeded on another attempt, not whether one was left. A GitHub timeout that used up all eight attempts is still retryable; only a refusal the policy calls terminal is not. The pipeline asks `Options.Retry` at attempt one, where the budget cannot be the reason for the answer. The panel's history pane filters on this column, so getting it wrong files every transient failure as permanent (`Pipeline.run` in `pkg/webhook/dispatcher.go`)
+- `Options.Attrs` is called **after** the screen, never before. It is where a consumer decodes the body a second time to name the pull request, and most of what GitHub sends is answered 204 by the screen — so decorating first made every discarded delivery pay for a log line nothing writes. The refusal branch decorates its own line, which is the one rejected case that still logs (`receiver.ServeHTTP` in `pkg/webhook/receiver.go`)
+- Changing the pending-CI quiet period has to reach the **database**, not just the reconciler. `Reconciler.SetPassingQuiet` changes what new decisions use; the rows already armed hold `next_attempt_at = passing_since + old period` and nothing re-reads them, so `Scheduler.RetunePassingQuiet` is what stages the durable restage. Waking the scheduler is not enough — `LeaseDue` finds nothing due. Only *lowering* the period breaks; raising it self-corrects, because the row comes due early and is rescheduled (`Gate.RetuneQuietPeriod` in `internal/pendingci/gate/gate.go`)
 - GitHub's ruleset **listing carries no rules** — `GET /repos/{o}/{r}/rulesets` answers identity, target, enforcement and source, and nothing about what is enforced. Comparing configuration against a listing entry finds every rule absent and rewrites a matching repository on every tick, so the whole object needs `GET .../rulesets/{id}` per ruleset. The listing is read with `includes_parents=true`: an organization-level ruleset is not the repository's to write or delete, and a repository-level one created beside it stacks rather than replacing it (`pkg/github/rulesets.go`)
 - A ruleset is keyed by **name and nothing else**. GitHub mints the id and permits two rulesets to share a name, so a repository holding two of one configured name is left alone rather than written to arbitrarily, and a delete action carries the id off the plan rather than resolving the name again at apply time (`internal/orgsync/rulesetplan.go`)
 - `.github/workflows/**` needs the **`workflows`** App permission on top of `contents` — GitHub refuses the push that writes one with a 422 naming it, and enforces it where the ref moves, so an unchecked plan is approved by a person and then fails at its last step for ever. Checked from the configuration before planning (`orgsync.UnpermittedConfig`) and from the subject before applying (`orgsync.UnpermittedPath`). `installationPermissions` in `pkg/github/client.go` carries only the permissions Smyklot acts on, so a new one has to be added there too or the grant never arrives
-- A `sync_repository_state` row carries **either a digest or a problem, never both**. The digest is what makes a repository settled, and a refusal is written with no digest, so `covers` re-plans it every sweep without a branch of its own — `digestFor` is a sha256 and never empty, so an empty stored one matches nothing. The reason is words rather than a flag because the panel's Sync pane is the only account of it a person ever sees; the one case that needs code is a repository which starts planning again, where nothing else would take the refusal off (`syncScope.refused` in `cmd/github-action/syncplan.go`)
+- A `sync_repository_state` row carries **either a digest or a problem, never both**. The digest is what makes a repository settled, and a refusal is written with no digest, so `covers` re-plans it every sweep without a branch of its own — `digestFor` is a sha256 and never empty, so an empty stored one matches nothing. The reason is words rather than a flag because the panel's Sync pane is the only account of it a person ever sees; the one case that needs code is a repository which starts planning again, where nothing else would take the refusal off (`syncScope.refused` in `internal/orgsync/apply/syncplan.go`)
 - Metrics live on the **admin listener**, never the webhook one — the webhook port faces the internet, and queue depth and failure reasons should not
-- Never use a request header as a metric label — the signature does not cover headers, so an unbounded value mints a time series per request (`eventLabel` in `cmd/github-action/server.go`)
+- Never use a request header as a metric label — the signature does not cover headers, so an unbounded value mints a time series per request. `Options.Events` is the one list that decides both what is worth reading and what a label may say; anything outside it is counted as `other` (`eventLabel` in `pkg/webhook/delivery.go`)
 - The GitHub client's `http.Client` has **no `Timeout`**, and that is deliberate. Retry lives in the transport, so a client-level timeout would bound all three attempts and their backoffs together — a first attempt that hung would leave the retries no time and the backoff would be spent waiting for a request that could never be made. Each attempt gets its own deadline in `retryTransport.attempt`, tied to the response body so it cannot fire while a caller is still reading (`pkg/github/retry.go`)
 - `APIError.Retryable()` is the **only** retry policy. The transport used to carry a second, narrower one covering just 429 and 5xx, so the client abandoned a secondary-rate-limit 403 that the delivery layer would have retried had it ever arrived
 - GraphQL answers a **refused** mutation with HTTP 200 and an `errors` array. Branch on the body, never the status — this is how the bot came to post "auto-merge enabled" on pull requests where the mutation had been rejected (`pkg/github/graphql.go`)
-- The service test stub 404s any path it does not route, and names it. It used to answer `200 {}`, which a list decodes as empty and an object as a zero struct, so a spec exercising an unstubbed endpoint passed while proving nothing (`cmd/github-action/githubstub_test.go`)
+- The service test stub 404s any path it does not route, and names it. It used to answer `200 {}`, which a list decodes as empty and an object as a zero struct, so a spec exercising an unstubbed endpoint passed while proving nothing (`cmd/smyklot/githubstub_test.go`)
 - Log through `logging.From(ctx)` where the work carries per-item attributes (a delivery, a repo, a PR); use `s.logger` in background loops that carry none (`probe`, `pollLoop`, `drain`). Never `log` or `fmt.Print`
 - Whoever **starts** an attribute chain seeds it — `sweep` does `logging.Into(ctx, s.logger)` itself rather than trusting its caller, so a direct call still logs where it should
 - Attach an attribute in **one** place. `pollAllPRs` owns `repo` and `processPR` owns `pr`; adding either again downstream prints it twice
@@ -111,7 +119,7 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 
 ## Code Style
 
-- Wrap errors with `fmt.Errorf` and `%w`, or with the typed constructors in `cmd/github-action/errors.go` (`NewGitHubError`, `NewInputError`, `NewConfigError`)
+- Wrap errors with `fmt.Errorf` and `%w`, or with the typed constructors in `internal/bot/errors.go` (`NewGitHubError`, `NewInputError`, `NewConfigError`)
 - Sentinel errors: `var ( ErrX = errors.New("...") )` block pattern — see `pkg/permissions/errors.go:10`
 - Test tags: `[Unit]` or `[Integration]` in Describe block — e.g., `Describe("Parser [Unit]", ...)`
 - Storage specs go in `internal/storage/storagetest`, never beside one adapter — an engine supplies a `Harness` and runs them all, which is what makes parity provable
@@ -132,7 +140,7 @@ Go + Ginkgo/Gomega, deployed as Docker-based GitHub Action.
 1. Add test in `pkg/commands/parser_test.go`
 2. Implement in `pkg/commands/parser.go`
 3. Add command type to `pkg/commands/types.go`
-4. Add handler in `cmd/github-action/main.go`
+4. Add handler in `internal/bot/command.go`
 5. Update README command table
 
 ### Adding a New Feedback Type

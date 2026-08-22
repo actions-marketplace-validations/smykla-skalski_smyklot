@@ -1,0 +1,140 @@
+package bot
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/smykla-skalski/smyklot/pkg/github"
+)
+
+type pendingCIRequirementReader interface {
+	GetRequiredStatusChecks(context.Context, string, string, string) ([]github.RequiredCheck, error)
+}
+
+type pendingCIRequirementPolicyReader interface {
+	GetRequiredCIRequirements(
+		context.Context,
+		string,
+		string,
+		string,
+	) (github.RequiredCIRequirements, error)
+}
+
+type pendingCIOwnershipReader interface {
+	GetPullRequestState(context.Context, string, string, int) (github.PullRequestState, error)
+	HasPullRequestReaction(
+		context.Context, string, string, int, string, github.ReactionType,
+	) (bool, error)
+}
+
+func PendingCIServiceOwned(
+	ctx context.Context,
+	reader pendingCIOwnershipReader,
+	owner, repository string,
+	pullRequest int,
+	botUsername string,
+) (bool, error) {
+	state, err := reader.GetPullRequestState(ctx, owner, repository, pullRequest)
+	if err != nil {
+		return false, fmt.Errorf("read pending CI ownership: %w", err)
+	}
+
+	return pendingCIServiceOwnedForState(
+		ctx, reader, owner, repository, pullRequest, botUsername, state,
+	)
+}
+
+func pendingCIServiceOwnedForState(
+	ctx context.Context,
+	reader pendingCIOwnershipReader,
+	owner, repository string,
+	pullRequest int,
+	botUsername string,
+	state github.PullRequestState,
+) (bool, error) {
+	if HasLabel(state.Labels, github.LegacyLabelPendingCIServiceOwner) {
+		return true, nil
+	}
+	owned, err := reader.HasPullRequestReaction(
+		ctx, owner, repository, pullRequest, botUsername,
+		github.ReactionPendingCIService,
+	)
+	if err != nil {
+		return false, fmt.Errorf("read pending CI service ownership: %w", err)
+	}
+
+	return owned, nil
+}
+
+func pendingCIActionOwns(
+	ctx context.Context,
+	reader pendingCIOwnershipReader,
+	owner, repository string,
+	pullRequest int,
+	label, headSHA, botUsername string,
+) (bool, error) {
+	state, err := reader.GetPullRequestState(
+		ctx, owner, repository, pullRequest,
+	)
+	if err != nil {
+		return false, fmt.Errorf("revalidate pending CI ownership: %w", err)
+	}
+
+	if !state.Open || state.HeadSHA != headSHA || !HasLabel(state.Labels, label) {
+		return false, nil
+	}
+	serviceOwned, err := pendingCIServiceOwnedForState(
+		ctx, reader, owner, repository, pullRequest, botUsername, state,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return !serviceOwned, nil
+}
+
+func pendingCIRequiredChecks(
+	ctx context.Context,
+	reader pendingCIRequirementReader,
+	owner, repository, baseBranch string,
+	requiredChecksOnly bool,
+) ([]github.RequiredCheck, error) {
+	if !requiredChecksOnly {
+		return nil, nil
+	}
+	if baseBranch == "" {
+		return nil, errors.New("cannot resolve the base branch for required checks")
+	}
+	required, err := requiredCIStatusChecks(ctx, reader, owner, repository, baseBranch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get required checks: %w", err)
+	}
+	if len(required) == 0 {
+		return nil, errors.New("the base branch has no required status checks")
+	}
+
+	return required, nil
+}
+
+func requiredCIStatusChecks(
+	ctx context.Context,
+	reader pendingCIRequirementReader,
+	owner, repository, baseBranch string,
+) ([]github.RequiredCheck, error) {
+	if policyReader, ok := reader.(pendingCIRequirementPolicyReader); ok {
+		requirements, err := policyReader.GetRequiredCIRequirements(
+			ctx, owner, repository, baseBranch,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if requirements.RequiredWorkflow {
+			return nil, ErrRequiredWorkflowsUnsupported
+		}
+
+		return requirements.StatusChecks, nil
+	}
+
+	return reader.GetRequiredStatusChecks(ctx, owner, repository, baseBranch)
+}
