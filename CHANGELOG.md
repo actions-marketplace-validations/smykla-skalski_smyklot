@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.45.3](https://github.com/smykla-skalski/smyklot/compare/v1.45.2...v1.45.3) (2026-08-22)
+
+### Bug Fixes
+
+* **panel:** repair broken UI states ([#300](https://github.com/smykla-skalski/smyklot/issues/300)) ([6df36aa](https://github.com/smykla-skalski/smyklot/commit/6df36aa20e54f0b23acc5229fce42931bbbdae35))
+
+### Code Refactoring
+
+* **webhook:** make the delivery pipeline reusable ([#299](https://github.com/smykla-skalski/smyklot/issues/299)) ([7280d4c](https://github.com/smykla-skalski/smyklot/commit/7280d4c1ac1a2162dd60ec03b836e65367f0c850))
+
 ## [1.45.2](https://github.com/smykla-skalski/smyklot/compare/v1.45.1...v1.45.2) (2026-08-22)
 
 ### Bug Fixes
