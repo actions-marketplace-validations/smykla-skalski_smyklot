@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.2](https://github.com/smykla-skalski/smyklot/compare/v1.45.1...v1.45.2) (2026-08-22)
+
+### Bug Fixes
+
+* **deps:** update dependency @tanstack/svelte-virtual to v3.13.36 ([#294](https://github.com/smykla-skalski/smyklot/issues/294)) ([27a9190](https://github.com/smykla-skalski/smyklot/commit/27a9190d80acbf8b8d63a3ec932be961b1626a24))
+* **panel:** harden recent UI changes ([#298](https://github.com/smykla-skalski/smyklot/issues/298)) ([1e42fd5](https://github.com/smykla-skalski/smyklot/commit/1e42fd5e3f341ebcfbe2179c318a17f7a48b2731))
+
 ## [1.45.1](https://github.com/smykla-skalski/smyklot/compare/v1.45.0...v1.45.1) (2026-08-22)
 
 ### Bug Fixes
