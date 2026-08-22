@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.45.1](https://github.com/smykla-skalski/smyklot/compare/v1.45.0...v1.45.1) (2026-08-22)
+
+### Bug Fixes
+
+* **panel:** real avatars, fleet-proof sync strips, unclipped empty states ([#297](https://github.com/smykla-skalski/smyklot/issues/297)) ([563e6ef](https://github.com/smykla-skalski/smyklot/commit/563e6ef4ab1fccf2b2fe34cbb404d707b41edc7d))
+
 ## [1.45.0](https://github.com/smykla-skalski/smyklot/compare/v1.44.0...v1.45.0) (2026-08-21)
 
 ### Features
