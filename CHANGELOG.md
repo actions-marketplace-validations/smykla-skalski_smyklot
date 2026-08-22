@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.45.6](https://github.com/smykla-skalski/smyklot/compare/v1.45.5...v1.45.6) (2026-08-22)
+
+### Bug Fixes
+
+* **panel:** repair production status boundaries ([#304](https://github.com/smykla-skalski/smyklot/issues/304)) ([34b02d7](https://github.com/smykla-skalski/smyklot/commit/34b02d7deec420c766c7d102942cc239c4770aa3))
+
 ## [1.45.5](https://github.com/smykla-skalski/smyklot/compare/v1.45.4...v1.45.5) (2026-08-22)
 
 ### Bug Fixes
