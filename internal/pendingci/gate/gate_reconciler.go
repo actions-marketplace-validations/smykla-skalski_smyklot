@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"path"
 	"reflect"
 	"slices"
@@ -365,7 +366,7 @@ func (reconciler *GateReconciler) block(
 	_, err := reconciler.store.UpdatePendingCIRepositoryGate(ctx, storage.PendingCIGateChange{
 		RepositoryID: gate.RepositoryID, ExpectedRevision: gate.Revision,
 		EffectiveMode: gate.EffectiveMode, Readiness: storage.PendingCIBlocked,
-		Reason: cause.Error(), AppID: gate.AppID, RulesetID: gate.RulesetID,
+		Reason: gateBlockReason(cause), AppID: gate.AppID, RulesetID: gate.RulesetID,
 		RulesetFingerprint: gate.RulesetFingerprint, ObservedAt: reconciler.now(),
 	})
 	if err != nil && !errors.Is(err, storage.ErrConflict) {
@@ -377,6 +378,94 @@ func (reconciler *GateReconciler) block(
 	}
 
 	return cause
+}
+
+// gateBlockReason turns provider failures into recovery guidance before the
+// reason is persisted for the panel. The original error still returns from
+// block, so logs and retry decisions keep GitHub's status, path, and detail.
+func gateBlockReason(cause error) string {
+	var apiErr *github.APIError
+	if !errors.As(cause, &apiErr) {
+		return cause.Error()
+	}
+
+	operation := repositoryOperation(apiErr.Path)
+	if isCheckRunOperation(operation) {
+		return checkRunBlockReason(apiErr)
+	}
+	if !isRulesetOperation(operation) && !isBranchProtectionOperation(operation) {
+		return cause.Error()
+	}
+
+	detail := strings.ToLower(apiErr.Detail)
+	switch {
+	case apiErr.Retryable():
+		return "GitHub is temporarily unavailable while Smyklot checks repository protection. " +
+			"Smyklot will retry."
+	case apiErr.StatusCode == http.StatusForbidden &&
+		isRulesetOperation(operation) &&
+		strings.Contains(detail, "upgrade to github pro"):
+		return "GitHub rulesets require GitHub Pro for private repositories. " +
+			"Upgrade the account or make this repository public."
+	case apiErr.StatusCode == http.StatusForbidden && isRulesetOperation(operation):
+		return "Smyklot cannot read this repository's rulesets. " +
+			"Check the GitHub App's administration access and the repository owner's GitHub plan."
+	case apiErr.StatusCode == http.StatusForbidden &&
+		isRequiredStatusChecksOperation(operation):
+		return "Smyklot cannot read this repository's required status checks. " +
+			"Check the GitHub App's administration access and the repository owner's GitHub plan."
+	case apiErr.StatusCode == http.StatusForbidden:
+		return "GitHub refused Smyklot access while checking repository protection. " +
+			"Check the GitHub App's repository access and permissions."
+	default:
+		return "Smyklot could not check this repository's protection settings. " +
+			"Check the GitHub App's access and try again."
+	}
+}
+
+func repositoryOperation(path string) []string {
+	path, _, _ = strings.Cut(path, "?")
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for index := 0; index+3 < len(segments); index++ {
+		if segments[index] == "repos" {
+			return segments[index+3:]
+		}
+	}
+
+	return segments
+}
+
+func isCheckRunOperation(operation []string) bool {
+	return len(operation) > 0 && operation[0] == "check-runs" ||
+		len(operation) > 2 && operation[0] == "commits" && operation[2] == "check-runs"
+}
+
+func isRulesetOperation(operation []string) bool {
+	return len(operation) > 0 && operation[0] == "rulesets" ||
+		len(operation) > 1 && operation[0] == "rules" && operation[1] == "branches"
+}
+
+func isBranchProtectionOperation(operation []string) bool {
+	return len(operation) > 2 && operation[0] == "branches" && operation[2] == "protection"
+}
+
+func isRequiredStatusChecksOperation(operation []string) bool {
+	return isBranchProtectionOperation(operation) && len(operation) > 3 &&
+		operation[3] == "required_status_checks"
+}
+
+func checkRunBlockReason(apiErr *github.APIError) string {
+	switch {
+	case apiErr.Retryable():
+		return "GitHub is temporarily unavailable while Smyklot prepares baseline checks. " +
+			"Smyklot will retry."
+	case apiErr.StatusCode == http.StatusForbidden:
+		return "Smyklot cannot manage this repository's baseline checks. " +
+			"Check the GitHub App's checks access."
+	default:
+		return "Smyklot could not prepare a baseline check for this pull request. " +
+			"Refresh the repository and try again."
+	}
 }
 
 func ruleset(
