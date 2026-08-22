@@ -1,4 +1,6 @@
 <script module lang="ts">
+  import type { SyncLabel as SavedLabel } from '../types';
+
   /**
    * GitHub's own label limits: a required name of at most 50 characters, a
    * description of at most 100, nothing unprintable, no stray edge spaces.
@@ -19,6 +21,45 @@
   }
 
   export const LABEL_LIMITS = { name: 50, desc: 100 } as const;
+
+  export interface LabelsSaveInput {
+    enabled: boolean;
+    labels: SavedLabel[];
+    allow_removal: boolean;
+    excludes: string[];
+  }
+
+  /** Serializes whole-document saves and keeps only the newest waiting state. */
+  export function createLatestLabelsSave(
+    save: (input: LabelsSaveInput) => Promise<boolean>,
+    onSaved: () => void,
+  ): (input: LabelsSaveInput) => void {
+    let queued: LabelsSaveInput | null = null;
+    let running = false;
+
+    async function drain(): Promise<void> {
+      if (running) return;
+      running = true;
+      try {
+        while (queued !== null) {
+          const input = queued;
+          queued = null;
+          if (!(await save(input))) {
+            if (queued !== null) continue;
+            return;
+          }
+          onSaved();
+        }
+      } finally {
+        running = false;
+      }
+    }
+
+    return (input) => {
+      queued = input;
+      void drain();
+    };
+  }
 </script>
 
 <script lang="ts">
@@ -31,7 +72,7 @@
    * piece. Below, the two decisions that shape what the list means: whether
    * unlisted labels are removed, and the patterns left alone either way.
    */
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
 
   import type { SyncConfig, SyncLabel } from '../types';
   import type { SyncSection } from '../routes';
@@ -43,13 +84,6 @@
   import PanePath from './PanePath.svelte';
   import PatternEntries from './PatternEntries.svelte';
   import Switch from './Switch.svelte';
-
-  export interface LabelsSaveInput {
-    enabled: boolean;
-    labels: SyncLabel[];
-    allow_removal: boolean;
-    excludes: string[];
-  }
 
   const {
     config,
@@ -85,13 +119,15 @@
       hadDesc: label.description !== undefined,
     }));
 
-  /* Derived from what is saved, then written over as somebody edits - a save
-     landing from anywhere reseeds it. */
-  let rows = $derived(toRows(config));
-  let patterns = $derived<string[]>([...(config?.excludes ?? [])]);
-
-  const enabled = $derived(config?.enabled ?? false);
-  const allowRemoval = $derived(config?.allow_removal ?? false);
+  /* One draft per mounted page. SyncView remounts this component when the
+     initial config arrives; after that, parent config advances only to carry
+     the next revision. Keeping the draft in state prevents such a response
+     from resetting an edit queued behind it. */
+  const initialConfig = untrack(() => config);
+  let rows = $state<Row[]>(toRows(initialConfig));
+  let patterns = $state<string[]>([...(initialConfig?.excludes ?? [])]);
+  let enabled = $state(initialConfig?.enabled ?? false);
+  let allowRemoval = $state(initialConfig?.allow_removal ?? false);
   const unreadable = $derived(config?.unreadable === true);
   const unavailable = $derived(config?.unavailable ?? '');
   const frozen = $derived(readOnly || unreadable || config === null);
@@ -108,16 +144,17 @@
       }));
   }
 
-  async function push(overrides: Partial<LabelsSaveInput> = {}): Promise<void> {
+  function push(overrides: Partial<LabelsSaveInput> = {}): void {
     if (config === null) return;
-    const ok = await onSave({
+    if (overrides.enabled !== undefined) enabled = overrides.enabled;
+    if (overrides.allow_removal !== undefined) allowRemoval = overrides.allow_removal;
+    queueSave({
       enabled,
       labels: toLabels(rows),
       allow_removal: allowRemoval,
       excludes: patterns.filter((pattern) => pattern.trim() !== ''),
       ...overrides,
     });
-    if (ok) whisper();
   }
 
   /* The whisper is the save receipt: one voice in the card head, on for a
@@ -131,6 +168,8 @@
     clearTimeout(savedTimer);
     savedTimer = setTimeout(() => (savedOn = false), 1400);
   }
+
+  const queueSave = createLatestLabelsSave((input) => onSave(input), whisper);
 
   /* ---------- One segment edits at a time, page-wide ---------- */
 
@@ -1030,5 +1069,25 @@
     justify-content: end;
     justify-self: end;
     min-inline-size: 0;
+  }
+
+  @media (max-width: 36rem) {
+    .card {
+      padding: var(--space-4);
+    }
+
+    .card-head {
+      flex-wrap: wrap;
+    }
+
+    .setting-row {
+      grid-auto-flow: row;
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .setting-value {
+      justify-content: start;
+      justify-self: stretch;
+    }
   }
 </style>

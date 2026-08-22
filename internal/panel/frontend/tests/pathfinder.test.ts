@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { fuzzyPath, rankPaths } from '../src/lib/pathfinder';
-import { mergedPreview, mergeSummary } from '../src/lib/filemerge';
+import { arrayRulePath, mergedPreview, mergeSummary } from '../src/lib/filemerge';
 
 describe('the path finder [Unit]', () => {
   const KNOWN = [
@@ -52,13 +52,19 @@ describe('the merge preview [Unit]', () => {
         timezone: 'Europe/Warsaw',
         packageRules: [{ groupName: 'frontend' }],
       },
-      arrays: [{ path: 'packageRules', strategy: 'append' }],
+      arrays: [{ path: '$.packageRules', strategy: 'append' }],
     });
     const parsed = JSON.parse(preview ?? '{}') as Record<string, unknown>;
 
     expect(parsed.timezone).toBe('Europe/Warsaw');
     expect(parsed.packageRules).toEqual([{ groupName: 'go modules' }, { groupName: 'frontend' }]);
     expect(parsed.automerge).toBe(false);
+  });
+
+  it('escapes every character the service path parser reserves', () => {
+    expect(arrayRulePath(['host.rules', 'foo[bar\\baz'])).toBe(
+      String.raw`$.host\.rules.foo\[bar\\baz`,
+    );
   });
 
   it('removes a key for null, never writing it as null', () => {
@@ -78,7 +84,7 @@ describe('the merge preview [Unit]', () => {
         packageRules: [{ groupName: 'frontend' }],
         automerge: null,
       },
-      arrays: [{ path: 'packageRules', strategy: 'append' }],
+      arrays: [{ path: '$.packageRules', strategy: 'append' }],
     });
 
     /* A replaced list is a changed key; only a ruled one is "listed". */

@@ -269,9 +269,7 @@ func (s *Server) getSyncFilesContext(w http.ResponseWriter, r *http.Request) {
 		if !known {
 			continue
 		}
-		if override.Enabled != nil && !*override.Enabled && filesEnabled {
-			covered--
-		}
+		covered += syncCoverageDelta(filesEnabled, override.Enabled)
 		merges = append(merges, fileMergeEntries(name, override)...)
 	}
 
@@ -288,6 +286,19 @@ func (s *Server) getSyncFilesContext(w http.ResponseWriter, r *http.Request) {
 		"known_paths":   knownSyncPaths(rows),
 		"merges":        merges,
 	})
+}
+
+// syncCoverageDelta adjusts a baseline count when a repository explicitly
+// answers differently from the installation.
+func syncCoverageDelta(defaultEnabled bool, override *bool) int {
+	if override == nil || *override == defaultEnabled {
+		return 0
+	}
+	if *override {
+		return 1
+	}
+
+	return -1
 }
 
 // fileMergeEntries reads one repository's adjustments out of its override
