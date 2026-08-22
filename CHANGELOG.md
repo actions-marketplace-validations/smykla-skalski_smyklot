@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.45.5](https://github.com/smykla-skalski/smyklot/compare/v1.45.4...v1.45.5) (2026-08-22)
+
+### Bug Fixes
+
+* **panel:** show sync editor logins ([#303](https://github.com/smykla-skalski/smyklot/issues/303)) ([8686a54](https://github.com/smykla-skalski/smyklot/commit/8686a54c11249b1878cbc01d4b7382caa2c57d0d))
+
 ## [1.45.4](https://github.com/smykla-skalski/smyklot/compare/v1.45.3...v1.45.4) (2026-08-22)
 
 ### Code Refactoring
