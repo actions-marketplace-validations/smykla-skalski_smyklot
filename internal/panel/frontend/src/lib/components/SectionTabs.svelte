@@ -1,5 +1,6 @@
 <script lang="ts">
   import { plainClick } from '#lib/follow.js';
+  import { revealInline } from '#lib/reveal-inline.js';
   import { tick } from 'svelte';
 
   /**
@@ -207,7 +208,10 @@
     if (box.width === 0) return;
     if (motion !== 'spread') share();
     const before = shown();
-    resting = { left: box.left - nav.getBoundingClientRect().left, width: box.width };
+    resting = {
+      left: box.left - nav.getBoundingClientRect().left + nav.scrollLeft,
+      width: box.width,
+    };
     bar = resting;
     if (motion === 'none' || before.width === 0) return;
     // The rect is written by the template, so the bar has to hold its new size
@@ -215,6 +219,34 @@
     await tick();
     travel(before, resting, motion);
   }
+
+  /** Keep selection visible when selection or available tabs change, never on hover. */
+  function revealCurrent(): void {
+    const link = nav?.querySelector<HTMLElement>("[aria-current='page']");
+    if (link === null || link === undefined || nav === null) return;
+    revealInline(nav, link);
+  }
+
+  $effect(() => {
+    const current = active;
+    const currentNav = nav;
+    void items;
+    if (currentNav === null) return;
+    void current;
+    revealCurrent();
+    const scrollAtRegistration = currentNav.scrollLeft;
+    let currentEffect = true;
+    // Fonts can move the selected tab after its first measurement. Preserve any
+    // scroll the reader made while they were loading; only the bar needs a new rect.
+    void document.fonts?.ready.then(() => {
+      if (!currentEffect) return;
+      if (currentNav.scrollLeft === scrollAtRegistration) revealCurrent();
+      void place('none', hovered === active);
+    });
+    return () => {
+      currentEffect = false;
+    };
+  });
 
   $effect(() => {
     const current = active;
@@ -228,17 +260,20 @@
     parked = current;
     opened = spread;
     void place(motion, spread);
-    // Fonts settle after first paint and the label widths move with them.
-    void document.fonts?.ready.then(() => place('none', spread));
     /* Nothing is cancelled here on the way out. The cleanup runs before every
        re-run as well as on unmount, and cancelling there would put the bar back
        to its parked rect a frame before `shown` reads where it actually is -
        which is the one thing that reading it was for. `travel` cancels its own
        predecessor, and an animation on a removed element stops mattering. */
   });
+
+  function resize(): void {
+    revealCurrent();
+    void place('none', hovered === active);
+  }
 </script>
 
-<svelte:window onresize={() => place('none', hovered === active)} />
+<svelte:window onresize={resize} />
 
 <nav class="section-tabs" aria-label={label} bind:this={nav}>
   <ul>
@@ -288,6 +323,9 @@
      high against the field they sit next to. */
   .section-tabs {
     box-shadow: 0 1px 0 var(--border-subtle);
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
     position: relative;
   }
 

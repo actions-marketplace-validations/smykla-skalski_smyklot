@@ -1,13 +1,21 @@
 <script lang="ts">
   import { page } from '$app/state';
 
-  const message = page.error?.message ?? 'Something went wrong';
+  import { createPanelApi } from '#lib/api.js';
+  import { readPanelBuild } from '#lib/base.js';
+  import ErrorPage from '#lib/components/ErrorPage.svelte';
+  import { basePath } from '#lib/paths.js';
+  import { getPanelSession } from '#lib/session.svelte.js';
+
+  const session = getPanelSession();
+  const api = createPanelApi(basePath, (input, init) => fetch(input, init));
+  const build = readPanelBuild(document);
+  const insidePanel = $derived(session.viewer !== null && !session.isInvitation);
+  const failure = $derived({
+    status: page.status,
+    code: '',
+    message: page.error?.message ?? 'Something went wrong',
+  });
 </script>
 
-<svelte:head>
-  <title>SMYKLOT</title>
-</svelte:head>
-
-<div style="padding: 2rem; font-family: system-ui, sans-serif; color: inherit;">
-  {message}
-</div>
+<ErrorPage {api} base={basePath} {build} {failure} {insidePanel} />

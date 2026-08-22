@@ -9,7 +9,7 @@
  *
  * The one exception is `signInUrl`, which is read synchronously to build an href.
  */
-import type { PanelApi } from '#lib/api.js';
+import { PanelApiError, type PanelApi } from '#lib/api.js';
 
 import {
   AUDIT,
@@ -22,8 +22,10 @@ import {
   REPOSITORIES,
   REPOSITORY_DETAIL,
   SYNC_CONFIGS,
+  SYNC_FILES_CONTEXT,
   SYNC_OVERRIDES,
   SYNC_PLAN,
+  SYNC_STATUS,
   TARGET,
   USERS,
 } from './fixtures.js';
@@ -97,6 +99,17 @@ export function fixtureApi(over: Partial<PanelApi> = {}): PanelApi {
     suggestUsers: async () => [],
     fetchRootOverview: async () => OVERVIEW,
     fetchRootInstallations: async () => INSTALLATIONS,
+    fetchRootTargetSettings: async () => TARGET,
+    fetchRootRepositories: async () => page(REPOSITORIES),
+    fetchRootRepository: async () => REPOSITORY_DETAIL,
+    fetchRootElevation: async () => {
+      throw new PanelApiError(404, 'not_found', 'no active elevation');
+    },
+    fetchRootTargetUsers: async () => page(USERS),
+    fetchRootTargetInvitations: async () => page(INVITATIONS),
+    fetchRootTargetUserDecisions: async () => [],
+    fetchRootTargetAudit: async () => page(AUDIT),
+    fetchRootTargetFailures: async () => page(FAILURES),
     fetchNotifications: async () => NOTIFICATIONS,
     /* The sync page reads four kinds at once through `Promise.all`, so one refusal
        leaves the whole page as a stray error line above an empty plan. Three kinds
@@ -105,6 +118,8 @@ export function fixtureApi(over: Partial<PanelApi> = {}): PanelApi {
     fetchSyncConfig: async (targetId: string, kind: string) =>
       SYNC_CONFIGS.get(`${targetId}/${kind}`) ?? emptySyncConfig(kind),
     fetchSyncPlan: async () => ({ plan: SYNC_PLAN }),
+    fetchSyncStatus: async () => SYNC_STATUS,
+    fetchSyncFilesContext: async () => SYNC_FILES_CONTEXT,
     fetchSyncOverride: async (_targetId: string, repositoryId: string, kind: string) =>
       SYNC_OVERRIDES.get(`${repositoryId}/${kind}`) ?? {
         kind,

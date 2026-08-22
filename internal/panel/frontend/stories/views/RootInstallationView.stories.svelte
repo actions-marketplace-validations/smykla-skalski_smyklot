@@ -4,7 +4,7 @@
 
   import RootInstallationView from '#lib/components/RootInstallationView.svelte';
   import { fixtureApi } from '../support/api.js';
-  import { INSTALLATIONS } from '../support/fixtures.js';
+  import { ROOT_INSTALLATION, ROOT_TARGET } from '../support/fixtures.js';
 
   /*
    * The Root console's reading of one installation. It takes its `api` as a prop, so
@@ -12,12 +12,12 @@
    * `InstallationView` does, and each reaches its own set. `fixtureApi` answers all of
    * them from the mock's data, which is the point of having one.
    */
-  const installation = INSTALLATIONS[0]!;
+  const installation = ROOT_INSTALLATION;
 
   const base = {
     installation,
     view: 'repositories' as const,
-    api: fixtureApi(),
+    api: fixtureApi({ fetchRootTargetSettings: async () => ROOT_TARGET }),
     actorLogin: 'bart',
     historySection: 'audit' as const,
     onHistorySection: fn(),
@@ -37,8 +37,8 @@
 <!--
   What the Root console shows before it has elevated into an installation, which is
   what a Root sees first and most often: the identity, the tabs, the way back to the
-  catalogue, and a body saying this view is not theirs to read yet. The button that
-  changes that is the only thing on the page that acts.
+  catalogue, and readable diagnostics with every write control locked. The access
+  button is the only thing on the page that acts.
 
   The back link is an anchor rather than a button because it is an address, and a
   colleague should be able to open it in a new tab.

@@ -18,7 +18,14 @@
  * handlers build. Those stay here, small enough to read, until there is a builder to
  * call instead.
  */
-import { DEFAULT_CONFIG, rootPanelUsers, seed, VIEWER } from '../../dev/fixtures.ts';
+import {
+  DEFAULT_CONFIG,
+  KNOWN_PATHS,
+  PSEUDO_REPO_NAMES,
+  rootPanelUsers,
+  seed,
+  VIEWER,
+} from '../../dev/fixtures.ts';
 
 import type {
   ConfigSources,
@@ -34,8 +41,10 @@ import type {
   RootRuntimeSettings,
   SecurityNotification,
   SyncConfig,
+  SyncFilesContext,
   SyncOverride,
   SyncPlan,
+  SyncStatus,
 } from '#lib/types.js';
 
 /** 2026-08-18T00:00:00Z, so every relative label in a story is stable. */
@@ -146,6 +155,14 @@ export const INVITATIONS = MOCK.invitations;
 /** The organisation installation the mock seeds, not a second description of it. */
 export const TARGET: PanelTarget = MOCK.targets[0]!.value;
 
+/** The same installation as a Root sees it before requesting temporary write access. */
+export const ROOT_TARGET: PanelTarget = {
+  ...TARGET,
+  effective_role: 'none',
+  access_source: 'root',
+  capabilities: { read: true, write: false, manage_target_users: false },
+};
+
 /**
  * What each sync kind has configured, keyed the way the mock keys it.
  *
@@ -178,8 +195,54 @@ export function emptySyncConfig(kind: string): SyncConfig {
 /** What the mock would change to bring the organisation's repositories into step. */
 export const SYNC_PLAN: SyncPlan | null = MOCK.syncPlans.get(TARGET.id) ?? null;
 
+/** The fleet state the mock serves beside the plan. */
+export const SYNC_STATUS: SyncStatus = MOCK.syncStatus.get(TARGET.id) ?? {
+  checked_at: at(0),
+  repositories: [],
+};
+
+/** The same fleet after a sweep found no drift, for settled-state stories. */
+export const SYNC_STATUS_IN_STEP: SyncStatus = {
+  checked_at: SYNC_STATUS.checked_at,
+  repositories: SYNC_STATUS.repositories.map((row) => ({
+    repository: row.repository,
+    cells: {
+      labels: { state: 'in_step' },
+      settings: { state: 'in_step' },
+      rulesets: { state: 'in_step' },
+      files: { state: 'in_step' },
+    },
+  })),
+};
+
 /** One repository's own answer about the files the organisation keeps in step. */
 export const SYNC_OVERRIDES: ReadonlyMap<string, SyncOverride> = MOCK.syncOverrides;
+
+/** The file index and repository adjustments the mock derives for the files view. */
+export const SYNC_FILES_CONTEXT: SyncFilesContext = {
+  repositories: SYNC_STATUS.repositories.length,
+  covered: SYNC_STATUS.repositories.filter((row) => row.cells.files.state !== 'off').length,
+  known_paths: KNOWN_PATHS,
+  merges: [...SYNC_OVERRIDES].flatMap(([key, override]) => {
+    const [repositoryId, kind] = key.split('/');
+    if (kind !== 'files' || repositoryId === undefined) return [];
+    const held = override.document.merges;
+    if (!Array.isArray(held)) return [];
+    const repository =
+      PSEUDO_REPO_NAMES[repositoryId] ??
+      MOCK.targets
+        .flatMap((target) => target.repositories)
+        .find((candidate) => candidate.detail.repository.id === repositoryId)?.detail.repository
+        .name ??
+      repositoryId;
+
+    return (held as Array<Record<string, unknown>>).flatMap((merge) =>
+      typeof merge.path === 'string'
+        ? [{ repository, repository_id: repositoryId, path: merge.path, merge }]
+        : [],
+    );
+  }),
+};
 
 export const OVERVIEW: RootOverview = {
   service: {
@@ -273,6 +336,31 @@ export const INSTALLATIONS: RootInstallation[] = [
     },
   }),
 ];
+
+/** The mock's seeded organisation in the Root installation list. */
+const SEEDED_ROOT_INSTALLATION: RootInstallation = {
+  id: ROOT_TARGET.id,
+  installation_id: ROOT_TARGET.installation_id,
+  type: ROOT_TARGET.type,
+  account: ROOT_TARGET.account,
+  available: true,
+  owned_by_viewer: true,
+  repository_counts: ROOT_TARGET.repository_counts,
+  delivery_health: { failed: 1, last_failure_at: at(-18 * 60_000) },
+  ownership: {
+    source: 'organization_admin',
+    status: 'fresh',
+    synced_at: at(-3 * 60_000),
+    owner_count: 2,
+    stale: false,
+  },
+};
+
+/** The same seeded organisation as a Root reads it before temporary elevation. */
+export const ROOT_INSTALLATION: RootInstallation = {
+  ...SEEDED_ROOT_INSTALLATION,
+  owned_by_viewer: false,
+};
 
 export const RUNTIME: RootRuntimeSettings = {
   behavior_defaults: { deployment: CONFIG, override: null, effective: CONFIG },
