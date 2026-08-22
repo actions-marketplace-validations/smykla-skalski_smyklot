@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.45.4](https://github.com/smykla-skalski/smyklot/compare/v1.45.3...v1.45.4) (2026-08-22)
+
+### Code Refactoring
+
+* **github:** take this bot's vocabulary out of the client ([#302](https://github.com/smykla-skalski/smyklot/issues/302)) ([cf56195](https://github.com/smykla-skalski/smyklot/commit/cf56195bb57bd05b980f5f4323ca6211de828f81))
+
 ## [1.45.3](https://github.com/smykla-skalski/smyklot/compare/v1.45.2...v1.45.3) (2026-08-22)
 
 ### Bug Fixes
