@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.46.1](https://github.com/smykla-skalski/smyklot/compare/v1.46.0...v1.46.1) (2026-08-23)
+
+### Bug Fixes
+
+* **panel:** restore section navigation ([#310](https://github.com/smykla-skalski/smyklot/issues/310)) ([8c908bf](https://github.com/smykla-skalski/smyklot/commit/8c908bf915f5285bc12dda7cee939e7b4e4ae7e2))
+
 ## [1.46.0](https://github.com/smykla-skalski/smyklot/compare/v1.45.6...v1.46.0) (2026-08-23)
 
 ### Features
