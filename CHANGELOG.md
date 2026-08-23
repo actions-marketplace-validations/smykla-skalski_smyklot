@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.46.0](https://github.com/smykla-skalski/smyklot/compare/v1.45.6...v1.46.0) (2026-08-23)
+
+### Features
+
+* **sync:** add save history and restore ([#308](https://github.com/smykla-skalski/smyklot/issues/308)) ([6f6a11b](https://github.com/smykla-skalski/smyklot/commit/6f6a11bb5673696f995d3d30322ea67e670609a8))
+
 ## [1.45.6](https://github.com/smykla-skalski/smyklot/compare/v1.45.5...v1.45.6) (2026-08-22)
 
 ### Bug Fixes
