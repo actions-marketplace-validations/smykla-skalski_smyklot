@@ -20,6 +20,11 @@ import { parsePanelRoute, type PanelRoute } from '../src/lib/routes.ts';
 const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, string> }> = [
   { route: { personal: 'inbox' }, id: '/inbox', params: {} },
   {
+    route: { account: 'acme', view: 'defaults' },
+    id: '/i/[account]/[view=panelView]',
+    params: { account: 'acme', view: 'defaults' },
+  },
+  {
     route: { account: 'acme', view: 'repositories' },
     id: '/i/[account]/[view=panelView]',
     params: { account: 'acme', view: 'repositories' },
@@ -97,7 +102,9 @@ const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, stri
     id: '/root/queue/request/[id]',
     params: { id: 'req-1' },
   },
-  { route: { rootView: 'settings' }, id: '/root/settings', params: {} },
+  { route: { rootView: 'runtime-service' }, id: '/root/runtime/service', params: {} },
+  { route: { rootView: 'runtime-database' }, id: '/root/runtime/database', params: {} },
+  { route: { rootView: 'runtime-settings' }, id: '/root/runtime/settings', params: {} },
   {
     route: { rootView: 'history-audit' },
     id: '/root/history/[[section=historySection]]',
@@ -125,6 +132,11 @@ const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, stri
     },
     id: '/root/access/[section=accessSection]/[...rest=dialogPath]',
     params: { section: 'users', rest: 'octocat/ban' },
+  },
+  {
+    route: { rootView: 'installation', account: 'acme', view: 'defaults' },
+    id: '/root/installations/[account]/[view=rootInstallationView]',
+    params: { account: 'acme', view: 'defaults' },
   },
   {
     route: { rootView: 'installation', account: 'acme', view: 'repositories' },
@@ -178,6 +190,11 @@ describe('panel addresses [Unit]', () => {
         parsePanelRoute(basePath, address),
       );
     }
+  });
+
+  it('opens the Runtime parent on its first leaf', () => {
+    expect(panelRouteAt('/root/runtime', {})).toEqual({ rootView: 'runtime-service' });
+    expect(panelRouteAt('/root/runtime/service', {})).toEqual({ rootView: 'runtime-service' });
   });
 
   it('carries a name through the address without decoding it twice', () => {

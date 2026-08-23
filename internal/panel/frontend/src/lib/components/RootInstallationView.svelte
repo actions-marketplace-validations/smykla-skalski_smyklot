@@ -1,21 +1,24 @@
 <script lang="ts">
   import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { useInterval } from 'runed';
   import { PanelApiError, type PanelApi } from '../api';
   import { dialogRoute } from '../dialog-route.svelte';
   import { formatTimestamp } from '../format';
   import { monogram } from '../identity';
+  import {
+    rebaseInstallationConflicts,
+    saveInstallationDrafts,
+  } from '../installation-settings-save';
   import { invalidateRootInstallationSettings } from '../query-client';
+  import { getSettingsDraftRegistry, type SettingsScope } from '../settings-drafts.svelte';
   import type { HistorySection, RootInstallationView } from '../routes';
   import type {
     PanelTarget,
     RepositoryDetail,
     RepositoryPageRequest,
-    RepositorySettingsInput,
     RootElevation,
     RootInstallation,
-    TargetSettingsInput,
   } from '../types';
   import FormError from './FormError.svelte';
   import StatusPill from './StatusPill.svelte';
@@ -26,6 +29,7 @@
   import Modal from './Modal.svelte';
   import RepositoryList from './RepositoryList.svelte';
   import ResultProblem from './ResultProblem.svelte';
+  import SettingsSaveComposer from './SettingsSaveComposer.svelte';
   import TargetSettings from './TargetSettings.svelte';
   import UserManagement from './UserManagement.svelte';
 
@@ -51,6 +55,15 @@
   const ELEVATION_DIALOG = 'root-elevation';
 
   const queryClient = useQueryClient();
+  const settingsDrafts = getSettingsDraftRegistry();
+  const settingsScope = $derived<SettingsScope>({
+    type: 'installation',
+    targetId: installation.id,
+  });
+  const dirtySettingsCount = $derived(settingsDrafts.dirtyControls(settingsScope).length);
+  const settingsOperation = $derived(settingsDrafts.operation(settingsScope));
+  const settingsConflict = $derived(settingsDrafts.hasConflicts(settingsScope));
+  let resolvingSettingsConflict = $state(false);
   const detailKey = $derived(['root-installations', installation.id, 'detail'] as const);
   const detailQuery = createQuery(() => ({
     queryKey: detailKey,
@@ -67,11 +80,6 @@
   const endElevationMutation = createMutation(() => ({
     mutationFn: (elevationId: string) => api.endRootElevation(elevationId),
     onSettled: () => queryClient.invalidateQueries({ queryKey: detailKey }),
-  }));
-  const targetSettingsMutation = createMutation(() => ({
-    mutationFn: (input: TargetSettingsInput) =>
-      api.updateRootTargetSettings(installation.id, input),
-    onSettled: () => invalidateRootInstallationSettings(queryClient, installation.id),
   }));
   const target = $derived<PanelTarget | null>(detailQuery.data?.target ?? null);
   const elevation = $derived<RootElevation | null>(detailQuery.data?.elevation ?? null);
@@ -170,23 +178,12 @@
     }
   }
 
-  async function updateTarget(input: TargetSettingsInput): Promise<void> {
-    await targetSettingsMutation.mutateAsync(input);
-  }
-
   function fetchRepositories(request: RepositoryPageRequest) {
     return api.fetchRootRepositories(installation.id, request);
   }
 
   function loadRepository(repositoryId: string): Promise<RepositoryDetail> {
     return api.fetchRootRepository(installation.id, repositoryId);
-  }
-
-  function updateRepository(
-    repositoryId: string,
-    input: RepositorySettingsInput,
-  ): Promise<RepositoryDetail> {
-    return api.updateRootRepositorySettings(installation.id, repositoryId, input);
   }
 
   function resetConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
@@ -197,6 +194,54 @@
     void queryClient.invalidateQueries({ queryKey: ['repositories', targetId] });
     void queryClient.invalidateQueries({ queryKey: ['root-installations'] });
     void queryClient.invalidateQueries({ queryKey: ['root-overview'] });
+  }
+
+  function settingsRestored(): void {
+    void Promise.all([
+      invalidateRootInstallationSettings(queryClient, installation.id),
+      queryClient.invalidateQueries({ queryKey: ['repository', installation.id] }),
+      queryClient.invalidateQueries({ queryKey: ['sync-override', installation.id] }),
+      queryClient.invalidateQueries({ queryKey: ['sync-plan', installation.id] }),
+      queryClient.invalidateQueries({ queryKey: ['audit', installation.id] }),
+      queryClient.invalidateQueries({ queryKey: ['audit', 'root'] }),
+    ]);
+  }
+
+  async function saveSettings(): Promise<void> {
+    if (!canWrite) return;
+    const result = await saveInstallationDrafts(
+      settingsDrafts,
+      installation.id,
+      (targetId, input) => api.saveRootInstallationSettings(targetId, input),
+    );
+    if (!result.saved) return;
+    await Promise.all([
+      invalidateRootInstallationSettings(queryClient, installation.id),
+      queryClient.invalidateQueries({ queryKey: ['sync-plan', installation.id] }),
+    ]);
+  }
+
+  function discardSettings(): void {
+    settingsDrafts.discardScope(settingsScope);
+  }
+
+  async function updateSettingsDraft(): Promise<void> {
+    if (resolvingSettingsConflict) return;
+    resolvingSettingsConflict = true;
+    await tick();
+    try {
+      rebaseInstallationConflicts(settingsDrafts, installation.id);
+      settingsDrafts.resolveExternalConflicts(settingsScope);
+      if (!settingsDrafts.hasConflicts(settingsScope)) {
+        settingsDrafts.dismissProblem(settingsScope);
+      }
+    } finally {
+      resolvingSettingsConflict = false;
+    }
+  }
+
+  function dismissSettingsNotice(): void {
+    settingsDrafts.dismissNotice(settingsScope);
   }
 
   function countdown(seconds: number): string {
@@ -317,15 +362,14 @@
         {loading ? 'Trying again…' : 'Try again'}
       </Button>
     </div>
-  {:else if target !== null && view === 'settings'}
-    <TargetSettings {target} readOnly={!canWrite} onUpdate={updateTarget} />
+  {:else if target !== null && view === 'defaults'}
+    <TargetSettings {target} readOnly={!canWrite} />
   {:else if target !== null && view === 'repositories'}
     <RepositoryList
       targetId={installation.id}
       defaultEnabled={target.repository_default_enabled}
       fetchPage={fetchRepositories}
       onLoad={loadRepository}
-      onUpdate={updateRepository}
       onResetConfigMigration={resetConfigMigration}
       onChanged={repositoryChanged}
       readOnly={!canWrite}
@@ -354,25 +398,40 @@
       section={historySection}
       fetchAudit={(request) => api.fetchRootTargetAudit(installation.id, request)}
       fetchFailures={(request) => api.fetchRootTargetFailures(installation.id, request)}
-      fetchSyncCheckpoint={api.fetchRootSyncConfigCheckpoint}
-      restoreSyncCheckpoint={api.restoreRootSyncConfigCheckpoint}
+      fetchSettingsCheckpoint={api.fetchRootInstallationSettingsCheckpoint}
+      fetchSettingsBaseline={api.fetchRootInstallationSettingsBaseline}
+      restoreSettingsCheckpoint={api.restoreRootInstallationSettingsCheckpoint}
       readOnly={!canWrite}
-      hasUnsavedSyncDrafts={false}
-      onSyncRestored={() => void load()}
+      hasUnsavedSettingsDrafts={settingsDrafts.hasDirty(settingsScope)}
+      onSettingsRestored={settingsRestored}
     />
   {:else}
     <div class="root-loading">
       <strong>This installation view is unavailable</strong>
-      <p>Return to the installation catalog and choose a supported destination.</p>
+      <p>Return to the installation catalog and choose a supported destination</p>
     </div>
   {/if}
 </section>
+
+<SettingsSaveComposer
+  count={dirtySettingsCount}
+  saving={settingsOperation.saving}
+  resolving={resolvingSettingsConflict}
+  problem={settingsOperation.problem}
+  notice={settingsOperation.notice}
+  conflict={settingsConflict}
+  readOnly={!canWrite}
+  onSave={() => void saveSettings()}
+  onDiscard={discardSettings}
+  onResolveConflict={() => void updateSettingsDraft()}
+  onDismiss={dismissSettingsNotice}
+/>
 
 <Modal
   id={ELEVATION_DIALOG}
   open={elevationModalOpen}
   title={`Elevate access to ${installation.account.display_name}`}
-  description="This grants write access for 15 minutes. It cannot be extended by activity."
+  description="This grants write access for 15 minutes. It cannot be extended by activity"
   returnFocus={elevationTrigger}
   onClose={closeElevation}
 >
@@ -380,14 +439,14 @@
     <span><Icon name="warning" size={22} /></span>
     <p>
       You do not own this installation. Every change is permanently audited and every identified
-      Owner receives an in-app security notification.
+      Owner receives an in-app security notification
     </p>
   </div>
 
   <label class="acknowledgment">
     <input type="checkbox" bind:checked={elevationAcknowledged} />
     <span>
-      I understand the consequences and want to enter audited elevated access for this installation.
+      I understand the consequences and want to enter audited elevated access for this installation
     </span>
   </label>
 

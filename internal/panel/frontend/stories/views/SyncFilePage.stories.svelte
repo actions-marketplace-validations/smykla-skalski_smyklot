@@ -3,6 +3,7 @@
   import { fn } from 'storybook/test';
 
   import SyncFilePage from '#lib/components/SyncFilePage.svelte';
+  import { buildSyncOverrideEditorEnvelope } from '#lib/repository-sync-override-settings.js';
   import type { SyncConfig, SyncFilesContext, SyncOverride } from '#lib/types.js';
 
   const NOW = Date.UTC(2026, 7, 18, 12, 0, 0);
@@ -103,12 +104,14 @@
       nowMs: NOW,
       readOnly: false,
       problem: null,
-      saving: false,
       sectionHref: (section: string) => `#/sync/${section}`,
       onOpenSection: fn(),
-      onSave: fn(),
-      fetchOverride: async () => OVERRIDE,
-      saveOverride: async () => OVERRIDE,
+      onChangeDocument: fn(() => true),
+      fetchOverride: async () => ({
+        stored: OVERRIDE,
+        envelope: buildSyncOverrideEditorEnvelope(OVERRIDE),
+      }),
+      onChangeOverride: fn(() => true),
     },
   });
 </script>
@@ -121,6 +124,8 @@
   row to open its adjustment.
 -->
 <Story name="renovate.json" />
+
+<Story name="Unsaved template" args={{ dirtyDocument: true, savedDocument: {} }} />
 
 <!-- Nobody adjusts it: the template is the whole story. -->
 <Story name="No adjustments" args={{ context: { ...CONTEXT, merges: [] } }} />

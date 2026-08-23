@@ -90,17 +90,6 @@ export function panelAddress(route: PanelRoute): string {
     });
   }
 
-  if (route.dialog !== undefined && isDialogHost(route.view)) {
-    const rest = dialogRest(route.view, route.dialog);
-    if (rest !== null) {
-      return resolve('/i/[account]/[view=dialogHostView]/[...rest=dialogPath]', {
-        account,
-        view: route.view,
-        rest,
-      });
-    }
-  }
-
   return resolve('/i/[account]/[view=panelView]', { account, view: route.view });
 }
 
@@ -116,8 +105,12 @@ function rootAddress(route: RootRoute): string {
       return resolve('/root/queue/recent');
     case 'queue-request':
       return resolve('/root/queue/request/[id]', { id: encodeURIComponent(route.request) });
-    case 'settings':
-      return resolve('/root/settings');
+    case 'runtime-settings':
+      return resolve('/root/runtime/settings');
+    case 'runtime-service':
+      return resolve('/root/runtime/service');
+    case 'runtime-database':
+      return resolve('/root/runtime/database');
     case 'history-audit':
     case 'history-failures':
       return resolve('/root/history/[[section=historySection]]', {
@@ -165,17 +158,6 @@ function rootInstallationAddress(route: RootRoute & { rootView: 'installation' }
         section: writtenSection(route.repository),
       },
     );
-  }
-
-  if (route.dialog !== undefined && isDialogHost(route.view)) {
-    const rest = dialogRest(route.view, route.dialog);
-    if (rest !== null) {
-      return resolve('/root/installations/[account]/[view=dialogHostView]/[...rest=dialogPath]', {
-        account,
-        view: route.view,
-        rest,
-      });
-    }
   }
 
   return resolve('/root/installations/[account]/[view=rootInstallationView]', {
@@ -243,8 +225,6 @@ export function panelRouteAt(
       return withView(account, 'users');
     case '/i/[account]/access/[section=accessSection]/[...rest=dialogPath]':
       return withView(account, section, undefined, dialogAt(section, params.rest));
-    case '/i/[account]/[view=dialogHostView]/[...rest=dialogPath]':
-      return withView(account, params.view, undefined, dialogAt(params.view, params.rest));
     case '/i/[account]/history/[[section=historySection]]':
       return withView(account, 'history', asSection(section));
     case '/i/[account]/sync/[section=syncSection]':
@@ -276,8 +256,14 @@ export function panelRouteAt(
       return { rootView: 'queue-recent' };
     case '/root/queue/request/[id]':
       return { rootView: 'queue-request', request: params.id ?? '' };
-    case '/root/settings':
-      return { rootView: 'settings' };
+    case '/root/runtime':
+      return { rootView: 'runtime-service' };
+    case '/root/runtime/settings':
+      return { rootView: 'runtime-settings' };
+    case '/root/runtime/service':
+      return { rootView: 'runtime-service' };
+    case '/root/runtime/database':
+      return { rootView: 'runtime-database' };
     case '/root/history/[[section=historySection]]':
       return { rootView: section === 'failures' ? 'history-failures' : 'history-audit' };
 
@@ -296,8 +282,6 @@ export function panelRouteAt(
       return rootInstallation(account, 'users');
     case '/root/installations/[account]/access/[section=accessSection]/[...rest=dialogPath]':
       return rootInstallation(account, section, undefined, dialogAt(section, params.rest));
-    case '/root/installations/[account]/[view=dialogHostView]/[...rest=dialogPath]':
-      return rootInstallation(account, params.view, undefined, dialogAt(params.view, params.rest));
     case '/root/installations/[account]/history/[[section=historySection]]':
       return rootInstallation(account, 'history', asSection(section));
     case '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]':

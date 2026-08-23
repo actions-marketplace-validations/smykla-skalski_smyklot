@@ -156,8 +156,8 @@ func scanRootAuditEvent(scanner rowScanner) (storage.AppAuditEvent, error) {
 	}
 	event.ElevationID = stringPointer(elevationID)
 	event.TargetID = stringPointer(targetID)
-	if sourceKind.String == "sync_config_checkpoint" && sourceID.Valid {
-		event.SyncConfigCheckpointID = &sourceID.Int64
+	if sourceKind.String == settingsCheckpointSourceKind && sourceID.Valid {
+		event.SettingsCheckpointID = &sourceID.Int64
 	}
 	event.Actor.AvatarURL = stringPointer(actorAvatar)
 	event.CreatedAt = createdAt.Time()

@@ -1,15 +1,35 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import SyncView from '../src/lib/components/SyncView.svelte';
-import { SyncDraftSet } from '../src/lib/sync-drafts.svelte';
-import type { SyncCell, SyncConfig, SyncPlan, SyncStatus } from '../src/lib/types';
+import { SettingsDraftRegistry } from '../src/lib/settings-drafts.svelte';
+import type { SettingsDraftStorage } from '../src/lib/settings-draft-storage';
+import type {
+  SyncCell,
+  SyncConfig,
+  SyncFilesContext,
+  SyncOverride,
+  SyncPlan,
+  SyncStatus,
+} from '../src/lib/types';
+import SyncViewHarness from './support/SyncViewHarness.svelte';
 
 /** The settings form's segmented controls measure themselves; jsdom does not. */
 class TestResizeObserver {
   observe(): void {}
   disconnect(): void {}
+}
+
+class MemoryStorage implements SettingsDraftStorage {
+  readonly values = new Map<string, string>();
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
 }
 
 /**
@@ -48,6 +68,12 @@ describe('SyncView [Component]', () => {
     };
   }
 
+  function registry(storage: SettingsDraftStorage | null = null): SettingsDraftRegistry {
+    const drafts = new SettingsDraftRegistry({ storage, now: () => 1, writerId: 'test' });
+    drafts.hydrate('viewer-1');
+    return drafts;
+  }
+
   /**
    * The view with every kind answered, and no plan waiting.
    *
@@ -66,15 +92,25 @@ describe('SyncView [Component]', () => {
       clock?: () => number;
       plan?: SyncPlan | null;
       status?: SyncStatus;
+      drafts?: SettingsDraftRegistry;
+      fileName?: string;
+      filesContext?: SyncFilesContext;
+      fetchOverride?: (
+        targetId: string,
+        repositoryId: string,
+        kind: string,
+      ) => Promise<SyncOverride>;
     } = {},
   ) {
     const answers: Record<string, SyncConfig> = { labels, settings, rulesets, files };
+    const drafts = state.drafts ?? registry();
 
-    return render(SyncView, {
+    const page = render(SyncViewHarness, {
       targetId: 'target-1',
       section,
+      fileName: state.fileName,
       readOnly: false,
-      drafts: new SyncDraftSet('target-1'),
+      drafts,
       fetchConfig: (_id: string, kind: string) => Promise.resolve(answers[kind]),
       fetchPlan: () => Promise.resolve({ plan: state.plan ?? null }),
       approvePlan: () => Promise.reject(new Error('not in this test')),
@@ -90,14 +126,159 @@ describe('SyncView [Component]', () => {
       fileHref: (path: string) => `#/sync/files/${path}`,
       onOpenFile: () => {},
       fetchFilesContext: () =>
-        Promise.resolve({ repositories: 0, covered: 0, known_paths: [], merges: [] }),
-      fetchOverride: () => Promise.reject(new Error('not in this test')),
-      saveOverride: () => Promise.reject(new Error('not in this test')),
+        Promise.resolve(
+          state.filesContext ?? { repositories: 0, covered: 0, known_paths: [], merges: [] },
+        ),
+      fetchOverride: state.fetchOverride ?? (() => Promise.reject(new Error('not in this test'))),
       clock: state.clock,
     });
+    return { page, drafts };
   }
 
   const MISSING = 'Smyklot has not been granted administration access, which settings sync needs';
+
+  it('stages labels under exact controls and marks the changed surfaces', async () => {
+    const { drafts } = mount(
+      config('labels', { labels: [{ name: 'bug', color: 'd73a4a' }] }),
+      config('settings'),
+      config('rulesets'),
+      config('files'),
+      'labels',
+    );
+
+    await screen.findByRole('heading', { name: 'Labels' });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Label sync' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove bug' }));
+
+    expect(drafts.dirtyControls().map(({ id }) => id)).toEqual([
+      'sync.labels.enabled',
+      'sync.labels.labels',
+    ]);
+    expect(document.querySelector('.kind-head')?.getAttribute('data-unsaved')).toBe('true');
+    expect(document.querySelector('.label-card')?.getAttribute('data-unsaved')).toBe('true');
+
+    expect(drafts.discardScope({ type: 'installation', targetId: 'target-1' })).toBe(1);
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('checkbox', { name: 'Label sync' }) as HTMLInputElement).checked,
+      ).toBe(false),
+    );
+    expect(screen.getByRole('button', { name: 'Remove bug' })).toBeTruthy();
+  });
+
+  it('stages a per-kind switch and document without a network write', async () => {
+    const { drafts } = mount(
+      config('labels'),
+      config('settings', { enabled: false, document: { has_wiki: false } }),
+      config('rulesets'),
+      config('files'),
+      'settings',
+    );
+
+    await screen.findByRole('heading', { name: 'Repository settings' });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Settings sync' }));
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Wiki' }));
+
+    expect(drafts.dirtyControls().map(({ id }) => id)).toEqual([
+      'sync.settings.enabled',
+      'sync.settings.document',
+    ]);
+    expect(
+      [...document.querySelectorAll<HTMLElement>('.policy-row')]
+        .find((row) => (row.textContent ?? '').includes('Wiki'))
+        ?.getAttribute('data-unsaved'),
+    ).toBe('true');
+  });
+
+  it('stages a repository file adjustment without a write request', async () => {
+    const merge = {
+      path: 'renovate.json',
+      strategy: 'deep-merge',
+      overrides: { timezone: 'Europe/Warsaw' },
+    };
+    const fetchOverride = vi.fn(() =>
+      Promise.resolve<SyncOverride>({
+        kind: 'files',
+        enabled: null,
+        document: { merges: [merge] },
+        revision: 3,
+        updated_by: 'bart',
+        updated_at: new Date(0).toISOString(),
+        unreadable: false,
+      }),
+    );
+    const { drafts } = mount(
+      config('labels'),
+      config('settings'),
+      config('rulesets'),
+      config('files', {
+        document: {
+          files: [{ path: 'renovate.json', content: '{ "timezone": "UTC" }' }],
+        },
+      }),
+      'files',
+      {
+        fileName: 'renovate.json',
+        filesContext: {
+          repositories: 1,
+          covered: 1,
+          known_paths: [],
+          merges: [
+            {
+              repository: 'repo-a',
+              repository_id: 'repo-1',
+              path: 'renovate.json',
+              merge,
+            },
+          ],
+        },
+        fetchOverride,
+      },
+    );
+
+    await screen.findByRole('heading', { name: 'renovate.json' });
+    await fireEvent.click(screen.getByRole('button', { name: /repo-a/ }));
+    const remove = await screen.findByRole('button', { name: 'Stop changing timezone' });
+    await waitFor(() => expect((remove as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(remove);
+
+    expect(fetchOverride).toHaveBeenCalledTimes(1);
+    expect(fetchOverride).toHaveBeenCalledWith('target-1', 'repo-1', 'files');
+    expect(drafts.dirtyControls().map(({ id }) => id)).toEqual([
+      'repositories.repo-1.sync.files.document',
+    ]);
+    expect(drafts.dirtyControls()[0]?.location).toEqual({
+      section: 'repositories',
+      path: ['repo-1', 'sync', 'files', 'document'],
+    });
+  });
+
+  it('overlays a persisted draft after the registry restarts', async () => {
+    const storage = new MemoryStorage();
+    const first = mount(
+      config('labels'),
+      config('settings'),
+      config('rulesets'),
+      config('files'),
+      'labels',
+      { drafts: registry(storage) },
+    );
+    await screen.findByRole('heading', { name: 'Labels' });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Label sync' }));
+    first.page.unmount();
+
+    const restarted = registry(storage);
+    expect(restarted.dirtyControlCount).toBe(1);
+    mount(config('labels'), config('settings'), config('rulesets'), config('files'), 'labels', {
+      drafts: restarted,
+    });
+
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('checkbox', { name: 'Label sync' }) as HTMLInputElement).checked,
+      ).toBe(true),
+    );
+  });
 
   function fleet(...repositories: Array<[string, SyncCell['state']]>): SyncStatus {
     return {
@@ -134,11 +315,11 @@ describe('SyncView [Component]', () => {
   it('asks for the rulesets kind and mounts its form', async () => {
     const asked: string[] = [];
 
-    render(SyncView, {
+    render(SyncViewHarness, {
       targetId: 'target-1',
       section: 'rulesets',
       readOnly: false,
-      drafts: new SyncDraftSet('target-1'),
+      drafts: registry(),
       fetchConfig: (_id: string, kind: string) => {
         asked.push(kind);
 
@@ -158,7 +339,6 @@ describe('SyncView [Component]', () => {
       fetchFilesContext: () =>
         Promise.resolve({ repositories: 0, covered: 0, known_paths: [], merges: [] }),
       fetchOverride: () => Promise.reject(new Error('not in this test')),
-      saveOverride: () => Promise.reject(new Error('not in this test')),
     });
 
     await screen.findByRole('heading', { name: 'Rulesets' });
@@ -173,11 +353,11 @@ describe('SyncView [Component]', () => {
   it('asks for the files kind and mounts its form', async () => {
     const asked: string[] = [];
 
-    render(SyncView, {
+    render(SyncViewHarness, {
       targetId: 'target-1',
       section: 'files',
       readOnly: false,
-      drafts: new SyncDraftSet('target-1'),
+      drafts: registry(),
       fetchConfig: (_id: string, kind: string) => {
         asked.push(kind);
 
@@ -197,7 +377,6 @@ describe('SyncView [Component]', () => {
       fetchFilesContext: () =>
         Promise.resolve({ repositories: 0, covered: 0, known_paths: [], merges: [] }),
       fetchOverride: () => Promise.reject(new Error('not in this test')),
-      saveOverride: () => Promise.reject(new Error('not in this test')),
     });
 
     await screen.findByRole('heading', { name: 'Shared files' });

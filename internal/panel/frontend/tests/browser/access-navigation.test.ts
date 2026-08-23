@@ -26,7 +26,6 @@ let invitationMs = Infinity;
 let usersMs = Infinity;
 const apiCalls: string[] = [];
 let keptManagementView = false;
-let legacyRedirected = false;
 let historyDefaultsNavigated = false;
 let rootAuditNavigated = false;
 let plainHoverVisible = false;
@@ -45,7 +44,7 @@ beforeAll(async () => {
   });
   const plainPointer = await inspectPointerStyles(
     page,
-    sidebarLink(page, 'Settings', 'tree-row'),
+    sidebarLink(page, 'Defaults', 'tree-row'),
     false,
   );
   const selectedPointer = await inspectPointerStyles(
@@ -91,7 +90,7 @@ beforeAll(async () => {
 
   const rootInstallation = await panel.browser.newPage({ viewport: VIEWPORT });
   try {
-    await visit(rootInstallation, `${panel.origin}/root/installations/${panel.account}/settings`, {
+    await visit(rootInstallation, `${panel.origin}/root/installations/${panel.account}/defaults`, {
       ready: '#root-page-heading',
     });
     await sidebarLink(rootInstallation, 'Audit', 'tree-kid').click();
@@ -101,23 +100,6 @@ beforeAll(async () => {
     rootAuditNavigated = true;
   } finally {
     await rootInstallation.close();
-  }
-
-  const legacy = await panel.browser.newPage({ viewport: VIEWPORT });
-  try {
-    await legacy.goto(`${panel.origin}/i/${panel.account}/users`, {
-      waitUntil: 'domcontentloaded',
-    });
-    await legacy.waitForURL((url) => url.pathname === `/i/${panel.account}/access/users`);
-    await legacy.goto(`${panel.origin}/root/installations/${panel.account}/invitations`, {
-      waitUntil: 'domcontentloaded',
-    });
-    await legacy.waitForURL(
-      (url) => url.pathname === `/root/installations/${panel.account}/access/invitations`,
-    );
-    legacyRedirected = true;
-  } finally {
-    await legacy.close();
   }
 }, 120_000);
 
@@ -165,7 +147,7 @@ async function inspectPointerStyles(
   selected: boolean,
 ): Promise<{ hover: boolean; press: boolean }> {
   const box = await link.boundingBox();
-  if (box === null) throw new Error('Settings has no sidebar box');
+  if (box === null) throw new Error('Sidebar link has no box');
   await target.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await target.waitForTimeout(100);
   const hover = await pointerStyleVisible(link, false, selected);
@@ -232,10 +214,6 @@ describe('Access sidebar navigation [Integration]', () => {
     expect(plainPressVisible, 'ordinary press').toBe(true);
     expect(selectedHoverVisible, 'selected hover').toBe(true);
     expect(selectedPressVisible, 'selected press').toBe(true);
-  });
-
-  it('redirects old flat Access links to the canonical hierarchy', () => {
-    expect(legacyRedirected).toBe(true);
   });
 
   it('opens default History leaves from outside History', () => {

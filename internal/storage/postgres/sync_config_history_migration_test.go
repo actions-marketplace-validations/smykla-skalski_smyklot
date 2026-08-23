@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/smykla-skalski/smyklot/internal/orgsync"
 	"github.com/smykla-skalski/smyklot/internal/storage/sqlstore"
 )
 
@@ -26,6 +27,7 @@ func TestSyncConfigHistoryMigrationBaselinesEveryTarget(t *testing.T) {
 		t.Fatalf("cut the migration series: %v", err)
 	}
 	db := openPool(t, ctx, scoped)
+	t.Cleanup(func() { _ = db.Close() })
 	if err := sqlstore.Migrate(ctx, db, Dialect{}, legacy); err != nil {
 		t.Fatalf("apply legacy migrations: %v", err)
 	}
@@ -54,30 +56,32 @@ id, installation_id, kind, account_id, settings_updated_at, synced_at
 		},
 		{`INSERT INTO sync_configs (
 target_id, kind, enabled, document, digest, revision, updated_by, updated_at
-) VALUES ('installation:configured', 'labels', true, '{"labels":[]}', 'labels-digest', 4,
-          'github:editor', $1)`, []any{configAt}},
+) VALUES ('installation:configured', 'labels', true, '{"labels":[]}', $1, 4,
+          'github:editor', $2)`, []any{
+			orgsync.DigestConfig(true, []byte(`{"labels":[]}`)), configAt,
+		}},
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement.query, statement.arguments...); err != nil {
 			t.Fatalf("seed pre-history state: %v\n%s", err, statement.query)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close legacy database: %v", err)
-	}
-
-	store, err := Open(ctx, scoped)
+	// Apply only the historical migration under test. The current schema later
+	// removes this superseded checkpoint implementation.
+	history, err := sqlstore.MigrationsBefore(migrations, 24)
 	if err != nil {
-		t.Fatalf("open migrated store: %v", err)
+		t.Fatalf("cut history migration series: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	if err := sqlstore.Migrate(ctx, db, Dialect{}, history); err != nil {
+		t.Fatalf("apply Sync config history migration: %v", err)
+	}
 
 	type baseline struct {
 		target, actor string
 		created       time.Time
 		items         int
 	}
-	rows, err := store.DB().QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 SELECT checkpoint.target_id, checkpoint.actor_account_id, checkpoint.created_at,
        COUNT(item.kind)
 FROM sync_config_checkpoints checkpoint
@@ -108,11 +112,11 @@ ORDER BY checkpoint.target_id`)
 	}
 
 	var targetAudit, rootAudit int
-	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_entries").
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_entries").
 		Scan(&targetAudit); err != nil {
 		t.Fatalf("count target audit: %v", err)
 	}
-	if err := store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM app_audit_events").
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM app_audit_events").
 		Scan(&rootAudit); err != nil {
 		t.Fatalf("count Root audit: %v", err)
 	}

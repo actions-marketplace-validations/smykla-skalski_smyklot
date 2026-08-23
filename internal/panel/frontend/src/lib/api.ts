@@ -19,6 +19,11 @@ import type {
   PanelTarget,
   PanelInvitation,
   InvitationPageRequest,
+  InstallationSettingsBatchInput,
+  InstallationSettingsBatchResponse,
+  SettingsCheckpoint,
+  InstallationSettingsConflict,
+  SettingsRestoreInput,
   PanelUser,
   PanelUserPageRequest,
   PanelViewer,
@@ -28,7 +33,6 @@ import type {
   PendingCIDetail,
   RepositoryDetail,
   RepositoryPageRequest,
-  RepositorySettingsInput,
   RepositorySummary,
   RootElevation,
   RootElevationInput,
@@ -40,19 +44,11 @@ import type {
   RootRuntimeSettingsInput,
   SecurityNotification,
   SyncConfig,
-  SyncConfigBatchInput,
-  SyncConfigBatchResponse,
-  SyncConfigCheckpoint,
-  SyncConfigInput,
-  SyncConfigRestoreInput,
   SyncOverride,
-  SyncOverrideInput,
-  SyncOverrideRow,
   SyncPathIndex,
   SyncPlan,
   SyncFilesContext,
   SyncStatus,
-  TargetSettingsInput,
   InvitationDays,
   InvitationSignIn,
   UpdateTargetUserInput,
@@ -65,6 +61,7 @@ export class PanelApiError extends Error {
     readonly code: string,
     message: string,
     readonly kind?: string,
+    readonly conflicts: InstallationSettingsConflict[] = [],
   ) {
     super(message);
     this.name = 'PanelApiError';
@@ -90,21 +87,35 @@ export interface PanelApi {
   ): Promise<PanelInvitation>;
   revokeRootInvitation(invitationId: string): Promise<PanelInvitation>;
   fetchRootRuntimeSettings(): Promise<RootRuntimeSettings>;
-  updateRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings>;
+  saveRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings>;
+  fetchRootRuntimeSettingsBaseline(): Promise<SettingsCheckpoint>;
+  fetchRootRuntimeSettingsCheckpoint(checkpointId: string): Promise<SettingsCheckpoint>;
+  restoreRootRuntimeSettingsCheckpoint(
+    checkpointId: string,
+    input: SettingsRestoreInput,
+  ): Promise<RootRuntimeSettings>;
   fetchRootAudit(request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
   fetchRootFailures(request: FailureHistoryRequest): Promise<Page<DeliveryFailure>>;
   fetchRootTargetSettings(targetId: string): Promise<PanelTarget>;
-  updateRootTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget>;
+  saveRootInstallationSettings(
+    targetId: string,
+    input: InstallationSettingsBatchInput,
+  ): Promise<InstallationSettingsBatchResponse>;
+  fetchRootInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
+  fetchRootInstallationSettingsCheckpoint(
+    targetId: string,
+    checkpointId: string,
+  ): Promise<SettingsCheckpoint>;
+  restoreRootInstallationSettingsCheckpoint(
+    targetId: string,
+    checkpointId: string,
+    input: SettingsRestoreInput,
+  ): Promise<InstallationSettingsBatchResponse>;
   fetchRootRepositories(
     targetId: string,
     request: RepositoryPageRequest,
   ): Promise<Page<RepositorySummary>>;
   fetchRootRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
-  updateRootRepositorySettings(
-    targetId: string,
-    repositoryId: string,
-    input: RepositorySettingsInput,
-  ): Promise<RepositoryDetail>;
   fetchRootElevation(targetId: string): Promise<RootElevation>;
   beginRootElevation(targetId: string, input: RootElevationInput): Promise<RootElevation>;
   endRootElevation(elevationId: string): Promise<RootElevation>;
@@ -131,15 +142,6 @@ export interface PanelApi {
   revokeRootTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
   fetchRootTargetUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
   fetchRootTargetAudit(targetId: string, request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
-  fetchRootSyncConfigCheckpoint(
-    targetId: string,
-    checkpointId: string,
-  ): Promise<SyncConfigCheckpoint>;
-  restoreRootSyncConfigCheckpoint(
-    targetId: string,
-    checkpointId: string,
-    input: SyncConfigRestoreInput,
-  ): Promise<SyncConfigBatchResponse>;
   fetchRootTargetFailures(
     targetId: string,
     request: FailureHistoryRequest,
@@ -172,17 +174,25 @@ export interface PanelApi {
   ): Promise<PanelInvitation>;
   revokeTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
   fetchUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
-  updateTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget>;
+  saveInstallationSettings(
+    targetId: string,
+    input: InstallationSettingsBatchInput,
+  ): Promise<InstallationSettingsBatchResponse>;
+  fetchInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
+  fetchInstallationSettingsCheckpoint(
+    targetId: string,
+    checkpointId: string,
+  ): Promise<SettingsCheckpoint>;
+  restoreInstallationSettingsCheckpoint(
+    targetId: string,
+    checkpointId: string,
+    input: SettingsRestoreInput,
+  ): Promise<InstallationSettingsBatchResponse>;
   fetchRepositories(
     targetId: string,
     request: RepositoryPageRequest,
   ): Promise<Page<RepositorySummary>>;
   fetchRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
-  updateRepositorySettings(
-    targetId: string,
-    repositoryId: string,
-    input: RepositorySettingsInput,
-  ): Promise<RepositoryDetail>;
   /**
    * Puts a refused TOML migration back on the table. A refusal is durable and
    * never expires, so this is the only way back from it.
@@ -190,23 +200,8 @@ export interface PanelApi {
   resetConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
   resetRootConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
   fetchSyncConfig(targetId: string, kind: string): Promise<SyncConfig>;
-  saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig>;
-  saveSyncConfigs(targetId: string, input: SyncConfigBatchInput): Promise<SyncConfigBatchResponse>;
-  fetchSyncConfigCheckpoint(targetId: string, checkpointId: string): Promise<SyncConfigCheckpoint>;
-  restoreSyncConfigCheckpoint(
-    targetId: string,
-    checkpointId: string,
-    input: SyncConfigRestoreInput,
-  ): Promise<SyncConfigBatchResponse>;
   fetchSyncPaths(targetId: string): Promise<SyncPathIndex>;
-  fetchSyncOverrides(targetId: string, kind: string): Promise<{ overrides: SyncOverrideRow[] }>;
   fetchSyncOverride(targetId: string, repositoryId: string, kind: string): Promise<SyncOverride>;
-  saveSyncOverride(
-    targetId: string,
-    repositoryId: string,
-    kind: string,
-    input: SyncOverrideInput,
-  ): Promise<SyncOverride>;
   fetchSyncPlan(targetId: string): Promise<{ plan: SyncPlan | null }>;
   approveSyncPlan(targetId: string, planId: string, digest: string): Promise<{ plan: SyncPlan }>;
   discardSyncPlan(targetId: string, planId: string): Promise<void>;
@@ -478,11 +473,31 @@ export function createPanelApi(
     },
 
     fetchRootRuntimeSettings(): Promise<RootRuntimeSettings> {
-      return jsonRequest('/api/v1/root/settings');
+      return jsonRequest('/api/v1/root/runtime/settings');
     },
 
-    updateRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings> {
-      return putJson('/api/v1/root/settings', input);
+    saveRootRuntimeSettings(input: RootRuntimeSettingsInput): Promise<RootRuntimeSettings> {
+      return putJson('/api/v1/root/runtime/settings', input);
+    },
+
+    fetchRootRuntimeSettingsBaseline(): Promise<SettingsCheckpoint> {
+      return documentRequest('/api/v1/root/runtime/settings/checkpoints/baseline');
+    },
+
+    fetchRootRuntimeSettingsCheckpoint(checkpointId: string): Promise<SettingsCheckpoint> {
+      return documentRequest(
+        `/api/v1/root/runtime/settings/checkpoints/${pathSegment(checkpointId)}`,
+      );
+    },
+
+    restoreRootRuntimeSettingsCheckpoint(
+      checkpointId: string,
+      input: SettingsRestoreInput,
+    ): Promise<RootRuntimeSettings> {
+      return postDocument(
+        `/api/v1/root/runtime/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
+        input,
+      );
     },
 
     fetchRootAudit(history: AuditHistoryRequest): Promise<Page<AuditEntry>> {
@@ -511,8 +526,37 @@ export function createPanelApi(
       return jsonRequest(`/api/v1/root/installations/${pathSegment(targetId)}/settings`);
     },
 
-    updateRootTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget> {
-      return putJson(`/api/v1/root/installations/${pathSegment(targetId)}/settings`, input);
+    saveRootInstallationSettings(
+      targetId: string,
+      input: InstallationSettingsBatchInput,
+    ): Promise<InstallationSettingsBatchResponse> {
+      return putDocument(`/api/v1/root/installations/${pathSegment(targetId)}/settings`, input);
+    },
+
+    fetchRootInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
+      return documentRequest(
+        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/baseline`,
+      );
+    },
+
+    fetchRootInstallationSettingsCheckpoint(
+      targetId: string,
+      checkpointId: string,
+    ): Promise<SettingsCheckpoint> {
+      return documentRequest(
+        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}`,
+      );
+    },
+
+    restoreRootInstallationSettingsCheckpoint(
+      targetId: string,
+      checkpointId: string,
+      input: SettingsRestoreInput,
+    ): Promise<InstallationSettingsBatchResponse> {
+      return postDocument(
+        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
+        input,
+      );
     },
 
     fetchRootRepositories(
@@ -530,17 +574,6 @@ export function createPanelApi(
     fetchRootRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
       return jsonRequest(
         `/api/v1/root/installations/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}`,
-      );
-    },
-
-    updateRootRepositorySettings(
-      targetId: string,
-      repositoryId: string,
-      input: RepositorySettingsInput,
-    ): Promise<RepositoryDetail> {
-      return putJson(
-        `/api/v1/root/installations/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}/settings`,
-        input,
       );
     },
 
@@ -641,26 +674,6 @@ export function createPanelApi(
       );
     },
 
-    fetchRootSyncConfigCheckpoint(
-      targetId: string,
-      checkpointId: string,
-    ): Promise<SyncConfigCheckpoint> {
-      return documentRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}`,
-      );
-    },
-
-    restoreRootSyncConfigCheckpoint(
-      targetId: string,
-      checkpointId: string,
-      input: SyncConfigRestoreInput,
-    ): Promise<SyncConfigBatchResponse> {
-      return postDocument(
-        `/api/v1/root/installations/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}/restore`,
-        input,
-      );
-    },
-
     fetchRootTargetFailures(
       targetId: string,
       history: FailureHistoryRequest,
@@ -757,8 +770,37 @@ export function createPanelApi(
       return body.decisions;
     },
 
-    updateTargetSettings(targetId: string, input: TargetSettingsInput): Promise<PanelTarget> {
-      return putJson(`/api/v1/targets/${pathSegment(targetId)}/settings`, input);
+    saveInstallationSettings(
+      targetId: string,
+      input: InstallationSettingsBatchInput,
+    ): Promise<InstallationSettingsBatchResponse> {
+      return putDocument(`/api/v1/targets/${pathSegment(targetId)}/settings`, input);
+    },
+
+    fetchInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
+      return documentRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/settings/checkpoints/baseline`,
+      );
+    },
+
+    fetchInstallationSettingsCheckpoint(
+      targetId: string,
+      checkpointId: string,
+    ): Promise<SettingsCheckpoint> {
+      return documentRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}`,
+      );
+    },
+
+    restoreInstallationSettingsCheckpoint(
+      targetId: string,
+      checkpointId: string,
+      input: SettingsRestoreInput,
+    ): Promise<InstallationSettingsBatchResponse> {
+      return postDocument(
+        `/api/v1/targets/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
+        input,
+      );
     },
 
     fetchRepositories(
@@ -776,17 +818,6 @@ export function createPanelApi(
     fetchRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
       return jsonRequest(
         `/api/v1/targets/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}`,
-      );
-    },
-
-    updateRepositorySettings(
-      targetId: string,
-      repositoryId: string,
-      input: RepositorySettingsInput,
-    ): Promise<RepositoryDetail> {
-      return putJson(
-        `/api/v1/targets/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}/settings`,
-        input,
       );
     },
 
@@ -815,48 +846,6 @@ export function createPanelApi(
       );
     },
 
-    saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig> {
-      return putDocument(
-        `/api/v1/targets/${pathSegment(targetId)}/sync/config/${pathSegment(kind)}`,
-        input,
-      );
-    },
-
-    saveSyncConfigs(
-      targetId: string,
-      input: SyncConfigBatchInput,
-    ): Promise<SyncConfigBatchResponse> {
-      return putDocument(`/api/v1/targets/${pathSegment(targetId)}/sync/config`, input);
-    },
-
-    fetchSyncConfigCheckpoint(
-      targetId: string,
-      checkpointId: string,
-    ): Promise<SyncConfigCheckpoint> {
-      return documentRequest(
-        `/api/v1/targets/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}`,
-      );
-    },
-
-    restoreSyncConfigCheckpoint(
-      targetId: string,
-      checkpointId: string,
-      input: SyncConfigRestoreInput,
-    ): Promise<SyncConfigBatchResponse> {
-      return postDocument(
-        `/api/v1/targets/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}/restore`,
-        input,
-      );
-    },
-
-    /**
-     * Every repository's answer about one kind, in one request.
-     *
-     * The page that needs it is the one about a shared file - "who adjusts
-     * this, and how" is a question about the whole installation, and the
-     * per-repository endpoint can only answer it by being asked once per
-     * repository.
-     */
     /**
      * Every path this installation's repositories are known to hold.
      *
@@ -868,29 +857,10 @@ export function createPanelApi(
       return jsonRequest(`/api/v1/targets/${pathSegment(targetId)}/sync/paths`);
     },
 
-    fetchSyncOverrides(targetId: string, kind: string): Promise<{ overrides: SyncOverrideRow[] }> {
-      return documentRequest(
-        `/api/v1/targets/${pathSegment(targetId)}/sync/overrides/${pathSegment(kind)}`,
-      );
-    },
-
     fetchSyncOverride(targetId: string, repositoryId: string, kind: string): Promise<SyncOverride> {
       return documentRequest(
         `/api/v1/targets/${pathSegment(targetId)}/repositories/` +
           `${pathSegment(repositoryId)}/sync/${pathSegment(kind)}`,
-      );
-    },
-
-    saveSyncOverride(
-      targetId: string,
-      repositoryId: string,
-      kind: string,
-      input: SyncOverrideInput,
-    ): Promise<SyncOverride> {
-      return putDocument(
-        `/api/v1/targets/${pathSegment(targetId)}/repositories/` +
-          `${pathSegment(repositoryId)}/sync/${pathSegment(kind)}`,
-        input,
       );
     },
 
@@ -1126,8 +1096,12 @@ async function readError(response: Response): Promise<PanelApiError> {
   let code = 'unknown';
   let message = describeStatus(response.status);
   let kind: string | undefined;
+  let conflicts: InstallationSettingsConflict[] = [];
   try {
-    const body = (await response.json()) as Partial<PanelErrorBody>;
+    const text = await response.text();
+    const body = JSON.parse(text) as Partial<PanelErrorBody>;
+    const literal = parseJson(text);
+    const preserved = literal === undefined ? body : (graftDocuments(body, literal) as typeof body);
     if (body.error?.code !== undefined) {
       code = body.error.code;
     }
@@ -1135,8 +1109,9 @@ async function readError(response: Response): Promise<PanelApiError> {
       message = body.error.message;
     }
     kind = body.error?.kind;
+    conflicts = preserved.error?.conflicts ?? [];
   } catch {
     // Proxies and crashes are not required to understand the panel envelope.
   }
-  return new PanelApiError(response.status, code, message, kind);
+  return new PanelApiError(response.status, code, message, kind, conflicts);
 }

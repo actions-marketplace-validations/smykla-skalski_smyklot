@@ -57,6 +57,7 @@ import {
   type RepositorySection,
   type RootInstallationView,
   type RootRoute,
+  type RootRuntimeSection,
   type RootSection,
   type SyncSection,
   type RouteDialog,
@@ -94,7 +95,7 @@ export class PanelSession {
 
   theme = $state<ThemeDisplay>('system');
   sidebarCollapsed = $state(false);
-  private lastScopedView = $state<PanelView>('settings');
+  private lastScopedView = $state<PanelView>('defaults');
   private lastScopedHistorySection = $state<HistorySection>('audit');
   /**
    * The whole page each side was last on, which is where crossing to it goes back to.
@@ -608,6 +609,14 @@ export class PanelSession {
     void this.navigate(route);
   }
 
+  selectRootRuntimeSection(section: RootRuntimeSection): void {
+    const route: RootRoute = {
+      rootView: `runtime-${section}`,
+    };
+    if (this.currentRootRoute.rootView === route.rootView) return;
+    void this.navigate(route);
+  }
+
   selectRootInstallation(account: string, nextView: RootInstallationView): void {
     const route = this.rootInstallationRoute(account, nextView);
     void this.navigate(route);
@@ -684,6 +693,12 @@ export class PanelSession {
   rootAccessHref(section: 'users' | 'invitations'): string {
     return panelAddress({
       rootView: section === 'users' ? 'access-users' : 'access-invitations',
+    });
+  }
+
+  rootRuntimeHref(section: RootRuntimeSection): string {
+    return panelAddress({
+      rootView: `runtime-${section}`,
     });
   }
 

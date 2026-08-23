@@ -60,12 +60,39 @@ describe('the page each side was left on [Unit]', () => {
     writeLastPage(
       'workspace',
       '/i/[account]/[view=panelView]',
-      { account: 'acme', view: 'settings' },
+      { account: 'acme', view: 'defaults' },
       storage,
     );
 
     expect(readLastConsolePage(storage)).toEqual({ rootView: 'installations' });
-    expect(readLastWorkspacePage(storage)).toEqual({ account: 'acme', view: 'settings' });
+    expect(readLastWorkspacePage(storage)).toEqual({ account: 'acme', view: 'defaults' });
+  });
+
+  it('drops pages remembered under removed route vocabulary', () => {
+    const storage = memoryStorage();
+    writeLastPage(
+      'workspace',
+      '/i/[account]/[view=panelView]',
+      { account: 'acme', view: 'settings' },
+      storage,
+    );
+
+    expect(readLastWorkspacePage(storage)).toBeNull();
+
+    writeLastPage('console', '/root/runtime', {}, storage);
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-service' });
+  });
+
+  it('reads back each addressable Runtime leaf', () => {
+    const storage = memoryStorage();
+    writeLastPage('console', '/root/runtime/service', {}, storage);
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-service' });
+
+    writeLastPage('console', '/root/runtime/database', {}, storage);
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-database' });
+
+    writeLastPage('console', '/root/runtime/settings', {}, storage);
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-settings' });
   });
 
   it('reads a page stored under the other side as nothing remembered', () => {
@@ -73,7 +100,7 @@ describe('the page each side was left on [Unit]', () => {
     writeLastPage(
       'console',
       '/i/[account]/[view=panelView]',
-      { account: 'acme', view: 'settings' },
+      { account: 'acme', view: 'defaults' },
       storage,
     );
 

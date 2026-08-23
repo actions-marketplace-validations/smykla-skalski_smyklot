@@ -103,7 +103,7 @@ describe('PanelSession [Unit]', () => {
 
     session.returnToPanel(true);
 
-    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/i/acme/settings`, { replace: true });
+    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/i/acme/defaults`, { replace: true });
   });
 
   it('records nothing from a page that failed to load', () => {
@@ -115,12 +115,14 @@ describe('PanelSession [Unit]', () => {
     routePage.route = { id: '/i/[account]/history/[[section=historySection]]' };
     session.syncRouteContext();
 
-    // A pasted link naming a dialog that does not exist. The address names the
+    // A pasted link naming a repository that cannot load. The address names the
     // repositories view and the chrome shows it, but the reader was never on it, so
     // Return has to take them back to where they actually were.
-    routePage.url = at('/i/acme/repositories/bogus/bogus2');
-    routePage.params = { account: 'acme', view: 'repositories', rest: 'bogus/bogus2' };
-    routePage.route = { id: '/i/[account]/[view=dialogHostView]/[...rest=dialogPath]' };
+    routePage.url = at('/i/acme/repositories/bogus');
+    routePage.params = { account: 'acme', repository: 'bogus' };
+    routePage.route = {
+      id: '/i/[account]/repositories/[repository]/[[section=repositorySection]]',
+    };
     routePage.error = { message: 'Panel view not found' };
     session.syncRouteContext();
 
@@ -145,8 +147,8 @@ describe('PanelSession [Unit]', () => {
 
     // Visiting another installation view inside Root does not replace the
     // workspace context the Return action promises to restore.
-    routePage.url = at('/root/installations/acme/settings');
-    routePage.params = { account: 'acme', view: 'settings' };
+    routePage.url = at('/root/installations/acme/defaults');
+    routePage.params = { account: 'acme', view: 'defaults' };
     routePage.route = { id: '/root/installations/[account]/[view=rootInstallationView]' };
     session.syncRouteContext();
     session.returnToPanel();
@@ -165,8 +167,8 @@ describe('PanelSession [Unit]', () => {
     openRepository(session);
 
     session.enterRoot();
-    routePage.url = at('/root/installations/acme/settings');
-    routePage.params = { account: 'acme', view: 'settings' };
+    routePage.url = at('/root/installations/acme/defaults');
+    routePage.params = { account: 'acme', view: 'defaults' };
     routePage.route = { id: '/root/installations/[account]/[view=rootInstallationView]' };
     session.syncRouteContext();
 
@@ -195,7 +197,7 @@ describe('PanelSession [Unit]', () => {
     routePage.params = {};
     routePage.route = { id: '/root' };
 
-    expect(reloaded.returnHref()).toBe(`${basePath}/i/other-org/settings`);
+    expect(reloaded.returnHref()).toBe(`${basePath}/i/other-org/defaults`);
   });
 
   it('opens the console on the page it was last left on', () => {
@@ -214,6 +216,24 @@ describe('PanelSession [Unit]', () => {
     expect(session.rootEntryHref()).toBe(`${basePath}/root/queue/recent`);
     session.enterRoot();
     expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/root/queue/recent`, {
+      replace: false,
+    });
+  });
+
+  it('navigates between the three Runtime leaves', () => {
+    const session = createSession();
+    session.viewer = { system_role: 'root' } as PanelViewer;
+    routePage.url = at('/root/runtime/database');
+    routePage.params = {};
+    routePage.route = { id: '/root/runtime/database' };
+
+    expect(session.rootValue).toBe('runtime');
+    expect(session.rootRuntimeHref('service')).toBe(`${basePath}/root/runtime/service`);
+    expect(session.rootRuntimeHref('database')).toBe(`${basePath}/root/runtime/database`);
+    expect(session.rootRuntimeHref('settings')).toBe(`${basePath}/root/runtime/settings`);
+
+    session.selectRootRuntimeSection('service');
+    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/root/runtime/service`, {
       replace: false,
     });
   });

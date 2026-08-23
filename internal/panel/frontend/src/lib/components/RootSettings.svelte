@@ -1,13 +1,29 @@
 <script lang="ts">
-  import { createMutation, createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { createQuery } from '@tanstack/svelte-query';
+  import { untrack } from 'svelte';
 
+  import { CONFIG_KEYS } from '../config';
+  import { durationParts, type DurationUnit } from '../duration';
   import { formatBytes, formatElapsed, formatLatency } from '../format';
-  import type {
-    ConfigPatch,
-    ConfigValues,
-    RootRuntimeSettings,
-    RootRuntimeSettingsInput,
-  } from '../types';
+  import type { RootRuntimeSection } from '../routes';
+  import {
+    adoptRuntimeSettings,
+    applyRuntimeConfigPatch,
+    overlayRuntimeSettings,
+    parseRuntimeSettingsDraftDocument,
+    ROOT_SETTINGS_SCOPE,
+    RUNTIME_DURATION_SPECS,
+    runtimeConfigPatch,
+    runtimeDurationEditor,
+    runtimeDurationSeconds,
+    runtimeSettingsDraftDocument,
+    stageRuntimeSettingsControl,
+    type RuntimeDurationKey,
+    type RuntimeDurationSpec,
+    type RuntimeSettingsControlId,
+  } from '../runtime-settings';
+  import { getSettingsDraftRegistry } from '../settings-drafts.svelte';
+  import type { ConfigKey, ConfigPatch, RootRuntimeSettings } from '../types';
   import Button from './Button.svelte';
   import ClippedLabel from './ClippedLabel.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
@@ -23,42 +39,73 @@
     { value: 'warn', label: 'Warn' },
     { value: 'error', label: 'Error' },
   ] as const;
-  const UNIT_SECONDS = {
-    seconds: 1,
-    minutes: 60,
-    hours: 3_600,
-    days: 86_400,
-  } as const;
-  type DurationUnit = keyof typeof UNIT_SECONDS;
   const UNIT_WORDS: Record<DurationUnit, string> = {
     seconds: 'seconds',
     minutes: 'minutes',
     hours: 'hours',
     days: 'days',
   };
+  const UNIT_SECONDS = { minutes: 60, hours: 3_600, days: 86_400 } as const;
+  const SECTION_COPY: Record<
+    RootRuntimeSection,
+    {
+      ariaLabel: string;
+      title: string;
+      subtitle: string;
+      loading: string;
+      unavailable: string;
+    }
+  > = {
+    settings: {
+      ariaLabel: 'Root runtime settings',
+      title: 'Runtime settings',
+      subtitle: 'Runtime behavior and deployment-backed defaults',
+      loading: 'Loading runtime settings…',
+      unavailable: 'Runtime settings are unavailable',
+    },
+    service: {
+      ariaLabel: 'Root service and deployment',
+      title: 'Service and deployment',
+      subtitle: 'Running service identity, listeners, endpoints, and credentials',
+      loading: 'Loading service information…',
+      unavailable: 'Service information is unavailable',
+    },
+    database: {
+      ariaLabel: 'Root database',
+      title: 'Database',
+      subtitle: 'Persistence health, capacity, and schema compatibility',
+      loading: 'Loading database status…',
+      unavailable: 'Database status is unavailable',
+    },
+  };
 
   const {
+    section,
     rootRole,
     fetchSettings,
-    updateSettings,
   }: {
+    section: RootRuntimeSection;
     rootRole: string;
     fetchSettings: () => Promise<RootRuntimeSettings>;
-    updateSettings: (input: RootRuntimeSettingsInput) => Promise<RootRuntimeSettings>;
   } = $props();
 
-  const queryClient = useQueryClient();
+  const drafts = getSettingsDraftRegistry();
   const settingsQuery = createQuery(() => ({
     queryKey: ['root-settings'],
     queryFn: fetchSettings,
   }));
-  const settingsMutation = createMutation(() => ({
-    mutationFn: updateSettings,
-    onSuccess: (updated) => queryClient.setQueryData(['root-settings'], updated),
-  }));
-  const settings = $derived<RootRuntimeSettings | null>(settingsQuery.data ?? null);
+  const canonicalSettings = $derived<RootRuntimeSettings | null>(settingsQuery.data ?? null);
+  const document = $derived(
+    canonicalSettings === null ? null : runtimeSettingsDraftDocument(drafts, canonicalSettings),
+  );
+  const settings = $derived(
+    canonicalSettings === null || document === null
+      ? null
+      : overlayRuntimeSettings(canonicalSettings, document),
+  );
   const loading = $derived(settingsQuery.isPending);
-  const saving = $derived(settingsMutation.isPending);
+  const saving = $derived(drafts.operation(ROOT_SETTINGS_SCOPE).saving);
+  const settingsDirty = $derived(drafts.hasDirty(ROOT_SETTINGS_SCOPE));
   let actionFailure = $state<string | null>(null);
   const failure = $derived(
     actionFailure ??
@@ -81,201 +128,115 @@
         ].filter(Boolean).length,
   );
 
+  const dirtyConfigKeys = $derived(
+    CONFIG_KEYS.filter((key) => controlDirty(`runtime.bot_config.${key}`)),
+  );
+
+  $effect(() => {
+    const current = canonicalSettings;
+    if (current === null) return;
+    untrack(() => adoptRuntimeSettings(drafts, current));
+  });
+
   async function load(): Promise<void> {
     actionFailure = null;
     await settingsQuery.refetch();
   }
 
-  /* ---------- The saved receipts, one per card ---------- */
+  const POLL_SPEC = RUNTIME_DURATION_SPECS.reaction_poll_interval_seconds;
+  const QUIET_SPEC = RUNTIME_DURATION_SPECS.merge_after_ci_quiet_period_seconds;
+  const PATH_INDEX_SPEC = RUNTIME_DURATION_SPECS.path_index_interval_seconds;
+  const SESSION_SPEC = RUNTIME_DURATION_SPECS.session_ttl_seconds;
 
-  let runtimeSavedOn = $state(false);
-  let runtimeTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function whisper(): void {
-    runtimeSavedOn = true;
-    clearTimeout(runtimeTimer);
-    runtimeTimer = setTimeout(() => (runtimeSavedOn = false), 1400);
+  function controlDirty(controlId: RuntimeSettingsControlId): boolean {
+    return drafts.isControlDirty(ROOT_SETTINGS_SCOPE, controlId);
   }
 
-  async function update(
-    change: Partial<
-      Pick<
-        RootRuntimeSettingsInput,
-        | 'bot_config'
-        | 'log_level'
-        | 'reaction_poll_interval_seconds'
-        | 'session_ttl_seconds'
-        | 'merge_after_ci_quiet_period_seconds'
-        | 'path_index_interval_seconds'
-      >
-    >,
-  ): Promise<void> {
-    if (settings === null || saving) return;
+  function stage(nextValue: unknown, controlId: RuntimeSettingsControlId): boolean {
+    const current = canonicalSettings;
+    const next = parseRuntimeSettingsDraftDocument(nextValue);
+    if (
+      current === null ||
+      next === null ||
+      !stageRuntimeSettingsControl(drafts, current, next, controlId)
+    ) {
+      actionFailure = 'This setting is not valid';
+      return false;
+    }
     actionFailure = null;
-    try {
-      await settingsMutation.mutateAsync({
-        bot_config: settings.behavior_defaults.override,
-        log_level: settings.log_level.override,
-        reaction_poll_interval_seconds: settings.reaction_poll_interval.override_seconds,
-        merge_after_ci_quiet_period_seconds: settings.merge_after_ci_quiet_period.override_seconds,
-        path_index_interval_seconds: settings.path_index_interval.override_seconds,
-        session_ttl_seconds: settings.session_lifetime.override_seconds,
-        expected_revision: settings.revision,
-        ...change,
-      });
-      whisper();
-    } catch (error) {
-      actionFailure = errorMessage(error);
-      throw error;
+    return true;
+  }
+
+  function updateBehavior(patch: ConfigPatch, changedKey: ConfigKey): void {
+    const current = canonicalSettings;
+    if (current === null || document === null) return;
+    stage(
+      {
+        ...document,
+        bot_config: applyRuntimeConfigPatch(current.behavior_defaults.deployment, patch),
+      },
+      `runtime.bot_config.${changedKey}`,
+    );
+  }
+
+  function setLogLevel(value: string | null): void {
+    if (document === null) return;
+    stage({ ...document, log_level: value }, 'runtime.log_level');
+  }
+
+  function durationFallback(key: RuntimeDurationKey): number {
+    if (canonicalSettings === null) return 0;
+    switch (key) {
+      case 'reaction_poll_interval_seconds':
+        return canonicalSettings.reaction_poll_interval.deployment_seconds;
+      case 'merge_after_ci_quiet_period_seconds':
+        return canonicalSettings.merge_after_ci_quiet_period.deployment_seconds;
+      case 'path_index_interval_seconds':
+        return canonicalSettings.path_index_interval.deployment_seconds;
+      case 'session_ttl_seconds':
+        return canonicalSettings.session_lifetime.deployment_seconds;
     }
   }
 
-  /* The behavior card reports through its own receipt; a refusal still lands
-     on this page's failure line. */
-  async function saveBehavior(patch: ConfigPatch): Promise<void> {
-    if (settings === null) return;
-    const botConfig =
-      Object.keys(patch).length === 0
-        ? null
-        : applyConfigPatch(settings.behavior_defaults.deployment, patch);
-    actionFailure = null;
-    try {
-      await settingsMutation.mutateAsync({
-        bot_config: botConfig,
-        log_level: settings.log_level.override,
-        reaction_poll_interval_seconds: settings.reaction_poll_interval.override_seconds,
-        merge_after_ci_quiet_period_seconds: settings.merge_after_ci_quiet_period.override_seconds,
-        path_index_interval_seconds: settings.path_index_interval.override_seconds,
-        session_ttl_seconds: settings.session_lifetime.override_seconds,
-        expected_revision: settings.revision,
-      });
-    } catch (error) {
-      actionFailure = errorMessage(error);
-      throw error;
-    }
+  function durationMaximum(spec: RuntimeDurationSpec): number {
+    return spec.key === 'path_index_interval_seconds'
+      ? (canonicalSettings?.path_index_interval.max_seconds ?? spec.maximumSeconds)
+      : spec.maximumSeconds;
   }
 
-  function quietly(work: Promise<void>): void {
-    /* update() already parked the refusal on the failure line. */
-    work.catch(() => {});
+  function durationProblem(spec: RuntimeDurationSpec): string | null {
+    if (document === null || document[spec.key].editor === null) return null;
+    return runtimeDurationSeconds(document[spec.key], spec, durationMaximum(spec)) === undefined
+      ? spec.problem
+      : null;
   }
 
-  /* ---------- The three duration rows ---------- */
-
-  interface DurationSpec {
-    /** The input change carrying this row's seconds to the service. */
-    key:
-      | 'reaction_poll_interval_seconds'
-      | 'merge_after_ci_quiet_period_seconds'
-      | 'path_index_interval_seconds'
-      | 'session_ttl_seconds';
-    units: readonly DurationUnit[];
-    min: number;
-    max: number;
-    refused: string;
+  function typeAmount(spec: RuntimeDurationSpec, value: string): void {
+    if (document === null) return;
+    const held = document[spec.key];
+    const editor = runtimeDurationEditor(held, spec, durationFallback(spec.key));
+    stage(
+      { ...document, [spec.key]: { ...held, editor: { amount: value, unit: editor.unit } } },
+      `runtime.${spec.key}`,
+    );
   }
 
-  const POLL_SPEC: DurationSpec = {
-    key: 'reaction_poll_interval_seconds',
-    units: ['seconds', 'minutes', 'hours'],
-    min: 1,
-    max: 24 * UNIT_SECONDS.hours,
-    refused: 'Reaction sweep interval must be between 1 second and 24 hours',
-  };
-  const QUIET_SPEC: DurationSpec = {
-    key: 'merge_after_ci_quiet_period_seconds',
-    units: ['seconds', 'minutes', 'hours'],
-    min: 1,
-    max: 24 * UNIT_SECONDS.hours,
-    refused: 'Merge-after-CI quiet period must be between 1 second and 24 hours',
-  };
-  const PATH_INDEX_SPEC: DurationSpec = {
-    key: 'path_index_interval_seconds',
-    units: ['minutes', 'hours', 'days'],
-    min: 60,
-    /* Replaced at save time by the bound the service sends - see boundOf. */
-    max: 7 * UNIT_SECONDS.days,
-    refused: 'Path index interval must be between 1 minute and the service ceiling',
-  };
-  const SESSION_SPEC: DurationSpec = {
-    key: 'session_ttl_seconds',
-    units: ['minutes', 'hours', 'days'],
-    min: 60,
-    max: 30 * UNIT_SECONDS.days,
-    refused: 'Session lifetime must be between 1 minute and 30 days',
-  };
-
-  /* One draft per duration row, alive only while the typing rests. */
-  const SAVE_REST_MS = 900;
-  const drafts = $state<Record<string, string>>({});
-  const draftUnits = $state<Record<string, DurationUnit>>({});
-  const timers: Record<string, ReturnType<typeof setTimeout>> = {};
-
-  function durationParts(
-    seconds: number,
-    units: readonly DurationUnit[],
-  ): {
-    amount: number;
-    unit: DurationUnit;
-  } {
-    for (const unit of [...units].reverse()) {
-      if (seconds % UNIT_SECONDS[unit] === 0 && seconds >= UNIT_SECONDS[unit]) {
-        return { amount: seconds / UNIT_SECONDS[unit], unit };
-      }
-    }
-    return { amount: seconds, unit: units[0] };
+  function pickUnit(spec: RuntimeDurationSpec, unit: DurationUnit): void {
+    if (document === null) return;
+    const held = document[spec.key];
+    const editor = runtimeDurationEditor(held, spec, durationFallback(spec.key));
+    stage(
+      { ...document, [spec.key]: { ...held, editor: { amount: editor.amount, unit } } },
+      `runtime.${spec.key}`,
+    );
   }
 
-  function shownAmount(spec: DurationSpec, seconds: number): string {
-    return drafts[spec.key] ?? durationParts(seconds, spec.units).amount.toString();
-  }
-
-  function shownUnit(spec: DurationSpec, seconds: number): DurationUnit {
-    return draftUnits[spec.key] ?? durationParts(seconds, spec.units).unit;
-  }
-
-  function typeAmount(spec: DurationSpec, seconds: number, value: string): void {
-    drafts[spec.key] = value;
-    draftUnits[spec.key] = shownUnit(spec, seconds);
-    clearTimeout(timers[spec.key]);
-    timers[spec.key] = setTimeout(() => saveDuration(spec), SAVE_REST_MS);
-  }
-
-  function pickUnit(spec: DurationSpec, seconds: number, unit: DurationUnit): void {
-    drafts[spec.key] = shownAmount(spec, seconds);
-    draftUnits[spec.key] = unit;
-    saveDuration(spec);
-  }
-
-  /** The service's own ceiling where it sends one; the spec's otherwise. */
-  function boundOf(spec: DurationSpec): number {
-    if (spec.key === 'path_index_interval_seconds') {
-      return settings?.path_index_interval.max_seconds ?? spec.max;
-    }
-    return spec.max;
-  }
-
-  function saveDuration(spec: DurationSpec): void {
-    clearTimeout(timers[spec.key]);
-    delete timers[spec.key];
-    const raw = drafts[spec.key];
-    const unit = draftUnits[spec.key];
-    if (raw === undefined || unit === undefined) return;
-    const seconds = Math.round(Number(raw) * UNIT_SECONDS[unit]);
-    if (!Number.isFinite(seconds) || seconds < spec.min || seconds > boundOf(spec)) {
-      actionFailure = spec.refused;
-      return;
-    }
-    delete drafts[spec.key];
-    delete draftUnits[spec.key];
-    quietly(update({ [spec.key]: seconds }));
-  }
-
-  function clearDrafts(spec: DurationSpec): void {
-    clearTimeout(timers[spec.key]);
-    delete timers[spec.key];
-    delete drafts[spec.key];
-    delete draftUnits[spec.key];
+  function setDuration(spec: RuntimeDurationSpec, seconds: number | null): void {
+    if (document === null) return;
+    stage(
+      { ...document, [spec.key]: { override_seconds: seconds, editor: null } },
+      `runtime.${spec.key}`,
+    );
   }
 
   function formatDuration(seconds: number, units: readonly DurationUnit[]): string {
@@ -283,10 +244,6 @@
     const { amount, unit } = durationParts(seconds, units);
     const word = UNIT_WORDS[unit];
     return `${amount} ${amount === 1 ? word.slice(0, -1) : word}`;
-  }
-
-  function applyConfigPatch(deployment: ConfigValues, patch: ConfigPatch): ConfigValues {
-    return JSON.parse(JSON.stringify({ ...deployment, ...patch })) as ConfigValues;
   }
 
   function capitalize(value: string): string {
@@ -300,21 +257,23 @@
     const minutes = Math.floor(seconds / UNIT_SECONDS.minutes);
     return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
   }
-
-  function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
 </script>
 
-{#snippet durationValue(spec: DurationSpec, overrideSeconds: number, label: string)}
+{#snippet durationValue(spec: RuntimeDurationSpec, label: string)}
+  {@const value = document?.[spec.key]}
+  {@const editor =
+    value === undefined
+      ? { amount: '', unit: spec.units[0] }
+      : runtimeDurationEditor(value, spec, durationFallback(spec.key))}
   <input
     class="num-inline"
     inputmode="numeric"
+    maxlength="32"
     aria-label="{label} amount"
-    value={shownAmount(spec, overrideSeconds)}
-    disabled={saving && drafts[spec.key] === undefined}
-    oninput={(event) => typeAmount(spec, overrideSeconds, event.currentTarget.value)}
-    onblur={() => saveDuration(spec)}
+    aria-invalid={durationProblem(spec) !== null}
+    value={editor.amount}
+    disabled={saving}
+    oninput={(event) => typeAmount(spec, event.currentTarget.value)}
   />
   <Popover role="listbox" label="{label} unit" align="end" itemSelector=".menu-item">
     {#snippet trigger(attributes)}
@@ -325,7 +284,7 @@
         aria-label="{label} unit"
         disabled={saving}
       >
-        <span class="t">{UNIT_WORDS[shownUnit(spec, overrideSeconds)]}</span>
+        <span class="t">{UNIT_WORDS[editor.unit]}</span>
       </button>
     {/snippet}
     <div class="menu-list">
@@ -333,11 +292,11 @@
         <button
           class="menu-item"
           role="option"
-          aria-selected={shownUnit(spec, overrideSeconds) === unit}
-          onclick={() => pickUnit(spec, overrideSeconds, unit)}
+          aria-selected={editor.unit === unit}
+          onclick={() => pickUnit(spec, unit)}
         >
           <span class="menu-check">
-            {#if shownUnit(spec, overrideSeconds) === unit}<Icon name="check" size={16} />{/if}
+            {#if editor.unit === unit}<Icon name="check" size={16} />{/if}
           </span>
           <ClippedLabel class="mi-label" text={UNIT_WORDS[unit]} />
         </button>
@@ -346,19 +305,21 @@
   </Popover>
 {/snippet}
 
-<section class="root-settings" aria-label="Root runtime settings">
+<section class="root-settings" aria-label={SECTION_COPY[section].ariaLabel}>
   <RootPageHeader
     role={rootRole}
-    title="Settings"
-    subtitle="Runtime behavior and deployment-backed defaults"
+    title={SECTION_COPY[section].title}
+    subtitle={SECTION_COPY[section].subtitle}
   >
-    <StatusPill dot live>Changes apply live</StatusPill>
+    {#if section === 'settings'}
+      <StatusPill dot={settingsDirty}>Changes wait for Save</StatusPill>
+    {/if}
   </RootPageHeader>
   {#if loading && settings === null}
-    <div class="settings-state" role="status">Loading runtime settings…</div>
+    <div class="settings-state" role="status">{SECTION_COPY[section].loading}</div>
   {:else if settings === null}
     <div class="settings-state settings-error" role="alert">
-      <strong>Runtime settings are unavailable</strong>
+      <strong>{SECTION_COPY[section].unavailable}</strong>
       <span>{failure}</span>
       <Button onclick={() => void load()}>Try again</Button>
     </div>
@@ -368,484 +329,474 @@
       <FormError message={failure} />
     {/if}
 
-    <ConfigEditor
-      patch={current.behavior_defaults.override === null
-        ? {}
-        : (Object.fromEntries(
-            Object.entries(current.behavior_defaults.override).filter(
-              ([key, value]) =>
-                JSON.stringify(value) !==
-                JSON.stringify(current.behavior_defaults.deployment[key as keyof ConfigValues]),
-            ),
-          ) as ConfigPatch)}
-      inherited={current.behavior_defaults.deployment}
-      scope="runtime"
-      idPrefix="root"
-      disabled={saving}
-      onSave={saveBehavior}
-    />
+    {#if section === 'settings'}
+      <ConfigEditor
+        patch={runtimeConfigPatch(
+          current.behavior_defaults.deployment,
+          current.behavior_defaults.override,
+        )}
+        inherited={current.behavior_defaults.deployment}
+        scope="runtime"
+        idPrefix="root"
+        disabled={saving}
+        dirtyKeys={dirtyConfigKeys}
+        onChange={updateBehavior}
+      />
 
-    <section class="card group-card" aria-labelledby="root-runtime">
-      <div class="group-head">
-        <h3 class="group-name" id="root-runtime">Runtime</h3>
-        <span class="save-whisper" class:is-on={runtimeSavedOn} role="status"
-          ><Icon name="check" size={12} /><span class="t">Saved</span></span
-        >
-        <span class="group-tally">{runtimeOverridden} of 5 overridden</span>
-      </div>
-      <p class="group-note">Applied to the running process without a restart</p>
-      <div class="policy-rows">
-        <div class="policy-row">
-          <span class="setting-say">
-            <span class="setting-name">Log level</span>
-            <span class="setting-why">Updates the process logger without restarting Smyklot</span>
-          </span>
-          {#if current.log_level.override === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - {capitalize(current.log_level.deployment)}</span
-              >
-            </span>
-            <button
-              class="setting-clear"
-              title="Override the deployment log level"
-              disabled={saving}
-              onclick={() => quietly(update({ log_level: current.log_level.deployment }))}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else}
-            <span class="policy-value">
-              <Popover
-                role="listbox"
-                label="Log level choices"
-                align="end"
-                itemSelector=".menu-item"
-              >
-                {#snippet trigger(attributes)}
-                  <button
-                    {...attributes}
-                    class="value-select"
-                    type="button"
-                    aria-label="Runtime log level"
-                    disabled={saving}
-                  >
-                    <span class="t"
-                      >{capitalize(
-                        current.log_level.override ?? current.log_level.deployment,
-                      )}</span
-                    >
-                  </button>
-                {/snippet}
-                <div class="menu-list">
-                  {#each LOG_LEVELS as option (option.value)}
-                    <button
-                      class="menu-item"
-                      role="option"
-                      aria-selected={current.log_level.override === option.value}
-                      onclick={() => quietly(update({ log_level: option.value }))}
-                    >
-                      <span class="menu-check">
-                        {#if current.log_level.override === option.value}<Icon
-                            name="check"
-                            size={16}
-                          />{/if}
-                      </span>
-                      <ClippedLabel class="mi-label" text={option.label} />
-                    </button>
-                  {/each}
-                </div>
-              </Popover>
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => quietly(update({ log_level: null }))}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
+      <section class="card group-card" aria-labelledby="root-runtime">
+        <div class="group-head">
+          <h3 class="group-name" id="root-runtime">Runtime</h3>
+          <span class="group-tally">{runtimeOverridden} of 5 overridden</span>
         </div>
-
-        <div class="policy-row">
-          <span class="setting-say">
-            <span class="setting-name">Reaction sweep</span>
-            <span class="setting-why"
-              >Checks reaction changes GitHub does not deliver through webhooks. Zero turns the
-              sweep off</span
-            >
-          </span>
-          {#if current.reaction_poll_interval.override_seconds === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - every {formatDuration(
-                  current.reaction_poll_interval.deployment_seconds,
-                  POLL_SPEC.units,
-                )}</span
-              >
+        <p class="group-note">Applied to the running process without a restart</p>
+        <div class="policy-rows">
+          <div
+            class={['policy-row', { 'is-unsaved': controlDirty('runtime.log_level') }]}
+            data-unsaved={controlDirty('runtime.log_level') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Log level</span>
+              <span class="setting-why">Updates the process logger without restarting Smyklot</span>
             </span>
-            <button
-              class="setting-clear"
-              title="Override the deployment sweep interval"
-              disabled={saving}
-              onclick={() =>
-                quietly(
-                  update({
-                    reaction_poll_interval_seconds:
-                      current.reaction_poll_interval.deployment_seconds,
-                  }),
-                )}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else if current.reaction_poll_interval.override_seconds === 0}
-            <span class="policy-value">
-              <span class="value-word">off</span>
-              <Button
-                tone="quiet"
+            {#if current.log_level.override === null}
+              <span class="policy-value">
+                <span class="setting-unmanaged"
+                  >Follows the deployment - {capitalize(current.log_level.deployment)}</span
+                >
+              </span>
+              <button
+                class="setting-clear"
+                title="Override the deployment log level"
+                disabled={saving}
+                onclick={() => setLogLevel(current.log_level.deployment)}
+              >
+                <Icon name="plus" size={10} />
+              </button>
+            {:else}
+              <span class="policy-value">
+                <Popover
+                  role="listbox"
+                  label="Log level choices"
+                  align="end"
+                  itemSelector=".menu-item"
+                >
+                  {#snippet trigger(attributes)}
+                    <button
+                      {...attributes}
+                      class="value-select"
+                      type="button"
+                      aria-label="Runtime log level"
+                      disabled={saving}
+                    >
+                      <span class="t"
+                        >{capitalize(
+                          current.log_level.override ?? current.log_level.deployment,
+                        )}</span
+                      >
+                    </button>
+                  {/snippet}
+                  <div class="menu-list">
+                    {#each LOG_LEVELS as option (option.value)}
+                      <button
+                        class="menu-item"
+                        role="option"
+                        aria-selected={current.log_level.override === option.value}
+                        onclick={() => setLogLevel(option.value)}
+                      >
+                        <span class="menu-check">
+                          {#if current.log_level.override === option.value}<Icon
+                              name="check"
+                              size={16}
+                            />{/if}
+                        </span>
+                        <ClippedLabel class="mi-label" text={option.label} />
+                      </button>
+                    {/each}
+                  </div>
+                </Popover>
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
+                disabled={saving}
+                onclick={() => setLogLevel(null)}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            {/if}
+          </div>
+
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('runtime.reaction_poll_interval_seconds'),
+                'is-invalid': durationProblem(POLL_SPEC) !== null,
+              },
+            ]}
+            data-unsaved={controlDirty('runtime.reaction_poll_interval_seconds') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Reaction sweep</span>
+              <span class="setting-why"
+                >Checks reaction changes GitHub does not deliver through webhooks. Zero turns the
+                sweep off</span
+              >
+              {#if durationProblem(POLL_SPEC) !== null}
+                <span class="setting-problem">{durationProblem(POLL_SPEC)}</span>
+              {/if}
+            </span>
+            {#if current.reaction_poll_interval.override_seconds === null}
+              <span class="policy-value">
+                <span class="setting-unmanaged"
+                  >Follows the deployment - every {formatDuration(
+                    current.reaction_poll_interval.deployment_seconds,
+                    POLL_SPEC.units,
+                  )}</span
+                >
+              </span>
+              <button
+                class="setting-clear"
+                title="Override the deployment sweep interval"
                 disabled={saving}
                 onclick={() =>
-                  quietly(
-                    update({
-                      reaction_poll_interval_seconds: Math.max(
-                        current.reaction_poll_interval.deployment_seconds,
-                        UNIT_SECONDS.minutes,
-                      ),
-                    }),
-                  )}
+                  setDuration(POLL_SPEC, current.reaction_poll_interval.deployment_seconds)}
               >
-                Turn on
-              </Button>
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => quietly(update({ reaction_poll_interval_seconds: null }))}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {:else}
-            <span class="policy-value">
-              {@render durationValue(
-                POLL_SPEC,
-                current.reaction_poll_interval.override_seconds,
-                'Reaction sweep interval',
-              )}
-              <Button
-                tone="quiet"
+                <Icon name="plus" size={10} />
+              </button>
+            {:else if current.reaction_poll_interval.override_seconds === 0}
+              <span class="policy-value">
+                <span class="value-word">off</span>
+                <Button
+                  tone="quiet"
+                  disabled={saving}
+                  onclick={() =>
+                    setDuration(
+                      POLL_SPEC,
+                      Math.max(current.reaction_poll_interval.deployment_seconds, 60),
+                    )}
+                >
+                  Turn on
+                </Button>
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
                 disabled={saving}
-                onclick={() => {
-                  clearDrafts(POLL_SPEC);
-                  quietly(update({ reaction_poll_interval_seconds: 0 }));
-                }}
+                onclick={() => setDuration(POLL_SPEC, null)}
               >
-                Turn off
-              </Button>
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => {
-                clearDrafts(POLL_SPEC);
-                quietly(update({ reaction_poll_interval_seconds: null }));
-              }}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
-        </div>
-
-        <div class="policy-row">
-          <span class="setting-say">
-            <span class="setting-name">Merge after CI</span>
-            <span class="setting-why"
-              >Requires checks to remain unchanged and passing before Smyklot merges</span
-            >
-          </span>
-          {#if current.merge_after_ci_quiet_period.override_seconds === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - {formatDuration(
-                  current.merge_after_ci_quiet_period.deployment_seconds,
-                  QUIET_SPEC.units,
-                )}</span
+                <Icon name="close" size={10} />
+              </button>
+            {:else}
+              <span class="policy-value">
+                {@render durationValue(POLL_SPEC, 'Reaction sweep interval')}
+                <Button tone="quiet" disabled={saving} onclick={() => setDuration(POLL_SPEC, 0)}>
+                  Turn off
+                </Button>
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
+                disabled={saving}
+                onclick={() => setDuration(POLL_SPEC, null)}
               >
-            </span>
-            <button
-              class="setting-clear"
-              title="Override the deployment quiet period"
-              disabled={saving}
-              onclick={() =>
-                quietly(
-                  update({
-                    merge_after_ci_quiet_period_seconds:
-                      current.merge_after_ci_quiet_period.deployment_seconds,
-                  }),
-                )}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else}
-            <span class="policy-value">
-              {@render durationValue(
-                QUIET_SPEC,
-                current.merge_after_ci_quiet_period.override_seconds,
-                'Merge-after-CI quiet period',
-              )}
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => {
-                clearDrafts(QUIET_SPEC);
-                quietly(update({ merge_after_ci_quiet_period_seconds: null }));
-              }}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
-        </div>
-
-        <div class="policy-row">
-          <span class="setting-say">
-            <span class="setting-name">Path index</span>
-            <span class="setting-why"
-              >How often each repository's file list is read again for the finder and the plans</span
-            >
-          </span>
-          {#if current.path_index_interval.override_seconds === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - every {formatDuration(
-                  current.path_index_interval.deployment_seconds,
-                  PATH_INDEX_SPEC.units,
-                )}</span
-              >
-            </span>
-            <button
-              class="setting-clear"
-              title="Override the deployment index interval"
-              disabled={saving}
-              onclick={() =>
-                quietly(
-                  update({
-                    path_index_interval_seconds: current.path_index_interval.deployment_seconds,
-                  }),
-                )}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else}
-            <span class="policy-value">
-              {@render durationValue(
-                PATH_INDEX_SPEC,
-                current.path_index_interval.override_seconds,
-                'Path index interval',
-              )}
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => {
-                clearDrafts(PATH_INDEX_SPEC);
-                quietly(update({ path_index_interval_seconds: null }));
-              }}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
-        </div>
-
-        <div class="policy-row">
-          <span class="setting-say">
-            <span class="setting-name">Panel sessions</span>
-            <span class="setting-why"
-              >Reductions shorten active sessions; increases apply to new sessions</span
-            >
-          </span>
-          {#if current.session_lifetime.override_seconds === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - {formatDuration(
-                  current.session_lifetime.deployment_seconds,
-                  SESSION_SPEC.units,
-                )}</span
-              >
-            </span>
-            <button
-              class="setting-clear"
-              title="Override the deployment session lifetime"
-              disabled={saving}
-              onclick={() =>
-                quietly(
-                  update({
-                    session_ttl_seconds: current.session_lifetime.deployment_seconds,
-                  }),
-                )}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else}
-            <span class="policy-value">
-              {@render durationValue(
-                SESSION_SPEC,
-                current.session_lifetime.override_seconds,
-                'Session lifetime',
-              )}
-            </span>
-            <button
-              class="setting-clear"
-              title="Stop overriding - follow the deployment configuration"
-              disabled={saving}
-              onclick={() => {
-                clearDrafts(SESSION_SPEC);
-                quietly(update({ session_ttl_seconds: null }));
-              }}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
-        </div>
-      </div>
-    </section>
-
-    <!-- The database has its own card, and with it the state pill that used to
-         stand on the runtime one. A word describing storage over a list of
-         listeners and endpoints named neither of them. -->
-    <section class="card group-card" aria-labelledby="root-database">
-      <div class="group-head">
-        <h3 class="group-name" id="root-database">Database</h3>
-        <StatusPill dot state={current.service.database.state}>
-          {current.service.database.state}
-        </StatusPill>
-      </div>
-      <dl class="service-grid">
-        <div>
-          <dt>Engine</dt>
-          <dd>{current.service.database.engine}</dd>
-        </div>
-        <div>
-          <dt>Server version</dt>
-          <dd>{current.service.database.version || 'unknown'}</dd>
-        </div>
-        <div>
-          <dt>Schema version</dt>
-          <dd>{current.service.database.schema_version}</dd>
-        </div>
-        <div>
-          <dt>Size</dt>
-          <dd>{formatBytes(current.service.database.size_bytes)}</dd>
-        </div>
-        <div>
-          <dt>Response</dt>
-          <dd>{formatLatency(current.service.database.latency_ms)}</dd>
-        </div>
-        <div class="wide">
-          <dt>Connections</dt>
-          <dd>
-            {current.service.database.connections.in_use} in use · {current.service.database
-              .connections.open} open · {current.service.database.connections.max} maximum
-          </dd>
-        </div>
-        <div>
-          <!-- Cumulative, unlike the counts beside it: a pool that reads idle
-               now may still have held the service up earlier. -->
-          <dt>Waits since start</dt>
-          <dd>
-            {current.service.database.connections.wait_count} · {formatElapsed(
-              current.service.database.connections.wait_ms,
-            )}
-          </dd>
-        </div>
-        {#if current.service.database.detail !== undefined}
-          <div class="full">
-            <dt>Reported</dt>
-            <dd class="database-detail">{current.service.database.detail}</dd>
+                <Icon name="close" size={10} />
+              </button>
+            {/if}
           </div>
-        {/if}
-      </dl>
-    </section>
 
-    <section class="card group-card" aria-labelledby="root-service">
-      <div class="group-head">
-        <h3 class="group-name" id="root-service">Service and deployment</h3>
-      </div>
-      <dl class="service-grid">
-        <div>
-          <dt>Version</dt>
-          <dd>{current.service.version}</dd>
-        </div>
-        <div>
-          <dt>Uptime</dt>
-          <dd>{formatUptime(current.service.uptime_seconds)}</dd>
-        </div>
-        <div>
-          <dt>Public listener</dt>
-          <dd><code>{current.service.listeners.public}</code></dd>
-        </div>
-        <div>
-          <dt>Admin listener</dt>
-          <dd><code>{current.service.listeners.admin}</code></dd>
-        </div>
-        <div>
-          <dt>Panel path</dt>
-          <dd><code>{current.service.public_paths.panel}</code></dd>
-        </div>
-        <div>
-          <dt>Webhook path</dt>
-          <dd><code>{current.service.public_paths.webhook}</code></dd>
-        </div>
-        <div class="full">
-          <dt>GitHub API</dt>
-          <dd><code>{current.service.provider_endpoints.api}</code></dd>
-        </div>
-        <div class="full">
-          <dt>OAuth authorization</dt>
-          <dd><code>{current.service.provider_endpoints.authorize}</code></dd>
-        </div>
-        <div class="full">
-          <dt>OAuth token exchange</dt>
-          <dd><code>{current.service.provider_endpoints.token}</code></dd>
-        </div>
-        <div class="wide">
-          <dt>Credentials present</dt>
-          <dd class="credential-list">
-            <span
-              class="pill"
-              class:pill-success={current.service.credential_presence.webhook}
-              class:pill-muted={!current.service.credential_presence.webhook}
-              ><span class="t">Webhook</span></span
-            >
-            <span
-              class="pill"
-              class:pill-success={current.service.credential_presence.app}
-              class:pill-muted={!current.service.credential_presence.app}
-              ><span class="t">GitHub App</span></span
-            >
-            <span
-              class="pill"
-              class:pill-success={current.service.credential_presence.oauth}
-              class:pill-muted={!current.service.credential_presence.oauth}
-              ><span class="t">OAuth</span></span
-            >
-          </dd>
-        </div>
-      </dl>
-    </section>
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('runtime.merge_after_ci_quiet_period_seconds'),
+                'is-invalid': durationProblem(QUIET_SPEC) !== null,
+              },
+            ]}
+            data-unsaved={controlDirty('runtime.merge_after_ci_quiet_period_seconds') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Merge after CI</span>
+              <span class="setting-why"
+                >Requires checks to remain unchanged and passing before Smyklot merges</span
+              >
+              {#if durationProblem(QUIET_SPEC) !== null}
+                <span class="setting-problem">{durationProblem(QUIET_SPEC)}</span>
+              {/if}
+            </span>
+            {#if current.merge_after_ci_quiet_period.override_seconds === null}
+              <span class="policy-value">
+                <span class="setting-unmanaged"
+                  >Follows the deployment - {formatDuration(
+                    current.merge_after_ci_quiet_period.deployment_seconds,
+                    QUIET_SPEC.units,
+                  )}</span
+                >
+              </span>
+              <button
+                class="setting-clear"
+                title="Override the deployment quiet period"
+                disabled={saving}
+                onclick={() =>
+                  setDuration(QUIET_SPEC, current.merge_after_ci_quiet_period.deployment_seconds)}
+              >
+                <Icon name="plus" size={10} />
+              </button>
+            {:else}
+              <span class="policy-value">
+                {@render durationValue(QUIET_SPEC, 'Merge-after-CI quiet period')}
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
+                disabled={saving}
+                onclick={() => setDuration(QUIET_SPEC, null)}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            {/if}
+          </div>
 
-    {#if current.updated_at !== undefined}
-      <p class="updated-note">
-        Last changed <time datetime={current.updated_at}
-          >{new Date(current.updated_at).toLocaleString()}</time
-        >
-        {#if current.updated_by !== undefined}
-          by @{current.updated_by.login}{/if}
-      </p>
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('runtime.path_index_interval_seconds'),
+                'is-invalid': durationProblem(PATH_INDEX_SPEC) !== null,
+              },
+            ]}
+            data-unsaved={controlDirty('runtime.path_index_interval_seconds') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Path index</span>
+              <span class="setting-why"
+                >How often each repository's file list is read again for the finder and the plans</span
+              >
+              {#if durationProblem(PATH_INDEX_SPEC) !== null}
+                <span class="setting-problem">{durationProblem(PATH_INDEX_SPEC)}</span>
+              {/if}
+            </span>
+            {#if current.path_index_interval.override_seconds === null}
+              <span class="policy-value">
+                <span class="setting-unmanaged"
+                  >Follows the deployment - every {formatDuration(
+                    current.path_index_interval.deployment_seconds,
+                    PATH_INDEX_SPEC.units,
+                  )}</span
+                >
+              </span>
+              <button
+                class="setting-clear"
+                title="Override the deployment index interval"
+                disabled={saving}
+                onclick={() =>
+                  setDuration(PATH_INDEX_SPEC, current.path_index_interval.deployment_seconds)}
+              >
+                <Icon name="plus" size={10} />
+              </button>
+            {:else}
+              <span class="policy-value">
+                {@render durationValue(PATH_INDEX_SPEC, 'Path index interval')}
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
+                disabled={saving}
+                onclick={() => setDuration(PATH_INDEX_SPEC, null)}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            {/if}
+          </div>
+
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('runtime.session_ttl_seconds'),
+                'is-invalid': durationProblem(SESSION_SPEC) !== null,
+              },
+            ]}
+            data-unsaved={controlDirty('runtime.session_ttl_seconds') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Panel sessions</span>
+              <span class="setting-why"
+                >Reductions shorten active sessions; increases apply to new sessions</span
+              >
+              {#if durationProblem(SESSION_SPEC) !== null}
+                <span class="setting-problem">{durationProblem(SESSION_SPEC)}</span>
+              {/if}
+            </span>
+            {#if current.session_lifetime.override_seconds === null}
+              <span class="policy-value">
+                <span class="setting-unmanaged"
+                  >Follows the deployment - {formatDuration(
+                    current.session_lifetime.deployment_seconds,
+                    SESSION_SPEC.units,
+                  )}</span
+                >
+              </span>
+              <button
+                class="setting-clear"
+                title="Override the deployment session lifetime"
+                disabled={saving}
+                onclick={() =>
+                  setDuration(SESSION_SPEC, current.session_lifetime.deployment_seconds)}
+              >
+                <Icon name="plus" size={10} />
+              </button>
+            {:else}
+              <span class="policy-value">
+                {@render durationValue(SESSION_SPEC, 'Session lifetime')}
+              </span>
+              <button
+                class="setting-clear"
+                title="Stop overriding - follow the deployment configuration"
+                disabled={saving}
+                onclick={() => setDuration(SESSION_SPEC, null)}
+              >
+                <Icon name="close" size={10} />
+              </button>
+            {/if}
+          </div>
+        </div>
+      </section>
+
+      {#if current.updated_at !== undefined}
+        <p class="updated-note">
+          Runtime settings last changed <time datetime={current.updated_at}
+            >{new Date(current.updated_at).toLocaleString()}</time
+          >
+          {#if current.updated_by !== undefined}
+            by @{current.updated_by.login}{/if}
+        </p>
+      {/if}
+    {/if}
+
+    {#if section === 'database'}
+      <section class="card group-card" aria-labelledby="root-database">
+        <div class="group-head">
+          <h3 class="group-name" id="root-database">Database</h3>
+          <StatusPill dot state={current.service.database.state}>
+            {current.service.database.state}
+          </StatusPill>
+        </div>
+        <dl class="service-grid">
+          <div>
+            <dt>Engine</dt>
+            <dd>{current.service.database.engine}</dd>
+          </div>
+          <div>
+            <dt>Server version</dt>
+            <dd>{current.service.database.version || 'unknown'}</dd>
+          </div>
+          <div>
+            <dt>Schema version</dt>
+            <dd>{current.service.database.schema_version}</dd>
+          </div>
+          <div>
+            <dt>Size</dt>
+            <dd>{formatBytes(current.service.database.size_bytes)}</dd>
+          </div>
+          <div>
+            <dt>Response</dt>
+            <dd>{formatLatency(current.service.database.latency_ms)}</dd>
+          </div>
+          <div class="wide">
+            <dt>Connections</dt>
+            <dd>
+              {current.service.database.connections.in_use} in use · {current.service.database
+                .connections.open} open · {current.service.database.connections.max} maximum
+            </dd>
+          </div>
+          <div>
+            <!-- Cumulative, unlike the counts beside it: a pool that reads idle
+                 now may still have held the service up earlier. -->
+            <dt>Waits since start</dt>
+            <dd>
+              {current.service.database.connections.wait_count} · {formatElapsed(
+                current.service.database.connections.wait_ms,
+              )}
+            </dd>
+          </div>
+          {#if current.service.database.detail !== undefined}
+            <div class="full">
+              <dt>Reported</dt>
+              <dd class="database-detail">{current.service.database.detail}</dd>
+            </div>
+          {/if}
+        </dl>
+      </section>
+    {/if}
+
+    {#if section === 'service'}
+      <section class="card group-card" aria-labelledby="root-service">
+        <div class="group-head">
+          <h3 class="group-name" id="root-service">Service and deployment</h3>
+        </div>
+        <dl class="service-grid">
+          <div>
+            <dt>Version</dt>
+            <dd>{current.service.version}</dd>
+          </div>
+          <div>
+            <dt>Uptime</dt>
+            <dd>{formatUptime(current.service.uptime_seconds)}</dd>
+          </div>
+          <div>
+            <dt>Public listener</dt>
+            <dd><code>{current.service.listeners.public}</code></dd>
+          </div>
+          <div>
+            <dt>Admin listener</dt>
+            <dd><code>{current.service.listeners.admin}</code></dd>
+          </div>
+          <div>
+            <dt>Panel path</dt>
+            <dd><code>{current.service.public_paths.panel}</code></dd>
+          </div>
+          <div>
+            <dt>Webhook path</dt>
+            <dd><code>{current.service.public_paths.webhook}</code></dd>
+          </div>
+          <div class="full">
+            <dt>GitHub API</dt>
+            <dd><code>{current.service.provider_endpoints.api}</code></dd>
+          </div>
+          <div class="full">
+            <dt>OAuth authorization</dt>
+            <dd><code>{current.service.provider_endpoints.authorize}</code></dd>
+          </div>
+          <div class="full">
+            <dt>OAuth token exchange</dt>
+            <dd><code>{current.service.provider_endpoints.token}</code></dd>
+          </div>
+          <div class="wide">
+            <dt>Credentials present</dt>
+            <dd class="credential-list">
+              <span
+                class="pill"
+                class:pill-success={current.service.credential_presence.webhook}
+                class:pill-muted={!current.service.credential_presence.webhook}
+                ><span class="t">Webhook</span></span
+              >
+              <span
+                class="pill"
+                class:pill-success={current.service.credential_presence.app}
+                class:pill-muted={!current.service.credential_presence.app}
+                ><span class="t">GitHub App</span></span
+              >
+              <span
+                class="pill"
+                class:pill-success={current.service.credential_presence.oauth}
+                class:pill-muted={!current.service.credential_presence.oauth}
+                ><span class="t">OAuth</span></span
+              >
+            </dd>
+          </div>
+        </dl>
+      </section>
     {/if}
   {/if}
 </section>
@@ -895,30 +846,6 @@
     max-width: 60ch;
   }
 
-  .save-whisper {
-    align-items: center;
-    background: var(--success-tint);
-    block-size: 20px;
-    border-radius: var(--radius-chip);
-    color: var(--success);
-    display: inline-flex;
-    font-size: var(--font-size-micro);
-    font-weight: 600;
-    gap: 4px;
-    margin-inline-start: auto;
-    opacity: 0;
-    padding: 0 0.5rem;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .save-whisper.is-on {
-    opacity: 1;
-  }
-
-  .save-whisper .t {
-    text-box: trim-both cap alphabetic;
-  }
-
   .policy-rows {
     display: grid;
   }
@@ -935,6 +862,16 @@
        edge already carries that inset. */
     padding: var(--space-5) var(--space-2);
     position: relative;
+  }
+
+  .policy-row.is-unsaved {
+    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
+    box-shadow: inset 2px 0 var(--brand-action);
+  }
+
+  .policy-row.is-invalid {
+    background: color-mix(in srgb, var(--danger) 7%, var(--surface-base));
+    box-shadow: inset 2px 0 var(--danger);
   }
 
   .policy-row:first-child {
@@ -973,6 +910,11 @@
     font-size: var(--font-size-compact);
     min-block-size: 9px;
     text-box: trim-both cap alphabetic;
+  }
+
+  .setting-problem {
+    color: var(--danger);
+    font-size: var(--font-size-compact);
   }
 
   .policy-value {
@@ -1127,6 +1069,10 @@
   .num-inline:focus-visible {
     border-color: var(--brand-action);
     outline: 2px solid var(--brand);
+  }
+
+  .num-inline[aria-invalid='true'] {
+    border-color: var(--danger);
   }
 
   .pill {

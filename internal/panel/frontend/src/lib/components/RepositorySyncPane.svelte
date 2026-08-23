@@ -12,10 +12,14 @@
    * stopped applying one would write the plain template over exactly the
    * customization it described.
    */
-  import { canonicalStringify } from '#lib/preferences-sync.js';
   import { patchedAt, rowKeys, storedList, withoutAt } from '#lib/form-lists.js';
   import { formatRelative } from '#lib/format.js';
   import { asArrayStrategy } from '#lib/merge.js';
+  import {
+    buildSyncOverrideEditorEnvelope,
+    type SyncOverrideControlId,
+    type SyncOverrideEditorEnvelope,
+  } from '#lib/repository-sync-override-settings.js';
   import type {
     SyncArrayRule,
     SyncFileMerge,
@@ -32,28 +36,27 @@
 
   const {
     stored,
+    repositoryId,
+    envelope = undefined,
     readOnly,
-    saving,
     now,
-    saveProblem = null,
-    onSave,
+    dirtyEnabled = false,
+    dirtyDocument = false,
+    onChange = () => {},
   }: {
     stored: SyncOverride;
+    repositoryId: string;
+    envelope?: SyncOverrideEditorEnvelope | undefined;
     readOnly: boolean;
-    saving: boolean;
     /**
      * The list's clock, so a refusal can say how long ago it was found. Passed
      * rather than read here, because a second timer in a dialog the list
      * already ticks for would say a different thing on the same screen.
      */
     now: number;
-    /**
-     * Why the last save did not land, which is this dialog's own and belongs to
-     * the moment. Not to be confused with `stored.problem`, which is why the
-     * planner is not syncing this repository at all.
-     */
-    saveProblem?: string | null;
-    onSave: (enabled: boolean | null, document: Record<string, unknown>) => void;
+    dirtyEnabled?: boolean;
+    dirtyDocument?: boolean;
+    onChange?: (next: SyncOverrideEditorEnvelope, control: SyncOverrideControlId) => void;
   } = $props();
 
   /** What a merge does to a structured template. Markdown has its own. */
@@ -142,13 +145,23 @@
    */
   type Draft = { merge: SyncFileMerge; text: string };
 
-  /* Derived from what is saved and written over as somebody edits, so a save
-     landing from anywhere reseeds it. */
-  let drafts = $derived<Draft[]>(storedDrafts(stored.document));
-  let excludes = $derived<string[]>(storedList<string>(stored.document, 'excludes'));
-  let wanted = $derived<boolean | null>(stored.enabled);
+  const controlledEnvelope = $derived(
+    stored.unreadable
+      ? ({
+          enabled: stored.enabled,
+          document: {},
+          override_texts: [],
+        } satisfies SyncOverrideEditorEnvelope)
+      : (envelope ?? buildSyncOverrideEditorEnvelope(stored)),
+  );
+  /* Writable derived state keeps direct component stories useful. In the app,
+     every write immediately publishes a complete envelope to the registry and
+     the controlled prop becomes the same value. */
+  let drafts = $derived<Draft[]>(editorDrafts(controlledEnvelope));
+  let excludes = $derived<string[]>(storedList<string>(controlledEnvelope.document, 'excludes'));
+  let wanted = $derived<boolean | null>(controlledEnvelope.enabled);
 
-  const disabled = $derived(saving || readOnly || stored.unreadable);
+  const disabled = $derived(readOnly || stored.unreadable);
 
   /**
    * Why the planner is not syncing this repository at all, and how long ago it
@@ -204,16 +217,6 @@
     return null;
   });
 
-  const payload = $derived(asDocument());
-
-  /* Two documents that would be saved the same way have to compare the same
-     way, whatever order their keys happen to be in. Comparing the raw text put
-     Save live the moment the page loaded, for a document nobody had touched. */
-  const untouched = $derived(canonicalStringify(stored.document ?? {}));
-  const changed = $derived(
-    wanted !== stored.enabled || canonicalStringify(payload) !== untouched || textsDiffer(),
-  );
-
   /**
    * The whole document rather than the parts with controls, so a key a newer
    * version of the service wrote is sent back rather than dropped by a browser
@@ -229,7 +232,7 @@
    * reads as nothing.
    */
   function asDocument(): Record<string, unknown> {
-    const document: Record<string, unknown> = { ...stored.document };
+    const document: Record<string, unknown> = { ...controlledEnvelope.document };
 
     if (drafts.length > 0) {
       document.merges = drafts.map((draft, at) => composed(draft, values[at]));
@@ -244,19 +247,6 @@
     }
 
     return document;
-  }
-
-  /**
-   * Whether the boxes say something the saved document does not. Compared as
-   * text rather than through the payload, because an unparsed box contributes
-   * nothing to the payload and would otherwise read as no change at all.
-   */
-  function textsDiffer(): boolean {
-    const saved = storedDrafts(stored.document);
-
-    return (
-      drafts.length !== saved.length || drafts.some((draft, at) => draft.text !== saved[at].text)
-    );
   }
 
   /**
@@ -324,14 +314,14 @@
     const { path } = draft.merge;
     const named = path === '' ? 'an adjustment' : path;
 
-    if (path === '') return 'One adjustment names no file.';
+    if (path === '') return 'One adjustment names no file';
 
     if (!MERGEABLE_PATH.test(path)) {
-      return `${path} has no extension this can merge; JSON, YAML and Markdown can.`;
+      return `${path} has no extension this can merge; JSON, YAML and Markdown can`;
     }
 
     if (drafts.filter((other) => other.merge.path === path).length > 1) {
-      return `${path} is adjusted twice.`;
+      return `${path} is adjusted twice`;
     }
 
     if (editsMarkdown(draft.merge)) return refusalInSections(named, draft.merge.sections ?? []);
@@ -339,23 +329,23 @@
     const rules = draft.merge.arrays ?? [];
 
     if ((value === undefined || Object.keys(value).length === 0) && rules.length === 0) {
-      return `${named} sets nothing and has no list rule, so nothing would be merged.`;
+      return `${named} sets nothing and has no list rule, so nothing would be merged`;
     }
 
     for (const [at, rule] of rules.entries()) {
       const which = `List rule ${at + 1} of ${named}`;
       const read = pathKeys(rule.path);
 
-      if ('refusal' in read) return `${which} ${read.refusal}.`;
+      if ('refusal' in read) return `${which} ${read.refusal}`;
 
       if (rules.filter((other) => other.path === rule.path).length > 1) {
-        return `${named} has two rules for ${rule.path}.`;
+        return `${named} has two rules for ${rule.path}`;
       }
 
       // A shallow merge replaces a top-level key with the override's value
       // whole, so nothing below one is ever merged.
       if (draft.merge.strategy === 'shallow-merge' && read.keys.length > 1) {
-        return `${rule.path} is below the top level, and a shallow merge replaces top-level keys whole.`;
+        return `${rule.path} is below the top level, and a shallow merge replaces top-level keys whole`;
       }
 
       // A rule says what to do with the repository's list where the template
@@ -367,10 +357,10 @@
       const target = valueAt(value, read.keys);
 
       if (target === undefined) {
-        return `No override sets ${rule.path}, so ${named} has no list to ${rule.strategy}.`;
+        return `No override sets ${rule.path}, so ${named} has no list to ${rule.strategy}`;
       }
 
-      if (!Array.isArray(target)) return `The override at ${rule.path} is not a list.`;
+      if (!Array.isArray(target)) return `The override at ${rule.path} is not a list`;
     }
 
     return null;
@@ -435,7 +425,7 @@
 
   function refusalInSections(named: string, sections: SyncSection[]): string | null {
     if (sections.length === 0) {
-      return `${named} is edited by its headings, and no section says how.`;
+      return `${named} is edited by its headings, and no section says how`;
     }
 
     for (const [at, section] of sections.entries()) {
@@ -443,21 +433,21 @@
       const which = `Section ${at + 1} of ${named}`;
 
       if (shape.heading && (section.heading ?? '') === '') {
-        return `${which} needs the heading it addresses, written with its # marks.`;
+        return `${which} needs the heading it addresses, written with its # marks`;
       }
 
       if (shape.content && (section.content ?? '') === '') {
-        return `${which} needs the content it writes.`;
+        return `${which} needs the content it writes`;
       }
 
       if (shape.patches) {
         const patches = section.patches ?? [];
 
-        if (patches.length === 0) return `${which} substitutes nothing.`;
+        if (patches.length === 0) return `${which} substitutes nothing`;
 
         const empty = patches.findIndex((pair) => pair.find === '');
 
-        if (empty >= 0) return `${which} has a substitution that finds nothing.`;
+        if (empty >= 0) return `${which} has a substitution that finds nothing`;
       }
     }
 
@@ -478,32 +468,51 @@
     }
   }
 
-  function storedDrafts(from: Record<string, unknown>): Draft[] {
-    return storedList<SyncFileMerge>(from, 'merges').map((merge) => ({
+  function editorDrafts(from: SyncOverrideEditorEnvelope): Draft[] {
+    return storedList<SyncFileMerge>(from.document, 'merges').map((merge, index) => ({
       merge,
-      text: merge.overrides === undefined ? '' : JSON.stringify(merge.overrides, null, 2),
+      text:
+        from.override_texts[index] ??
+        (merge.overrides === undefined ? '' : JSON.stringify(merge.overrides, null, 2)),
     }));
+  }
+
+  function controlId(which: 'enabled' | 'document'): SyncOverrideControlId {
+    return `repositories.${repositoryId}.sync.files.${which}`;
+  }
+
+  function currentEnvelope(): SyncOverrideEditorEnvelope {
+    return {
+      enabled: wanted,
+      document: asDocument() as SyncOverrideEditorEnvelope['document'],
+      override_texts: drafts.map(({ text }) => text),
+    };
+  }
+
+  function stageDocument(): void {
+    onChange(currentEnvelope(), controlId('document'));
   }
 
   function patch(index: number, change: Partial<SyncFileMerge>): void {
     drafts = patchedAt(drafts, index, {
       merge: { ...drafts[index].merge, ...change },
     });
-    queueSave();
+    stageDocument();
   }
 
   function setText(index: number, text: string): void {
     drafts = patchedAt(drafts, index, { text });
-    queueSave();
+    stageDocument();
   }
 
   function add(): void {
     drafts = [...drafts, { merge: { path: '' }, text: '' }];
+    stageDocument();
   }
 
   function remove(index: number): void {
     drafts = withoutAt(drafts, index);
-    queueSave();
+    stageDocument();
   }
 
   /* The rows inside a row. Each list is edited through the merge it belongs to,
@@ -568,7 +577,7 @@
     }
 
     drafts = patchedAt(drafts, index, { merge });
-    queueSave();
+    stageDocument();
   }
 
   function replaceSection(index: number, at: number, section: SyncSection): void {
@@ -650,59 +659,20 @@
 
   const rowKey = rowKeys('merge');
 
-  /* ---------- Saved change by change, after a typing rest ---------- */
-
-  const SAVE_REST_MS = 900;
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function queueSave(): void {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (disabled || !changed || malformed >= 0 || incomplete !== null) return;
-      onSave(wanted, payload);
-    }, SAVE_REST_MS);
-  }
-
   function setWanted(next: boolean | null): void {
     wanted = next;
-    queueSave();
+    onChange(currentEnvelope(), controlId('enabled'));
   }
-
-  /* The receipt keys off the save the parent runs: shown when a save this
-     pane queued lands without a problem. */
-  let savedOn = $state(false);
-  let savedTimer: ReturnType<typeof setTimeout> | undefined;
-  let wasSaving = false;
-
-  $effect(() => {
-    if (saving) {
-      wasSaving = true;
-      return;
-    }
-    if (!wasSaving) return;
-    wasSaving = false;
-    if (saveProblem !== null) return;
-    savedOn = true;
-    clearTimeout(savedTimer);
-    savedTimer = setTimeout(() => (savedOn = false), 1400);
-  });
 </script>
 
 <section class="sync-pane card group-card">
   <div class="group-head">
     <h3 class="group-name">File sync</h3>
-    <span class="save-whisper" class:is-on={savedOn} role="status"
-      ><Icon name="check" size={12} /><span class="t">Saved</span></span
-    >
   </div>
   <p class="group-note">
     Whether the organization's files are kept in step here, and what this repository changes about
     them. Nothing reaches GitHub until a plan is approved
   </p>
-
-  {#if saveProblem !== null}
-    <p class="form-error" role="alert">{saveProblem}</p>
-  {/if}
 
   <!-- What the planner made of this repository, which is the question somebody
        opening this pane came to ask. A refusal is fail-closed and correct, and
@@ -725,7 +695,10 @@
   {/if}
 
   <div class="policy-rows">
-    <div class="policy-row">
+    <div
+      class={['policy-row', { 'is-unsaved': dirtyEnabled }]}
+      data-unsaved={dirtyEnabled || undefined}
+    >
       <span class="setting-say">
         <span class="setting-name">File sync</span>
         <span class="setting-why"
@@ -759,7 +732,10 @@
         </button>
       {/if}
     </div>
-    <div class="policy-row policy-block">
+    <div
+      class={['policy-row policy-block', { 'is-unsaved': dirtyDocument }]}
+      data-unsaved={dirtyDocument || undefined}
+    >
       <span class="setting-say">
         <span class="setting-name">Files to leave alone here</span>
         <span class="setting-why"
@@ -773,7 +749,7 @@
           readOnly={disabled}
           onChange={(next) => {
             excludes = next;
-            queueSave();
+            stageDocument();
           }}
         />
       </div>
@@ -781,11 +757,14 @@
   </div>
 
   {#if drafts.length === 0}
-    <p class="form-note">This repository takes every file as the organization writes it.</p>
+    <p class="form-note">This repository takes every file as the organization writes it</p>
   {/if}
 
   {#each drafts as draft, index (rowKey(index))}
-    <article class="entry-card sync-merge">
+    <article
+      class={['entry-card sync-merge', { 'is-unsaved': dirtyDocument }]}
+      data-unsaved={dirtyDocument || undefined}
+    >
       <div class="sync-pane-row">
         <label class="sync-merge-path">
           <span class="entry-field-label">File</span>
@@ -795,7 +774,7 @@
             value={draft.merge.path}
             {disabled}
             placeholder="renovate.json"
-            onchange={(event) => setPath(index, event.currentTarget.value)}
+            oninput={(event) => setPath(index, event.currentTarget.value)}
           />
         </label>
 
@@ -848,7 +827,7 @@
                     value={section.heading ?? ''}
                     {disabled}
                     placeholder="### Prerequisites"
-                    onchange={(event) =>
+                    oninput={(event) =>
                       patchSection(index, at, { heading: event.currentTarget.value })}
                   />
                 </label>
@@ -861,7 +840,7 @@
                     min="1"
                     value={section.occurrence ?? ''}
                     {disabled}
-                    onchange={(event) => setOccurrence(index, at, event.currentTarget.value)}
+                    oninput={(event) => setOccurrence(index, at, event.currentTarget.value)}
                   />
                 </label>
               </div>
@@ -876,7 +855,7 @@
                   {disabled}
                   value={section.content ?? ''}
                   placeholder={SECTION_CONTENT_PLACEHOLDER}
-                  onchange={(event) =>
+                  oninput={(event) =>
                     patchSection(index, at, { content: event.currentTarget.value })}></textarea>
               </label>
             {/if}
@@ -892,7 +871,7 @@
                       value={substitution.find}
                       {disabled}
                       placeholder="make check"
-                      onchange={(event) =>
+                      oninput={(event) =>
                         patchSubstitution(index, at, which, { find: event.currentTarget.value })}
                     />
                   </label>
@@ -905,7 +884,7 @@
                       value={substitution.replace}
                       {disabled}
                       placeholder="mise run check"
-                      onchange={(event) =>
+                      oninput={(event) =>
                         patchSubstitution(index, at, which, { replace: event.currentTarget.value })}
                     />
                   </label>
@@ -942,7 +921,7 @@
             aria-describedby="repository-sync-overrides-note"
             value={draft.text}
             placeholder={'{\n  "timezone": "Europe/Warsaw"\n}'}
-            onchange={(event) => setText(index, event.currentTarget.value)}></textarea>
+            oninput={(event) => setText(index, event.currentTarget.value)}></textarea>
         </label>
 
         {#each draft.merge.arrays ?? [] as rule, at (`${rowKey(index)}-rule-${at}`)}
@@ -955,7 +934,7 @@
                 value={rule.path}
                 {disabled}
                 placeholder="$.packageRules"
-                onchange={(event) => patchRule(index, at, { path: event.currentTarget.value })}
+                oninput={(event) => patchRule(index, at, { path: event.currentTarget.value })}
               />
             </label>
 
@@ -1044,30 +1023,6 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .save-whisper {
-    align-items: center;
-    background: var(--success-tint);
-    block-size: 20px;
-    border-radius: var(--radius-chip);
-    color: var(--success);
-    display: inline-flex;
-    font-size: var(--font-size-micro);
-    font-weight: 600;
-    gap: 4px;
-    margin-inline-start: auto;
-    opacity: 0;
-    padding: 0 0.5rem;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .save-whisper.is-on {
-    opacity: 1;
-  }
-
-  .save-whisper .t {
-    text-box: trim-both cap alphabetic;
-  }
-
   .group-note {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
@@ -1092,6 +1047,12 @@
        sides; the edge rows shed it where no line follows. */
     padding: var(--space-5) var(--space-2);
     position: relative;
+  }
+
+  .policy-row.is-unsaved,
+  .entry-card.is-unsaved {
+    background: color-mix(in srgb, var(--brand-action-tint) 45%, var(--surface-raised));
+    box-shadow: inset 2px 0 var(--brand-action);
   }
 
   .policy-row:first-child {

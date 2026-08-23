@@ -69,12 +69,32 @@ type CatalogStore interface {
 
 // ConfigStore owns atomic panel-setting changes and their audit records.
 type ConfigStore interface {
-	UpdateTargetSettings(context.Context, TargetSettingsChange) (Target, error)
-	UpdateRepositorySettings(context.Context, RepositorySettingsChange) (Repository, error)
+	SaveInstallationSettings(context.Context, SaveInstallationSettingsRequest) (SaveInstallationSettingsResult, error)
+	InspectInstallationSettingsCheckpoint(
+		context.Context,
+		SettingsCheckpointRef,
+	) (SettingsCheckpointInspection, error)
+	InspectInstallationSettingsBaseline(
+		context.Context,
+		string,
+	) (SettingsCheckpointInspection, error)
+	RestoreInstallationSettings(
+		context.Context,
+		RestoreInstallationSettingsRequest,
+	) (SaveInstallationSettingsResult, error)
 	UpdateRepositoryFileState(context.Context, RepositoryFileState) (bool, error)
 	SetRepositoryConfigMigration(context.Context, RepositoryConfigMigration) error
 	GetRuntimeSettings(context.Context) (RuntimeSettings, error)
-	UpdateRuntimeSettings(context.Context, RuntimeSettingsChange) (RuntimeSettings, error)
+	SaveRuntimeSettings(context.Context, RuntimeSettingsChange) (SaveRuntimeSettingsResult, error)
+	InspectRootSettingsCheckpoint(
+		context.Context,
+		SettingsCheckpointRef,
+	) (SettingsCheckpointInspection, error)
+	InspectRootSettingsBaseline(context.Context) (SettingsCheckpointInspection, error)
+	RestoreRuntimeSettings(
+		context.Context,
+		RestoreRuntimeSettingsRequest,
+	) (SaveRuntimeSettingsResult, error)
 }
 
 // PendingCIGateStore owns the desired/effective repository protection
