@@ -214,15 +214,14 @@
         restingTop = null;
         return;
       }
-      /* Rects rather than offsets, which round to whole pixels - and corrected
-         by the row's own translate: selected ink lifts ±1px under the pointer,
-         and unbutchered math would park the thumb a pixel off mid-hover. */
+      /* Rects rather than offsets, which round to whole pixels. The anchor is
+         stationary; only its inner visual row moves under the pointer. */
       const origin = node.getBoundingClientRect();
       const bounds = active.getBoundingClientRect();
-      const rowShift = new DOMMatrixReadOnly(getComputedStyle(active).transform).f;
-      const top = bounds.top - origin.top - rowShift;
+      const top = bounds.top - origin.top;
       const left = bounds.left - origin.left;
-      const radius = getComputedStyle(active).borderRadius;
+      const surface = active.querySelector<HTMLElement>('.row-visual');
+      const radius = getComputedStyle(surface ?? active).borderRadius;
       const parked = node.classList.contains('thumb-ready');
       const from = parked && restingTop !== null ? restingTop + offsetNow(thumb) : top;
       node.style.setProperty('--nav-thumb-top', `${top}px`);
@@ -303,13 +302,16 @@
         >
           <a
             class="tree-row"
+            class:is-active={page.active && activeKid === undefined}
             href={page.href}
             data-tip={page.label}
             aria-current={page.active && activeKid === undefined ? 'page' : undefined}
             onclick={(event) => pageFromClick(event, page)}
           >
-            <Icon name={page.icon} size={16} />
-            <span class="t">{page.label}</span>
+            <span class="row-visual">
+              <Icon name={page.icon} size={16} />
+              <span class="t">{page.label}</span>
+            </span>
           </a>
           <!-- Always in the DOM, shown by CSS: an anchor destroyed between a
                pointerdown and its click swallows the press, and these unmount
@@ -324,12 +326,14 @@
                 aria-current={kid.active ? 'page' : undefined}
                 onclick={(event) => kidFromClick(event, page, kid)}
               >
-                <span class="t">{kid.label}</span>
-                {#if kid.count !== undefined}
-                  <span class="tab-count" class:is-signal={kid.signal === true}>
-                    <span class="t">{kid.count}</span>
-                  </span>
-                {/if}
+                <span class="row-visual">
+                  <span class="t">{kid.label}</span>
+                  {#if kid.count !== undefined}
+                    <span class="tab-count" class:is-signal={kid.signal === true}>
+                      <span class="t">{kid.count}</span>
+                    </span>
+                  {/if}
+                </span>
               </a>
             {/each}
           </div>
@@ -343,8 +347,10 @@
           aria-current={page.active ? 'page' : undefined}
           onclick={(event) => pageFromClick(event, page)}
         >
-          <Icon name={page.icon} size={16} />
-          <span class="t">{page.label}</span>
+          <span class="row-visual">
+            <Icon name={page.icon} size={16} />
+            <span class="t">{page.label}</span>
+          </span>
         </a>
       {/if}
     {/each}
@@ -412,21 +418,18 @@
     inline-size: 24px;
     justify-content: center;
     padding: 0;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
+    transition: none;
   }
 
   .side-fold:hover {
     background: var(--sidebar-item-hover);
+    box-shadow: 0 1px 0 var(--sidebar-border);
     color: var(--sidebar-text);
   }
 
   .side-fold:active {
-    background: var(--sidebar-item-pressed);
-    box-shadow: var(--pressed-inset);
+    background: var(--sidebar-item-hover);
+    box-shadow: none;
     translate: 0 1px;
   }
 
@@ -462,60 +465,94 @@
       block-size 240ms cubic-bezier(0.22, 1, 0.36, 1),
       inline-size 240ms cubic-bezier(0.22, 1, 0.36, 1),
       inset-inline-start 240ms cubic-bezier(0.22, 1, 0.36, 1),
-      border-radius 240ms cubic-bezier(0.22, 1, 0.36, 1),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
+      border-radius 240ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .tree:not(:global(.thumb-ready)) .nav-thumb {
     display: none;
   }
 
-  /* The selected row's pointer answers happen to the THUMB: ground and ink
-     move as one object. */
-  .tree:has(.tree-row.is-active:hover, .tree-kid.is-active:hover) .nav-thumb {
-    translate: 0 -1px;
-  }
-
+  /* The thumb is one physical pixel tall: pressing consumes its hard edge and
+     moves its face by exactly that amount. The anchor hit target never moves. */
   .tree:has(.tree-row.is-active:active, .tree-kid.is-active:active) .nav-thumb {
     box-shadow: var(--sidebar-thumb-shadow-pressed);
     translate: 0 1px;
   }
 
   .tree-row {
-    align-items: center;
     /* Declared, whole: a row's height is a decision, not an outcome. */
     block-size: 34px;
-    border-radius: var(--radius-control);
     box-sizing: border-box;
     color: var(--sidebar-text-secondary);
-    display: flex;
+    display: block;
     font-size: var(--font-size-meta);
     font-weight: 500;
-    gap: 10px;
-    padding: 0 10px;
-    /* Positioned so the ink paints above the thumb sliding underneath. */
     position: relative;
     text-decoration: none;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
+    transition: none;
   }
 
   .tree-row .t {
     text-box: trim-both cap alphabetic;
   }
 
+  /* The anchor stays rectangular and stationary while this inner row carries
+     the original rounded ground, ink, and movement. A press can no longer move
+     the link out from under a pointer held on its edge. */
+  .row-visual {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    inset: 0;
+    pointer-events: none;
+    position: absolute;
+    transition: none;
+  }
+
+  .tree-row > .row-visual {
+    border-radius: var(--radius-control);
+    gap: 10px;
+    padding: 0 10px;
+  }
+
+  .tree-kid > .row-visual {
+    border-radius: 6px;
+    gap: 0.5rem;
+    padding: 0 9px;
+  }
+
+  .tree-row:focus-visible,
+  .tree-kid:focus-visible {
+    outline: none;
+  }
+
+  /* The app-wide link press paints and scales the anchor itself. Sidebar
+     anchors are stationary hit targets, so their rounded inner row owns the
+     entire visual response instead. */
+  a.tree-row:active,
+  a.tree-kid:active {
+    background-image: none;
+    transform: none;
+  }
+
+  .tree-row:focus-visible > .row-visual,
+  .tree-kid:focus-visible > .row-visual {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
   .tree-row:hover {
-    background: var(--sidebar-item-hover);
     color: var(--sidebar-text);
   }
 
-  .tree-row:active {
-    background: var(--sidebar-item-pressed);
-    box-shadow: var(--pressed-inset);
+  .tree-row:hover > .row-visual {
+    background: var(--sidebar-item-hover);
+    box-shadow: 0 1px 0 var(--sidebar-border);
+  }
+
+  .tree-row:active > .row-visual {
+    background: var(--sidebar-item-hover);
+    box-shadow: none;
     translate: 0 1px;
   }
 
@@ -526,19 +563,17 @@
 
   .tree-row.is-active {
     /* Ink only - the ground is the nav-thumb parked underneath. */
-    background: transparent;
     color: var(--sidebar-item-active-text);
     font-weight: 600;
   }
 
-  .tree-row.is-active:hover {
-    background: transparent;
-    translate: 0 -1px;
+  .tree-row.is-active:hover > .row-visual {
+    background: var(--interactive-hover-layer);
+    box-shadow: none;
   }
 
-  .tree-row.is-active:active {
-    background: transparent;
-    box-shadow: none;
+  .tree-row.is-active:active > .row-visual {
+    background: var(--interactive-hover-layer);
     translate: 0 1px;
   }
 
@@ -562,25 +597,14 @@
   }
 
   .tree-kid {
-    align-items: center;
     block-size: 28px;
-    border: 1px solid transparent;
-    /* 6px, not the control radius: an 8px corner on a 28px row reads a step
-       rounder than the same corner on the 34px rows above it. */
-    border-radius: 6px;
     box-sizing: border-box;
     color: var(--sidebar-text-secondary);
-    display: flex;
+    display: block;
     font-size: var(--font-size-meta);
-    gap: 0.5rem;
-    padding: 0 8px;
     position: relative;
     text-decoration: none;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
+    transition: none;
   }
 
   .tree-kid .t {
@@ -588,31 +612,33 @@
   }
 
   .tree-kid:hover {
-    background: var(--sidebar-item-hover);
     color: var(--sidebar-text);
   }
 
-  .tree-kid:active {
-    background: var(--sidebar-item-pressed);
-    box-shadow: var(--pressed-inset);
+  .tree-kid:hover > .row-visual {
+    background: var(--sidebar-item-hover);
+    box-shadow: 0 1px 0 var(--sidebar-border);
+  }
+
+  .tree-kid:active > .row-visual {
+    background: var(--sidebar-item-hover);
+    box-shadow: none;
     translate: 0 1px;
   }
 
   .tree-kid.is-active {
     /* Ink only - the thumb slides under the kid the same as under a page. */
-    background: transparent;
     color: var(--sidebar-item-active-text);
     font-weight: 600;
   }
 
-  .tree-kid.is-active:hover {
-    background: transparent;
-    translate: 0 -1px;
+  .tree-kid.is-active:hover > .row-visual {
+    background: var(--interactive-hover-layer);
+    box-shadow: none;
   }
 
-  .tree-kid.is-active:active {
-    background: transparent;
-    box-shadow: none;
+  .tree-kid.is-active:active > .row-visual {
+    background: var(--interactive-hover-layer);
     translate: 0 1px;
   }
 
@@ -688,7 +714,7 @@
       grid-row: 1;
     }
 
-    :global(.app-shell.sidebar-collapsed) .tree-row {
+    :global(.app-shell.sidebar-collapsed) .tree-row > .row-visual {
       gap: 0;
       justify-content: center;
       padding: 0;
@@ -703,22 +729,17 @@
       color: var(--sidebar-item-active-text);
     }
 
-    /* Standing for the selection, the page row presses like it: it lands on
-       the thumb rather than sinking into it. */
-    :global(.app-shell.sidebar-collapsed) .tree-page.is-active > .tree-row:active {
-      background: transparent;
+    /* Standing for the selection, the page row uses the same neutral state
+       layers as the expanded selected row. */
+    :global(.app-shell.sidebar-collapsed) .tree-page.is-active > .tree-row:active > .row-visual {
+      background: var(--interactive-hover-layer);
       box-shadow: none;
+      translate: 0 1px;
     }
 
-    :global(.app-shell.sidebar-collapsed) .tree-page.is-active > .tree-row:hover {
-      background: transparent;
-      translate: 0 -1px;
-    }
-
-    :global(.app-shell.sidebar-collapsed)
-      .tree:has(.tree-page.is-active > .tree-row:hover)
-      .nav-thumb {
-      translate: 0 -1px;
+    :global(.app-shell.sidebar-collapsed) .tree-page.is-active > .tree-row:hover > .row-visual {
+      background: var(--interactive-hover-layer);
+      box-shadow: none;
     }
 
     :global(.app-shell.sidebar-collapsed)
@@ -807,24 +828,32 @@
        popover. */
     :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid {
       block-size: 32px;
-      border-radius: 6px;
       color: var(--sidebar-menu-text);
       font-size: var(--font-size-control);
+    }
+
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid > .row-visual {
       gap: var(--space-2);
       padding-inline: var(--space-3);
     }
 
-    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:hover {
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:hover > .row-visual {
       background: var(--sidebar-menu-hover);
+    }
+
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:hover {
       color: var(--sidebar-menu-text);
     }
 
-    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:focus-visible {
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:focus-visible > .row-visual {
       background: var(--sidebar-menu-hover);
+    }
+
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:focus-visible {
       outline: none;
     }
 
-    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:active {
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid:active > .row-visual {
       background: var(--sidebar-menu-pressed);
     }
 
@@ -832,20 +861,23 @@
        tinted row in the console's own active ink, mixed over the popover so
        every sidebar palette lands legible without a new literal. Hover and
        press ride the veil layer, so the tint stays underneath. */
-    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid.is-active {
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid.is-active > .row-visual {
       background: color-mix(
         in srgb,
         var(--sidebar-item-active-text) 12%,
         var(--sidebar-popover-bg)
       );
       box-shadow: none;
+    }
+
+    :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid.is-active {
       color: var(--sidebar-item-active-text);
       font-weight: 600;
     }
 
     :global(.app-shell.sidebar-collapsed) .tree-kids .tree-kid::before {
       background: var(--table-row-pressed);
-      border-radius: inherit;
+      border-radius: 6px;
       content: '';
       inset: 0;
       opacity: 0;
