@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.46.2](https://github.com/smykla-skalski/smyklot/compare/v1.46.1...v1.46.2) (2026-08-23)
+
+### Bug Fixes
+
+* **panel:** contain long Sync labels ([#311](https://github.com/smykla-skalski/smyklot/issues/311)) ([4feb1d4](https://github.com/smykla-skalski/smyklot/commit/4feb1d4d380ba7aa513fa1c2b3b938f95aee01cd))
+
 ## [1.46.1](https://github.com/smykla-skalski/smyklot/compare/v1.46.0...v1.46.1) (2026-08-23)
 
 ### Bug Fixes
