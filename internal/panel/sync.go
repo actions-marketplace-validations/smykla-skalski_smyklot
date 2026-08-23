@@ -197,14 +197,14 @@ func (s *Server) putSyncConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	saved, err := s.store.SetSyncConfig(r.Context(), orgsync.ConfigChange{
+	written, err := s.store.SetSyncConfigs(r.Context(), orgsync.ConfigBatchChange{
 		TargetID: target.ID,
-		Kind:     kind,
-		Enabled:  *input.Enabled,
-		Document: document,
 		ActorID:  account.ID,
 		Now:      s.now().UTC(),
-		Revision: *input.ExpectedRevision,
+		Changes: []orgsync.ConfigPatch{{
+			Kind: kind, Enabled: *input.Enabled, Document: document,
+			Revision: *input.ExpectedRevision,
+		}},
 	})
 	if err != nil {
 		s.writeStorageError(w, err)
@@ -212,7 +212,20 @@ func (s *Server) putSyncConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Announce(target.ID, "")
+	var saved orgsync.Config
+	for _, config := range written.Configs {
+		if config.Kind == kind {
+			saved = config
+			break
+		}
+	}
+	if saved.Kind == "" {
+		s.writeInternal(w, fmt.Errorf("saved %s sync configuration is missing", kind))
+		return
+	}
+	if written.CheckpointID != nil {
+		s.Announce(target.ID, "")
+	}
 	writeJSON(w, http.StatusOK, syncConfigAnswer(saved, target, account.Login))
 }
 
@@ -439,7 +452,14 @@ func (s *Server) getSyncPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{syncPlanKey: syncPlanToDTO(plan, actions)})
+	repositoryNames, err := s.syncPlanRepositoryNames(r.Context(), target.ID, actions)
+	if err != nil {
+		s.writeStorageError(w, err)
+
+		return
+	}
+	writeJSON(w, http.StatusOK,
+		map[string]any{syncPlanKey: syncPlanToDTO(plan, actions, repositoryNames)})
 }
 
 // postSyncPlanApproval accepts a plan somebody has read.
@@ -464,7 +484,6 @@ func (s *Server) postSyncPlanApproval(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-
 	plan, err := s.store.ApproveSyncPlan(r.Context(), orgsync.PlanApproval{
 		TargetID: target.ID,
 		PlanID:   r.PathValue(syncPlanKey),
@@ -506,15 +525,46 @@ func (s *Server) postSyncPlanApproval(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	repositoryNames, err := s.syncPlanRepositoryNames(r.Context(), target.ID, actions)
+	if err != nil {
+		s.writeStorageError(w, err)
 
-	writeJSON(w, http.StatusOK, map[string]any{syncPlanKey: syncPlanToDTO(plan, actions)})
+		return
+	}
+
+	writeJSON(w, http.StatusOK,
+		map[string]any{syncPlanKey: syncPlanToDTO(plan, actions, repositoryNames)})
 }
 
 func syncApprovalSummary(counts orgsync.Counts) string {
 	return strconv.Itoa(counts.Total()) + " changes approved"
 }
 
-func syncPlanToDTO(plan orgsync.Plan, actions []orgsync.Action) syncPlanDTO {
+func (s *Server) syncPlanRepositoryNames(
+	ctx context.Context,
+	targetID string,
+	actions []orgsync.Action,
+) (map[string]string, error) {
+	names := make(map[string]string)
+	for _, action := range actions {
+		if _, found := names[action.RepositoryID]; found {
+			continue
+		}
+		repository, err := s.store.GetRepository(ctx, targetID, action.RepositoryID)
+		if err != nil {
+			return nil, fmt.Errorf("read sync plan repository: %w", err)
+		}
+		names[repository.ID] = repository.Name
+	}
+
+	return names, nil
+}
+
+func syncPlanToDTO(
+	plan orgsync.Plan,
+	actions []orgsync.Action,
+	repositoryNames map[string]string,
+) syncPlanDTO {
 	dto := syncPlanDTO{
 		ID:      plan.ID,
 		Trigger: string(plan.Trigger),
@@ -533,8 +583,12 @@ func syncPlanToDTO(plan orgsync.Plan, actions []orgsync.Action) syncPlanDTO {
 	}
 
 	for _, action := range actions {
+		repository := repositoryNames[action.RepositoryID]
+		if repository == "" {
+			repository = action.RepositoryID
+		}
 		dto.Actions = append(dto.Actions, syncActionDTO{
-			Repository: action.RepositoryID,
+			Repository: repository,
 			Kind:       string(action.Kind),
 			Operation:  string(action.Operation),
 			Subject:    action.Subject,

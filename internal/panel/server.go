@@ -248,6 +248,15 @@ func (s *Server) Handler() http.Handler {
 	)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/sync/config/{kind}", s.getSyncConfig)
 	mux.HandleFunc("PUT "+base+"/api/v1/targets/{target}/sync/config/{kind}", s.putSyncConfig)
+	mux.HandleFunc("PUT "+base+"/api/v1/targets/{target}/sync/config", s.putSyncConfigs)
+	mux.HandleFunc(
+		"GET "+base+"/api/v1/targets/{target}/sync/config/checkpoints/{checkpoint}",
+		s.getSyncConfigCheckpoint,
+	)
+	mux.HandleFunc(
+		"POST "+base+"/api/v1/targets/{target}/sync/config/checkpoints/{checkpoint}/restore",
+		s.postSyncConfigRestore,
+	)
 	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/sync/paths", s.listSyncPaths)
 	mux.HandleFunc(
 		"GET "+base+"/api/v1/targets/{target}/sync/overrides/{kind}",
@@ -382,13 +391,25 @@ func (s *Server) registerRootRoutes(mux *http.ServeMux, base string) {
 		"DELETE "+base+"/api/v1/root/installations/{target}/invitations/{invitation}",
 		s.deleteRootTargetInvitation,
 	)
+	s.registerRootSyncHistoryRoutes(mux, base)
+	mux.HandleFunc(
+		"GET "+base+"/api/v1/root/installations/{target}/failures",
+		s.getRootTargetFailures,
+	)
+}
+
+func (s *Server) registerRootSyncHistoryRoutes(mux *http.ServeMux, base string) {
 	mux.HandleFunc(
 		"GET "+base+"/api/v1/root/installations/{target}/audit",
 		s.getRootTargetAudit,
 	)
 	mux.HandleFunc(
-		"GET "+base+"/api/v1/root/installations/{target}/failures",
-		s.getRootTargetFailures,
+		"GET "+base+"/api/v1/root/installations/{target}/sync/config/checkpoints/{checkpoint}",
+		s.getRootSyncConfigCheckpoint,
+	)
+	mux.HandleFunc(
+		"POST "+base+"/api/v1/root/installations/{target}/sync/config/checkpoints/{checkpoint}/restore",
+		s.postRootSyncConfigRestore,
 	)
 }
 

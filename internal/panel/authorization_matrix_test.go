@@ -64,6 +64,8 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/invitations/" + invitation + "/reissue"},
 		{http.MethodDelete, "/panel/api/v1/root/installations/" + target + "/invitations/" + invitation},
 		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/audit"},
+		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/sync/config/checkpoints/1"},
+		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/sync/config/checkpoints/1/restore"},
 		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/failures"},
 	}
 
@@ -105,6 +107,7 @@ var routePlaceholders = map[string]string{
 	"{repository}": "repository-30",
 	"{plan}":       "sync-plan-1",
 	"{kind}":       "labels",
+	"{checkpoint}": "1",
 }
 
 // regularRouteProbes is every installation-scoped route, with the concrete
@@ -137,6 +140,9 @@ func regularRouteProbes(target string) []authorizationProbe {
 		{http.MethodGet, target + "/sync/overrides/labels"},
 		{http.MethodGet, target + "/sync/config/labels"},
 		{http.MethodPut, target + "/sync/config/labels"},
+		{http.MethodPut, target + "/sync/config"},
+		{http.MethodGet, target + "/sync/config/checkpoints/1"},
+		{http.MethodPost, target + "/sync/config/checkpoints/1/restore"},
 		{http.MethodGet, target + "/sync/plan"},
 		{http.MethodGet, target + "/sync/status"},
 		{http.MethodGet, target + "/sync/files/context"},

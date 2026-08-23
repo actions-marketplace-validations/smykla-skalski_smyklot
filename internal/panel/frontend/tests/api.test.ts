@@ -253,9 +253,137 @@ describe('targets and repositories', () => {
 
     expect(stub.calls[0]?.url).toBe('/panel/api/v1/targets/a%2Fb/repositories/%2E%2E');
   });
+
+  it('saves changed Sync kinds in one installation request', async () => {
+    const response = {
+      configs: [],
+      checkpoint_id: 'checkpoint.1',
+    };
+    const stub = stubFetch([jsonResponse(200, response)]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    await expect(
+      api.saveSyncConfigs('target/1', {
+        changes: [
+          {
+            kind: 'labels',
+            enabled: true,
+            labels: [{ name: 'ci/green', color: '00ff00' }],
+            allow_removal: false,
+            excludes: [],
+            expected_revision: 4,
+          },
+          {
+            kind: 'settings',
+            enabled: true,
+            document: { visibility: 'private' },
+            expected_revision: 7,
+          },
+        ],
+      }),
+    ).resolves.toEqual(response);
+
+    expect(stub.calls[0]?.url).toBe('/panel/api/v1/targets/target%2F1/sync/config');
+    expect(stub.calls[0]?.init?.method).toBe('PUT');
+    expect(JSON.parse(String(stub.calls[0]?.init?.body))).toMatchObject({
+      changes: [
+        { kind: 'labels', expected_revision: 4 },
+        { kind: 'settings', expected_revision: 7 },
+      ],
+    });
+  });
+
+  it('preserves the invalid Sync kind from a batch error', async () => {
+    const stub = stubFetch([
+      jsonResponse(400, {
+        error: {
+          code: 'invalid_sync_config',
+          message: 'a label name is required',
+          kind: 'labels',
+        },
+      }),
+    ]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    await expect(
+      api.saveSyncConfigs('target.1', {
+        changes: [
+          {
+            kind: 'labels',
+            enabled: true,
+            labels: [],
+            allow_removal: false,
+            excludes: [],
+            expected_revision: 1,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'invalid_sync_config',
+      kind: 'labels',
+    });
+  });
+
+  it('inspects and restores a selected Sync checkpoint', async () => {
+    const checkpoint = {
+      id: 'checkpoint/1',
+      action: 'sync.config.saved',
+      actor: VIEWER.account,
+      created_at: '2026-08-23T08:00:00Z',
+      affected_kinds: ['labels'],
+      kinds: [],
+    };
+    const restored = { configs: [], checkpoint_id: 'checkpoint.2' };
+    const stub = stubFetch([jsonResponse(200, checkpoint), jsonResponse(200, restored)]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    await expect(api.fetchSyncConfigCheckpoint('target/1', 'checkpoint/1')).resolves.toEqual(
+      checkpoint,
+    );
+    await expect(
+      api.restoreSyncConfigCheckpoint('target/1', 'checkpoint/1', {
+        kinds: [{ kind: 'labels', expected_revision: 7 }],
+      }),
+    ).resolves.toEqual(restored);
+
+    expect(stub.calls.map((call) => call.url)).toEqual([
+      '/panel/api/v1/targets/target%2F1/sync/config/checkpoints/checkpoint%2F1',
+      '/panel/api/v1/targets/target%2F1/sync/config/checkpoints/checkpoint%2F1/restore',
+    ]);
+    expect(stub.calls[1]?.init?.method).toBe('POST');
+    expect(JSON.parse(String(stub.calls[1]?.init?.body))).toEqual({
+      kinds: [{ kind: 'labels', expected_revision: 7 }],
+    });
+  });
 });
 
 describe('Root installation access', () => {
+  it('inspects and restores Sync checkpoints through Root routes', async () => {
+    const checkpoint = {
+      id: 'checkpoint/1',
+      action: 'sync.config.saved',
+      actor: VIEWER.account,
+      created_at: '2026-08-23T08:00:00Z',
+      affected_kinds: ['labels'],
+      kinds: [],
+    };
+    const restored = { configs: [], checkpoint_id: 'checkpoint/2' };
+    const stub = stubFetch([jsonResponse(200, checkpoint), jsonResponse(200, restored)]);
+    const api = createPanelApi('/panel', stub.fetch);
+
+    await api.fetchRootSyncConfigCheckpoint('target/1', 'checkpoint/1');
+    await api.restoreRootSyncConfigCheckpoint('target/1', 'checkpoint/1', {
+      kinds: [{ kind: 'labels', expected_revision: 2 }],
+    });
+
+    expect(stub.calls.map((call) => call.url)).toEqual([
+      '/panel/api/v1/root/installations/target%2F1/sync/config/checkpoints/checkpoint%2F1',
+      '/panel/api/v1/root/installations/target%2F1/sync/config/checkpoints/checkpoint%2F1/restore',
+    ]);
+    expect(stub.calls[1]?.init?.method).toBe('POST');
+  });
+
   it('runs the Root catalog synchronization endpoint', async () => {
     const stub = stubFetch([jsonResponse(200, { target_ids: ['target.1', 'target.2'] })]);
     const api = createPanelApi('/panel', stub.fetch);

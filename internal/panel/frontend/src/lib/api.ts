@@ -40,7 +40,11 @@ import type {
   RootRuntimeSettingsInput,
   SecurityNotification,
   SyncConfig,
+  SyncConfigBatchInput,
+  SyncConfigBatchResponse,
+  SyncConfigCheckpoint,
   SyncConfigInput,
+  SyncConfigRestoreInput,
   SyncOverride,
   SyncOverrideInput,
   SyncOverrideRow,
@@ -60,6 +64,7 @@ export class PanelApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly kind?: string,
   ) {
     super(message);
     this.name = 'PanelApiError';
@@ -126,6 +131,15 @@ export interface PanelApi {
   revokeRootTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
   fetchRootTargetUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
   fetchRootTargetAudit(targetId: string, request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
+  fetchRootSyncConfigCheckpoint(
+    targetId: string,
+    checkpointId: string,
+  ): Promise<SyncConfigCheckpoint>;
+  restoreRootSyncConfigCheckpoint(
+    targetId: string,
+    checkpointId: string,
+    input: SyncConfigRestoreInput,
+  ): Promise<SyncConfigBatchResponse>;
   fetchRootTargetFailures(
     targetId: string,
     request: FailureHistoryRequest,
@@ -177,6 +191,13 @@ export interface PanelApi {
   resetRootConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail>;
   fetchSyncConfig(targetId: string, kind: string): Promise<SyncConfig>;
   saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig>;
+  saveSyncConfigs(targetId: string, input: SyncConfigBatchInput): Promise<SyncConfigBatchResponse>;
+  fetchSyncConfigCheckpoint(targetId: string, checkpointId: string): Promise<SyncConfigCheckpoint>;
+  restoreSyncConfigCheckpoint(
+    targetId: string,
+    checkpointId: string,
+    input: SyncConfigRestoreInput,
+  ): Promise<SyncConfigBatchResponse>;
   fetchSyncPaths(targetId: string): Promise<SyncPathIndex>;
   fetchSyncOverrides(targetId: string, kind: string): Promise<{ overrides: SyncOverrideRow[] }>;
   fetchSyncOverride(targetId: string, repositoryId: string, kind: string): Promise<SyncOverride>;
@@ -353,6 +374,13 @@ export function createPanelApi(
 
   const postJson = <T>(path: string, body: unknown): Promise<T> =>
     jsonRequest<T>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  const postDocument = <T>(path: string, body: unknown): Promise<T> =>
+    documentRequest<T>(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -613,6 +641,26 @@ export function createPanelApi(
       );
     },
 
+    fetchRootSyncConfigCheckpoint(
+      targetId: string,
+      checkpointId: string,
+    ): Promise<SyncConfigCheckpoint> {
+      return documentRequest(
+        `/api/v1/root/installations/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}`,
+      );
+    },
+
+    restoreRootSyncConfigCheckpoint(
+      targetId: string,
+      checkpointId: string,
+      input: SyncConfigRestoreInput,
+    ): Promise<SyncConfigBatchResponse> {
+      return postDocument(
+        `/api/v1/root/installations/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}/restore`,
+        input,
+      );
+    },
+
     fetchRootTargetFailures(
       targetId: string,
       history: FailureHistoryRequest,
@@ -770,6 +818,33 @@ export function createPanelApi(
     saveSyncConfig(targetId: string, kind: string, input: SyncConfigInput): Promise<SyncConfig> {
       return putDocument(
         `/api/v1/targets/${pathSegment(targetId)}/sync/config/${pathSegment(kind)}`,
+        input,
+      );
+    },
+
+    saveSyncConfigs(
+      targetId: string,
+      input: SyncConfigBatchInput,
+    ): Promise<SyncConfigBatchResponse> {
+      return putDocument(`/api/v1/targets/${pathSegment(targetId)}/sync/config`, input);
+    },
+
+    fetchSyncConfigCheckpoint(
+      targetId: string,
+      checkpointId: string,
+    ): Promise<SyncConfigCheckpoint> {
+      return documentRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}`,
+      );
+    },
+
+    restoreSyncConfigCheckpoint(
+      targetId: string,
+      checkpointId: string,
+      input: SyncConfigRestoreInput,
+    ): Promise<SyncConfigBatchResponse> {
+      return postDocument(
+        `/api/v1/targets/${pathSegment(targetId)}/sync/config/checkpoints/${pathSegment(checkpointId)}/restore`,
         input,
       );
     },
@@ -1050,6 +1125,7 @@ function graftDocuments(payload: unknown, literal: JsonValue): unknown {
 async function readError(response: Response): Promise<PanelApiError> {
   let code = 'unknown';
   let message = describeStatus(response.status);
+  let kind: string | undefined;
   try {
     const body = (await response.json()) as Partial<PanelErrorBody>;
     if (body.error?.code !== undefined) {
@@ -1058,8 +1134,9 @@ async function readError(response: Response): Promise<PanelApiError> {
     if (body.error?.message !== undefined && body.error.message !== '') {
       message = body.error.message;
     }
+    kind = body.error?.kind;
   } catch {
     // Proxies and crashes are not required to understand the panel envelope.
   }
-  return new PanelApiError(response.status, code, message);
+  return new PanelApiError(response.status, code, message, kind);
 }

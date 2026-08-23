@@ -624,12 +624,14 @@ export interface RepositorySettingsInput {
 export interface AuditEntry {
   id: string;
   category?: AuditCategory;
+  target_id?: string;
   installation?: PanelAccount;
   actor: PanelAccount;
   subject?: PanelAccount;
   elevation_id?: string;
   action: string;
   summary: string;
+  sync_config_checkpoint_id?: string;
   repository_full_name?: string;
   created_at: string;
 }
@@ -663,7 +665,7 @@ export type HistorySort =
   | 'repository_asc'
   | 'repository_desc';
 export type AuditScope = 'all' | 'account' | 'repositories';
-export type AuditChange = 'all' | 'enablement' | 'repository' | 'account';
+export type AuditChange = 'all' | 'enablement' | 'repository' | 'account' | 'sync';
 export type FailureKind = 'all' | 'retryable' | 'permanent';
 
 export interface HistoryRequest {
@@ -693,6 +695,7 @@ export interface PanelErrorBody {
   error: {
     code: string;
     message: string;
+    kind?: SyncKind;
   };
 }
 
@@ -985,6 +988,51 @@ export interface SyncConfigInput {
 /** The kinds sync manages, in the order every surface lists them. */
 export const SYNC_KINDS = ['labels', 'settings', 'rulesets', 'files'] as const;
 export type SyncKind = (typeof SYNC_KINDS)[number];
+
+/** One changed kind in an atomic installation-wide save. */
+export interface SyncConfigBatchChange extends SyncConfigInput {
+  kind: SyncKind;
+}
+
+export interface SyncConfigBatchInput {
+  changes: SyncConfigBatchChange[];
+}
+
+/** The complete resulting state, plus the history snapshot created for a real change. */
+export interface SyncConfigBatchResponse {
+  configs: SyncConfig[];
+  checkpoint_id?: string;
+}
+
+export interface SyncConfigCheckpointState {
+  enabled: boolean;
+  document: Record<string, unknown>;
+  digest: string;
+  revision: number;
+}
+
+export interface SyncConfigCheckpointKind {
+  kind: SyncKind;
+  before: SyncConfigCheckpointState | null;
+  after: SyncConfigCheckpointState | null;
+  current: SyncConfigCheckpointState | null;
+  changed: boolean;
+  differs_from_current: boolean;
+}
+
+export interface SyncConfigCheckpoint {
+  id: string;
+  action: 'sync.config.saved' | 'sync.config.restored' | 'sync.config.baseline';
+  actor: PanelAccount;
+  restored_from_id?: string;
+  created_at: string;
+  affected_kinds: SyncKind[];
+  kinds: SyncConfigCheckpointKind[];
+}
+
+export interface SyncConfigRestoreInput {
+  kinds: Array<{ kind: SyncKind; expected_revision: number }>;
+}
 
 /**
  * One repository's answer for one kind: quiet when in step, a count when a
