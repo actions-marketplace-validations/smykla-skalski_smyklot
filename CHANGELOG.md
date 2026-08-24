@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.47.1](https://github.com/smykla-skalski/smyklot/compare/v1.47.0...v1.47.1) (2026-08-24)
+
+### Bug Fixes
+
+* **panel:** harden settings draft workflow ([#314](https://github.com/smykla-skalski/smyklot/issues/314)) ([382c646](https://github.com/smykla-skalski/smyklot/commit/382c6466f19f09c15d2a56dcdfb009e85be6cd5d))
+
 ## [1.47.0](https://github.com/smykla-skalski/smyklot/compare/v1.46.2...v1.47.0) (2026-08-23)
 
 ### Features
