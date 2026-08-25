@@ -1,5 +1,5 @@
 <script lang="ts">
-  import QueueView from '#lib/components/QueueView.svelte';
+  import GeneralQueueView from '#lib/components/GeneralQueueView.svelte';
   import { getPanelSession } from '#lib/session.svelte.js';
 
   const session = getPanelSession();
@@ -10,10 +10,10 @@
   class:root-table-view={session.tableScrollView}
   aria-labelledby="root-page-heading"
 >
-  <QueueView
+  <GeneralQueueView
     api={session.api}
     rootRole={session.rootRole}
-    section="waiting"
-    onOpenRequest={(request) => session.openQueueRequest(request)}
+    canControl
+    refreshRevision={session.queueRevision}
   />
 </section>

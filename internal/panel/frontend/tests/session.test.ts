@@ -175,6 +175,33 @@ describe('PanelSession [Unit]', () => {
     expect(session.returnHref()).toBe(`${basePath}/i/acme/repositories/api-gateway/commands`);
   });
 
+  it('lets repository detail pages scroll with the document', () => {
+    const session = createSession();
+    session.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
+    session.selectedId = 'target-1';
+
+    openRepository(session);
+    expect(session.tableScrollView).toBe(false);
+
+    routePage.url = at('/i/acme/repositories');
+    routePage.params = { account: 'acme', view: 'repositories' };
+    routePage.route = { id: '/i/[account]/[view=panelView]' };
+    session.syncRouteContext();
+    expect(session.tableScrollView).toBe(true);
+  });
+
+  it('lets Root repository detail pages scroll with the document', () => {
+    const session = createSession();
+    session.viewer = { system_role: 'root' } as PanelViewer;
+    routePage.url = at('/root/installations/acme/repositories/api-gateway/commands');
+    routePage.params = { account: 'acme', repository: 'api-gateway', section: 'commands' };
+    routePage.route = {
+      id: '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]',
+    };
+
+    expect(session.tableScrollView).toBe(false);
+  });
+
   it('still knows the page it left when the console is reloaded', () => {
     openRepository(createSession());
 
@@ -328,6 +355,15 @@ describe('PanelSession [Unit]', () => {
 
     const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toEqual(expect.arrayContaining([['sync-override', 'target-1']]));
+  });
+
+  it('publishes queue revisions for direct queue and schedule views', () => {
+    const session = createSession();
+
+    session.invalidateChange({ version: 1, type: 'queue.changed', target_id: 'target-1' });
+    session.invalidateChange({ version: 1, type: 'queue.changed' });
+
+    expect(session.queueRevision).toBe(2);
   });
 });
 

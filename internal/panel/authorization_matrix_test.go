@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/storage"
+	"github.com/smykla-skalski/smyklot/internal/workqueue"
 )
 
 type authorizationProbe struct {
@@ -44,6 +46,20 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 		{http.MethodGet, "/panel/api/v1/root/runtime/settings/checkpoints/baseline"},
 		{http.MethodGet, "/panel/api/v1/root/runtime/settings/checkpoints/1"},
 		{http.MethodPost, "/panel/api/v1/root/runtime/settings/checkpoints/1/restore"},
+		{http.MethodGet, "/panel/api/v1/root/queue"},
+		{http.MethodGet, "/panel/api/v1/root/queue/queue-item"},
+		{http.MethodPost, "/panel/api/v1/root/queue/queue-item/actions"},
+		{http.MethodPost, "/panel/api/v1/root/queue/queue-item/actions/preview"},
+		{http.MethodGet, "/panel/api/v1/root/schedule-profiles"},
+		{http.MethodPost, "/panel/api/v1/root/schedule-profiles"},
+		{http.MethodPut, "/panel/api/v1/root/schedule-profiles/profile"},
+		{http.MethodDelete, "/panel/api/v1/root/schedule-profiles/profile"},
+		{http.MethodGet, "/panel/api/v1/root/job-policies"},
+		{http.MethodPut, "/panel/api/v1/root/job-policies/sync_scan"},
+		{http.MethodPut, "/panel/api/v1/root/installations/" + target + "/job-policies/sync_scan"},
+		{http.MethodDelete, "/panel/api/v1/root/installations/" + target + "/job-policies/sync_scan"},
+		{http.MethodGet, "/panel/api/v1/root/schedule-requests"},
+		{http.MethodPost, "/panel/api/v1/root/schedule-requests/request/decision"},
 		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/elevation"},
 		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/elevation"},
 		{http.MethodDelete, "/panel/api/v1/root/elevations/elevation-id"},
@@ -100,6 +116,102 @@ func TestPanelRegularRouteRejectsNonOwnedRootMatrix(t *testing.T) {
 	}
 }
 
+func TestPanelQueueAndScheduleRoleMatrix(t *testing.T) {
+	harness := newPanelHarness(t, "owner")
+	ownerSession := harness.signIn(t)
+	session := createOrdinarySession(t, harness)
+	const targetID = "github:installation:10"
+	profileID := workqueue.AlwaysOpenProfileID
+	item, err := harness.store.CreateQueueItem(t.Context(), workqueue.Item{
+		ID: "queue:role-matrix", Kind: workqueue.KindReactionScan,
+		Lane: workqueue.LaneMaintenance, TargetID: pointerTo(targetID),
+		Title: "Discover pull request reactions", State: workqueue.StateScheduled,
+		Priority: workqueue.PriorityNormal, WindowMode: workqueue.WindowRespect,
+		ProfileID: &profileID, NotBefore: harness.now.Add(time.Hour),
+		EligibleAt: harness.now.Add(time.Hour), CreatedAt: harness.now, UpdatedAt: harness.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	accessRevision := int64(0)
+	roles := []struct {
+		role       storage.InstallationRole
+		canControl bool
+	}{
+		{storage.InstallationRoleViewer, false},
+		{storage.InstallationRoleEditor, false},
+		{storage.InstallationRoleAdmin, true},
+		{storage.InstallationRoleOwner, true},
+	}
+	for index, expectation := range roles {
+		expectation := expectation
+		t.Run(string(expectation.role), func(t *testing.T) {
+			roleSession := queueRoleSession(
+				t, harness, expectation.role, session, ownerSession, &accessRevision,
+				harness.now.Add(time.Duration(index)*time.Minute),
+			)
+
+			base := "/panel/api/v1/targets/" + targetID
+			for _, path := range []string{base + "/queue", base + "/queue/" + item.ID, base + "/schedules"} {
+				response := harness.request(t, http.MethodGet, path, nil, roleSession)
+				requireResponse(t, response, string(expectation.role)+" inspection", http.StatusOK)
+			}
+
+			current, getErr := harness.store.GetQueueItem(t.Context(), item.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			action := fmt.Sprintf(`{"type":"set_priority","expected_revision":%d,"priority":"high"}`, current.Revision)
+			response := harness.request(
+				t, http.MethodPost, base+"/queue/"+item.ID+"/actions",
+				strings.NewReader(action), roleSession,
+			)
+			expectedStatus := http.StatusForbidden
+			if expectation.canControl {
+				expectedStatus = http.StatusOK
+			}
+			requireResponse(t, response, string(expectation.role)+" queue control", expectedStatus)
+
+			response = harness.request(
+				t, http.MethodPost, base+"/schedule-requests", strings.NewReader(`{}`), roleSession,
+			)
+			expectedStatus = http.StatusForbidden
+			if expectation.canControl {
+				expectedStatus = http.StatusBadRequest
+			}
+			requireResponse(t, response, string(expectation.role)+" schedule request", expectedStatus)
+		})
+	}
+}
+
+func queueRoleSession(
+	t *testing.T,
+	harness *panelHarness,
+	role storage.InstallationRole,
+	ordinarySession, ownerSession *http.Cookie,
+	accessRevision *int64,
+	changedAt time.Time,
+) *http.Cookie {
+	t.Helper()
+	if role == storage.InstallationRoleOwner {
+		return ownerSession
+	}
+	updated, err := harness.store.SetTargetAccess(t.Context(), storage.TargetAccessChange{
+		TargetID: "github:installation:10", SubjectAccountID: "github:test:user:ordinary",
+		ActorAccountID: "github:test:user:1", Role: &role,
+		ExpectedRevision: *accessRevision, ChangedAt: changedAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	*accessRevision = updated.Revision
+
+	return ordinarySession
+}
+
+func pointerTo[T any](value T) *T { return &value }
+
 // routePlaceholders is what a registered pattern's wildcards stand for in a
 // probe. A pattern using one that is not here fails the completeness check
 // loudly, which is right: a new kind of wildcard is a new decision about who
@@ -111,6 +223,8 @@ var routePlaceholders = map[string]string{
 	"{plan}":       "sync-plan-1",
 	"{kind}":       "labels",
 	"{checkpoint}": "1",
+	"{queue}":      "queue-item",
+	"{request}":    "request",
 }
 
 // regularRouteProbes is every installation-scoped route, with the concrete
@@ -145,10 +259,19 @@ func regularRouteProbes(target string) []authorizationProbe {
 		{http.MethodGet, target + "/sync/plan"},
 		{http.MethodGet, target + "/sync/status"},
 		{http.MethodGet, target + "/sync/files/context"},
+		{http.MethodPost, target + "/sync/run-now"},
 		{http.MethodPost, target + "/sync/plans/sync-plan-1/approval"},
 		{http.MethodDelete, target + "/sync/plans/sync-plan-1"},
 		{http.MethodGet, target + "/audit"},
 		{http.MethodGet, target + "/failures"},
+		{http.MethodGet, target + "/queue"},
+		{http.MethodGet, target + "/queue/queue-item"},
+		{http.MethodPost, target + "/queue/queue-item/actions"},
+		{http.MethodPost, target + "/queue/queue-item/actions/preview"},
+		{http.MethodGet, target + "/schedules"},
+		{http.MethodGet, target + "/schedule-requests"},
+		{http.MethodPost, target + "/schedule-requests"},
+		{http.MethodDelete, target + "/schedule-requests/request"},
 	}
 }
 

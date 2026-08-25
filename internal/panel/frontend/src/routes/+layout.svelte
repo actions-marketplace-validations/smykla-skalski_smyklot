@@ -576,6 +576,8 @@
     'defaults',
     'repositories',
     'sync',
+    'queue',
+    'schedules',
     'access',
     'history',
   ] as const satisfies readonly PanelSection[];
@@ -583,6 +585,8 @@
     defaults: 'sliders',
     repositories: 'repositories',
     sync: 'refresh',
+    queue: 'pending',
+    schedules: 'sliders',
     access: 'users',
     history: 'history',
   } as const;
@@ -666,6 +670,7 @@
   const ROOT_ORDER = [
     'overview',
     'queue',
+    'schedules',
     'installations',
     'access',
     'history',
@@ -674,24 +679,12 @@
   const rootIcon = {
     overview: 'system',
     queue: 'pending',
+    schedules: 'sliders',
     installations: 'repositories',
     access: 'users',
     history: 'history',
     runtime: 'sliders',
   } as const;
-
-  const queueKids = $derived(
-    (['waiting', 'recent'] as const).map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.queueSectionHref(section),
-      active:
-        !session.isInbox &&
-        (section === 'waiting'
-          ? session.currentRootRoute.rootView === 'queue'
-          : session.currentRootRoute.rootView === 'queue-recent'),
-    })),
-  );
 
   const rootAccessKids = $derived(
     ACCESS_SECTIONS.map((section) => ({
@@ -781,17 +774,15 @@
             ? rootDirty
             : undefined,
       kids:
-        section === 'queue'
-          ? queueKids
-          : section === 'access'
-            ? rootAccessKids
-            : section === 'history'
-              ? rootHistoryKids
-              : section === 'runtime'
-                ? rootRuntimeKids
-                : section === 'installations'
-                  ? rootInstallationKids
-                  : undefined,
+        section === 'access'
+          ? rootAccessKids
+          : section === 'history'
+            ? rootHistoryKids
+            : section === 'runtime'
+              ? rootRuntimeKids
+              : section === 'installations'
+                ? rootInstallationKids
+                : undefined,
     })),
   );
 
@@ -878,8 +869,7 @@
           onSelectPage={(pageRow) => {
             drawerOpen = false;
             if (session.isRootMode) {
-              if (pageRow.id === 'queue') session.selectQueueSection('waiting');
-              else if (pageRow.id === 'access') session.selectRootAccessSection('users');
+              if (pageRow.id === 'access') session.selectRootAccessSection('users');
               else if (pageRow.id === 'history') session.selectRootHistorySection('audit');
               else if (pageRow.id === 'installations') session.selectRootInstallations();
               else session.selectRootSection(pageRow.id as RootSection);

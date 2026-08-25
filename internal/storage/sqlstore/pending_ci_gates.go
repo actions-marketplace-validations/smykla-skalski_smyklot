@@ -11,6 +11,17 @@ import (
 	"github.com/smykla-skalski/smyklot/internal/storage"
 )
 
+const (
+	pendingCIScopeRepository = "repository_id = ?"
+	pendingCIScopeTarget     = "target_id = ?"
+	pendingCIWakePrefix      = `
+UPDATE pending_ci_requests SET
+    schedule = ?, next_check_at = ?, lease_expires_at = NULL,
+    next_check_trigger = ?, updated_at = ?, revision = revision + 1
+WHERE `
+	pendingCIWakeSuffix = " AND lifecycle = ? AND merge_phase = ?"
+)
+
 const pendingCIGateSelect = `
 SELECT repository_id, target_id, desired_mode, effective_mode, readiness,
        reason, app_id, ruleset_id, ruleset_fingerprint, generation,
@@ -194,7 +205,7 @@ WHERE repository_id = ? AND revision = ?`,
 
 func wakePendingCIChecksForRepository(
 	ctx context.Context,
-	tx runner,
+	tx *transaction,
 	repositoryID string,
 	readyAt time.Time,
 ) error {
@@ -218,66 +229,68 @@ WHERE repository_id = ? AND lifecycle = ? AND artifact_kind = ? AND merge_phase 
 	if _, err := result.RowsAffected(); err != nil {
 		return fmt.Errorf("read ready-gate pending CI wake result: %w", err)
 	}
-
-	return nil
+	return syncPendingCIQueueWhere(
+		ctx, tx, "repository_id = ? AND lifecycle = ? AND updated_at = ?",
+		repositoryID, pendingci.LifecycleArmed, readyAt,
+	)
 }
 
 func wakePendingCIRequestsForRepository(
 	ctx context.Context,
-	tx runner,
+	tx *transaction,
 	repositoryID string,
 	wakeAt time.Time,
 ) error {
-	result, err := tx.ExecContext(ctx, `
-UPDATE pending_ci_requests SET
-    schedule = ?, next_check_at = ?, lease_expires_at = NULL,
-    next_check_trigger = ?, updated_at = ?, revision = revision + 1
-WHERE repository_id = ? AND lifecycle = ? AND merge_phase = ?`,
-		pendingci.ScheduleActive,
-		wakeAt,
-		pendingci.TriggerManual,
-		wakeAt,
-		repositoryID,
-		pendingci.LifecycleArmed,
-		pendingci.MergeWaiting,
+	return wakePendingCIRequests(
+		ctx, tx, repositoryID, wakeAt,
+		pendingCIWakePrefix+pendingCIScopeRepository+pendingCIWakeSuffix,
+		pendingCIScopeRepository, "repository",
 	)
-	if err != nil {
-		return fmt.Errorf("wake repository pending CI requests: %w", err)
-	}
-	if _, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("read repository pending CI wake result: %w", err)
-	}
-
-	return nil
 }
 
 func wakePendingCIRequestsForTarget(
 	ctx context.Context,
-	tx runner,
+	tx *transaction,
 	targetID string,
 	wakeAt time.Time,
 ) error {
-	result, err := tx.ExecContext(ctx, `
-UPDATE pending_ci_requests SET
-    schedule = ?, next_check_at = ?, lease_expires_at = NULL,
-    next_check_trigger = ?, updated_at = ?, revision = revision + 1
-WHERE target_id = ? AND lifecycle = ? AND merge_phase = ?`,
+	return wakePendingCIRequests(
+		ctx, tx, targetID, wakeAt,
+		pendingCIWakePrefix+pendingCIScopeTarget+pendingCIWakeSuffix,
+		pendingCIScopeTarget, "target",
+	)
+}
+
+func wakePendingCIRequests(
+	ctx context.Context,
+	tx *transaction,
+	scopeID string,
+	wakeAt time.Time,
+	updateQuery string,
+	scopeFilter string,
+	scopeName string,
+) error {
+	// #nosec G202 -- both SQL fragments are package constants selected by the two wrappers above.
+	result, err := tx.ExecContext(ctx, updateQuery,
 		pendingci.ScheduleActive,
 		wakeAt,
 		pendingci.TriggerManual,
 		wakeAt,
-		targetID,
+		scopeID,
 		pendingci.LifecycleArmed,
 		pendingci.MergeWaiting,
 	)
 	if err != nil {
-		return fmt.Errorf("wake target pending CI requests: %w", err)
+		return fmt.Errorf("wake %s pending CI requests: %w", scopeName, err)
 	}
 	if _, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("read target pending CI wake result: %w", err)
+		return fmt.Errorf("read %s pending CI wake result: %w", scopeName, err)
 	}
 
-	return nil
+	return syncPendingCIQueueWhere(
+		ctx, tx, scopeFilter+" AND lifecycle = ? AND updated_at = ?",
+		scopeID, pendingci.LifecycleArmed, wakeAt,
+	)
 }
 
 func scanPendingCIGate(scanner rowScanner) (storage.PendingCIRepositoryGate, error) {

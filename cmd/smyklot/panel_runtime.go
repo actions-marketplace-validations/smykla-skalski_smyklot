@@ -73,6 +73,7 @@ func (s *server) initPanel() error {
 	}, adminpanel.Dependencies{
 		Store: s.store, Catalog: s, Users: s, Runtime: s, Candidates: s,
 		Gates:     s,
+		Queue:     s,
 		PendingCI: s.gate.NewControl(s.store),
 	})
 	if err != nil {
@@ -80,6 +81,7 @@ func (s *server) initPanel() error {
 	}
 
 	s.panel = panelServer
+	s.sync.SetQueueObserver(panelServer.AnnounceQueue)
 
 	return nil
 }
@@ -328,32 +330,6 @@ func (s *server) reconcileCatalogSnapshots(
 	}
 
 	return err
-}
-
-func (s *server) reconcileInstallationSnapshot(
-	ctx context.Context,
-	snapshot storage.InstallationSnapshot,
-) error {
-	return s.pendingCICoordinator.Exclusive(
-		ctx, bot.CatalogCoordinatorKey, func() error {
-			repositoryIDs := snapshotRepositoryIDs([]storage.InstallationSnapshot{snapshot})
-			current, err := s.store.ListRepositories(ctx, snapshot.TargetID)
-			if err != nil {
-				return fmt.Errorf(
-					"list repositories for coordinated installation catalog: %w",
-					err,
-				)
-			}
-			for _, repository := range current {
-				repositoryIDs = append(repositoryIDs, repository.ID)
-			}
-
-			return bot.ExclusiveRepositories(
-				ctx, s.pendingCICoordinator, repositoryIDs,
-				func() error { return s.store.ReconcileInstallation(ctx, snapshot) },
-			)
-		},
-	)
 }
 
 func (s *server) catalogRepositoryIDs(

@@ -139,8 +139,7 @@ WHERE id = ? AND lifecycle = ? AND revision = ?`,
 	request.CleanupAttempts = 0
 	request.CleanupError = ""
 	request.Revision++
-
-	return nil
+	return syncPendingCIQueue(ctx, tx, *request)
 }
 
 func comparePendingCICancelHistory(

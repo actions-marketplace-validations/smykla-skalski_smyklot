@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/pendingci"
 	"github.com/smykla-skalski/smyklot/internal/storage"
+	"github.com/smykla-skalski/smyklot/internal/workqueue"
 )
 
 const pendingCISelect = `
@@ -109,6 +111,9 @@ WHERE id = ? AND lifecycle = ?`,
 		)); err != nil {
 			return pendingci.ArmResult{}, err
 		}
+		if err := syncPendingCIQueue(ctx, tx, superseded); err != nil {
+			return pendingci.ArmResult{}, err
+		}
 	}
 
 	id, err := insertArmedPendingCI(ctx, tx, arm)
@@ -125,17 +130,41 @@ WHERE id = ? AND lifecycle = ?`,
 	)); err != nil {
 		return pendingci.ArmResult{}, err
 	}
+	request := armedRequest(id, arm)
+	if err := insertArmedPendingCIQueue(ctx, tx, id, arm); err != nil {
+		return pendingci.ArmResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return pendingci.ArmResult{}, fmt.Errorf("commit pending CI arm: %w", err)
 	}
 
-	request := armedRequest(id, arm)
 	resultValue := pendingci.ArmResult{Request: request}
 	if superseded.ID != 0 {
 		resultValue.Superseded = &superseded
 	}
 
 	return resultValue, nil
+}
+
+func insertArmedPendingCIQueue(
+	ctx context.Context,
+	tx *transaction,
+	id int64,
+	arm pendingci.ArmRequest,
+) error {
+	sourceID := strconv.FormatInt(id, 10)
+
+	return insertLinkedQueueItem(ctx, tx, linkedQueueItem{
+		ID: "pending-ci:" + sourceID, Kind: workqueue.KindPendingCI,
+		Lane: workqueue.LanePendingCI, TargetID: arm.TargetID,
+		RepositoryID: &arm.RepositoryID, SourceKind: queueSourcePendingCI,
+		SourceID: sourceID,
+		Title:    fmt.Sprintf("Pending CI %s #%d", arm.RepositoryFullName, arm.PullRequest),
+		Summary:  "Waiting for required checks", State: workqueue.StateScheduled,
+		NotBefore: arm.RequestedAt,
+		ActorID:   queueActorSystem,
+		Details:   map[string]any{"pull_request": arm.PullRequest, "head_sha": arm.HeadSHA},
+	})
 }
 
 func normalizedArmRequest(arm pendingci.ArmRequest) pendingci.ArmRequest {
@@ -315,9 +344,11 @@ func (s *Store) LeaseDue(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	request, err := selectDuePendingCI(ctx, tx, now)
+	request, choice, err := s.selectDuePendingCI(ctx, tx, now)
 	if errors.Is(err, sql.ErrNoRows) {
-		availableAt, availableErr := nextPendingCIAvailability(ctx, tx)
+		availableAt, availableErr := nextQueueAvailability(
+			ctx, tx, workqueue.LanePendingCI, now,
+		)
 		if availableErr != nil {
 			return pendingci.LeaseResult{}, availableErr
 		}
@@ -366,6 +397,15 @@ WHERE id = ? AND revision = ?
 	)); err != nil {
 		return pendingci.LeaseResult{}, err
 	}
+	if err := leaseLinkedQueueItem(
+		ctx, tx, "pending-ci:"+strconv.FormatInt(request.ID, 10), now, leaseExpiresAt,
+		"Checking pull request and CI state",
+	); err != nil {
+		return pendingci.LeaseResult{}, err
+	}
+	if err := advanceQueueDispatch(ctx, tx, choice, now); err != nil {
+		return pendingci.LeaseResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return pendingci.LeaseResult{}, fmt.Errorf("commit pending CI lease: %w", err)
 	}
@@ -376,47 +416,35 @@ WHERE id = ? AND revision = ?
 	return pendingci.LeaseResult{Request: &request}, nil
 }
 
-func selectDuePendingCI(
+func (s *Store) selectDuePendingCI(
 	ctx context.Context,
 	tx *transaction,
 	now time.Time,
-) (pendingci.Request, error) {
-	return scanPendingCI(tx.QueryRowContext(ctx, pendingCISelect+`
-WHERE (lifecycle = ? OR cleanup_pending = TRUE) AND next_check_at <= ?
+) (pendingci.Request, queueDispatchChoice, error) {
+	choice, available, err := s.nextQueueDispatch(ctx, tx, workqueue.LanePendingCI, now)
+	if err != nil {
+		return pendingci.Request{}, queueDispatchChoice{}, err
+	}
+	if !available {
+		return pendingci.Request{}, queueDispatchChoice{}, sql.ErrNoRows
+	}
+	if choice.item.SourceKind != queueSourcePendingCI {
+		return pendingci.Request{}, queueDispatchChoice{}, fmt.Errorf(
+			"pending-CI queue item %q has unsupported source %q",
+			choice.item.ID, choice.item.SourceKind,
+		)
+	}
+	request, err := scanPendingCI(tx.QueryRowContext(ctx, pendingCISelect+`
+WHERE id = ? AND (lifecycle = ? OR cleanup_pending = TRUE) AND next_check_at <= ?
   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-ORDER BY CASE
-    WHEN cleanup_pending = TRUE THEN 0
-    WHEN schedule = 'active' THEN 1
-    ELSE 2
-END, next_check_at, id
-LIMIT 1`,
+	`,
+		choice.item.SourceID,
 		pendingci.LifecycleArmed,
 		now,
 		now,
 	))
-}
 
-func nextPendingCIAvailability(ctx context.Context, tx *transaction) (*time.Time, error) {
-	var available StoredTime
-	err := tx.QueryRowContext(ctx, `
-SELECT MIN(
-    CASE
-        WHEN lease_expires_at IS NOT NULL AND lease_expires_at > next_check_at
-            THEN lease_expires_at
-        ELSE next_check_at
-    END
-)
-FROM pending_ci_requests
-WHERE lifecycle = ? OR cleanup_pending = TRUE`, pendingci.LifecycleArmed).Scan(&available)
-	if err != nil {
-		return nil, fmt.Errorf("read next pending CI availability: %w", err)
-	}
-	if !available.Valid() {
-		return nil, nil
-	}
-	parsed := available.Time()
-
-	return &parsed, nil
+	return request, choice, err
 }
 
 // Wake promotes an armed request to Active exactly once per meaningful event.
@@ -478,6 +506,14 @@ WHERE id = ? AND lifecycle = ? AND revision = ?`,
 	event.EventKey = wake.EventKey
 	event.DeliveryID = wake.DeliveryID
 	if err := recordPendingCIEvent(ctx, tx, event); err != nil {
+		return false, err
+	}
+	request.Schedule = pendingci.ScheduleActive
+	request.NextCheckAt = wake.OccurredAt
+	request.NextCheckTrigger = pendingci.TriggerWebhook
+	request.LeaseExpiresAt = nil
+	request.UpdatedAt = wake.OccurredAt
+	if err := syncPendingCIQueue(ctx, tx, request); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1039,9 +1075,6 @@ WHERE id = ? AND lifecycle = ?`,
 	)); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit pending CI cancellation: %w", err)
-	}
 	request.Lifecycle = pendingci.LifecycleCancelled
 	request.Reason = change.Reason
 	request.LeaseExpiresAt = nil
@@ -1054,6 +1087,12 @@ WHERE id = ? AND lifecycle = ?`,
 	request.CleanupAttempts = 0
 	request.CleanupError = ""
 	request.Revision++
+	if err := syncPendingCIQueue(ctx, tx, request); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit pending CI cancellation: %w", err)
+	}
 
 	return &request, nil
 }

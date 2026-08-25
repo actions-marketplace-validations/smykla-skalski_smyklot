@@ -88,6 +88,7 @@ export class PanelSession {
   selectedId = $state<string | null>(null);
   failure = $state<PanelFailure | null>(null);
   notificationUnread = $state(0);
+  queueRevision = $state(0);
   streamReady = $state(false);
   /** Set from the stream's handshake; see `StreamLiveness`. */
   private readonly stream: StreamLiveness;
@@ -319,7 +320,10 @@ export class PanelSession {
     if (this.isRootMode) {
       const route = this.currentRootRoute;
       if (route.rootView === 'installation') {
-        return ['repositories', 'users', 'invitations', 'history'].includes(route.view);
+        return (
+          ['repositories', 'users', 'invitations', 'history'].includes(route.view) &&
+          (route.view !== 'repositories' || route.repository === undefined)
+        );
       }
 
       return (
@@ -331,7 +335,11 @@ export class PanelSession {
 
     return (
       this.selectedTarget !== null &&
-      ['repositories', 'users', 'invitations', 'history'].includes(this.currentView)
+      ['repositories', 'users', 'invitations', 'history'].includes(this.currentView) &&
+      /* Repository lists own a bounded table scroller. A repository detail is a
+         document-length settings page, so trapping its workspace at 100dvh clips
+         the controls below the fold with no element left that can scroll. */
+      (this.currentView !== 'repositories' || this.currentRepository === null)
     );
   }
 
@@ -796,6 +804,11 @@ export class PanelSession {
   }
 
   invalidateChange(event: PanelChangeEvent): void {
+    if (event.type === 'queue.changed') {
+      this.queueRevision += 1;
+      void this.queryClient.invalidateQueries({ queryKey: ['sync-plan'] });
+      return;
+    }
     const targetId = event.target_id;
     // The server has no notification-specific event. Any audited change can
     // produce a new Owner notification, which is why the old shell refreshed
