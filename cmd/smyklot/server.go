@@ -107,9 +107,10 @@ type server struct {
 	logLevel *slog.LevelVar
 	redactor *logging.Redactor
 
-	runtimeMu           sync.RWMutex
-	runtimeBotConfig    *config.Config
-	runtimePollInterval time.Duration
+	runtimeMu                   sync.RWMutex
+	runtimeBackgroundWorkPaused bool
+	runtimeBotConfig            *config.Config
+	runtimePollInterval         time.Duration
 
 	// runtimePathIndexInterval is how often a repository's file list is checked
 	// for changes, for every installation that does not say otherwise. Held
@@ -216,6 +217,7 @@ func newServer(cfg *serveConfig) (*server, error) {
 		return nil, err
 	}
 	srv.sync = apply.New(srv.store, tokens, cfg.apiBaseURL)
+	srv.sync.SetBeginWork(srv.beginBackgroundWork)
 	pendingCICoordinator := bot.NewCoordinator()
 	srv.pendingCICoordinator = pendingCICoordinator
 	srv.sync.SetCoordinator(pendingCICoordinator)
@@ -236,6 +238,7 @@ func newServer(cfg *serveConfig) (*server, error) {
 		Panelled:    cfg.panel != nil,
 		WakeGates:   srv.WakePendingCIGates,
 		Logger:      srv.logger,
+		BeginWork:   srv.beginBackgroundWork,
 	})
 	if err := srv.initPanel(); err != nil {
 		_ = srv.store.Close()

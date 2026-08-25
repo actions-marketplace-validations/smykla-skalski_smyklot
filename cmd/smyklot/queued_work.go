@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/workqueue"
@@ -32,7 +34,7 @@ func (s *server) runRecurringWorkWithSummary(
 	run func() (string, error),
 ) (bool, error) {
 	now := time.Now().UTC()
-	item, claimed, err := s.store.ClaimRecurringWork(ctx, workqueue.RecurringClaim{
+	item, claimed, err := s.claimRecurringWork(ctx, workqueue.RecurringClaim{
 		Kind: work.kind, TargetID: work.targetID, RepositoryID: work.repositoryID,
 		Title: work.title, Now: now, LeaseDuration: recurringWorkLease,
 	})
@@ -44,6 +46,19 @@ func (s *server) runRecurringWorkWithSummary(
 	return true, err
 }
 
+func (s *server) claimRecurringWork(
+	ctx context.Context,
+	claim workqueue.RecurringClaim,
+) (workqueue.Item, bool, error) {
+	release, allowed := s.beginBackgroundWork()
+	if !allowed {
+		return workqueue.Item{}, false, nil
+	}
+	defer release()
+
+	return s.store.ClaimRecurringWork(ctx, claim)
+}
+
 func (s *server) runClaimedRecurringWorkWithSummary(
 	ctx context.Context,
 	item workqueue.Item,
@@ -52,12 +67,8 @@ func (s *server) runClaimedRecurringWorkWithSummary(
 ) error {
 	s.announceRecurringWork(work)
 	successSummary, runErr := run()
-	failure := ""
-	if runErr != nil {
-		failure = runErr.Error()
-	}
 	_, finishErr := s.store.FinishRecurringWork(
-		ctx, item.ID, failure, successSummary, time.Now().UTC(),
+		ctx, item.ID, recurringCompletion(successSummary, runErr), time.Now().UTC(),
 	)
 	s.announceRecurringWork(work)
 
@@ -65,6 +76,28 @@ func (s *server) runClaimedRecurringWorkWithSummary(
 	// Only a failure to persist that outcome should stop the shared dispatcher;
 	// otherwise one repository failure would back off unrelated maintenance.
 	return finishErr
+}
+
+func recurringCompletion(
+	successSummary string,
+	runErr error,
+) workqueue.RecurringCompletion {
+	if runErr == nil {
+		return workqueue.RecurringCompletion{SuccessSummary: successSummary}
+	}
+	var blocker interface{ QueueBlockReason() string }
+	if errors.As(runErr, &blocker) {
+		return workqueue.RecurringCompletion{
+			Failure: strings.TrimSpace(blocker.QueueBlockReason()), Blocked: true,
+		}
+	}
+	var classified interface{ Retryable() bool }
+	retryable := true
+	if errors.As(runErr, &classified) {
+		retryable = classified.Retryable()
+	}
+
+	return workqueue.RecurringCompletion{Failure: runErr.Error(), Retryable: retryable}
 }
 
 func (s *server) announceRecurringWork(work recurringWork) {

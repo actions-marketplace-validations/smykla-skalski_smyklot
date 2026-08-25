@@ -126,6 +126,9 @@ func (s *server) nextMaintenanceDelay(
 	ctx context.Context,
 	fallback time.Duration,
 ) (*time.Duration, error) {
+	if s.backgroundWorkPaused() {
+		return nil, nil
+	}
 	now := time.Now().UTC()
 	next, err := s.store.NextQueueAvailability(ctx, workqueue.LaneMaintenance, now)
 	if err != nil {
@@ -154,6 +157,9 @@ func (s *server) nextMaintenanceDelay(
 }
 
 func (s *server) dispatchMaintenanceQueue(ctx context.Context) error {
+	if s.backgroundWorkPaused() {
+		return nil
+	}
 	if s.panel != nil {
 		return s.dispatchDurableMaintenance(ctx)
 	}
@@ -630,7 +636,7 @@ func (s *server) reconcileActivePendingCIGate(
 		if readErr != nil {
 			return readErr
 		}
-		enabled = storage.RepositoryEnabled(freshTarget, freshRepository)
+		enabled = repositoryEnabled(freshTarget, freshRepository)
 
 		return s.gate.Gates.Reconcile(
 			ctx, client, freshTarget, freshRepository, prs, enabled,
@@ -651,6 +657,14 @@ func (s *server) migrateRepositoryConfig(
 	targetID string,
 	repo github.Repository,
 ) error {
+	if s.panel != nil {
+		_, _, enabled, err := s.automaticRepositoryControls(
+			ctx, targetID, storage.RepositoryID(repo.ID),
+		)
+		if err != nil || !enabled {
+			return err
+		}
+	}
 	// The read is the same one serviceConfig has already made for this
 	// repository, so it costs a map lookup whether or not there is a panel to
 	// remember an answer in. proposeConfigMigration is where that is decided.
