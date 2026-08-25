@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.4](https://github.com/smykla-skalski/smyklot/compare/v1.48.3...v1.48.4) (2026-08-25)
+
+### Bug Fixes
+
+* **service:** own listeners before serving ([#325](https://github.com/smykla-skalski/smyklot/issues/325)) ([25b06cc](https://github.com/smykla-skalski/smyklot/commit/25b06ccf95d070a7e880b1b466d93ded4e177c7d))
+
 ## [1.48.3](https://github.com/smykla-skalski/smyklot/compare/v1.48.2...v1.48.3) (2026-08-25)
 
 ### Performance Improvements
