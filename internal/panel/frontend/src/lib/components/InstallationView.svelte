@@ -146,7 +146,7 @@
           <GeneralQueueView
             api={session.api}
             targetId={session.selectedTarget.id}
-            refreshRevision={session.queueRevision}
+            section={session.currentQueueSection}
             canControl={session.selectedTarget.effective_role === 'admin' ||
               session.selectedTarget.effective_role === 'owner'}
           />
@@ -165,7 +165,6 @@
             api={session.api}
             targetId={session.selectedTarget.id}
             actorAccountId={session.viewer?.account.id ?? ''}
-            refreshRevision={session.queueRevision}
             canRequest={session.selectedTarget.effective_role === 'admin' ||
               session.selectedTarget.effective_role === 'owner'}
           />

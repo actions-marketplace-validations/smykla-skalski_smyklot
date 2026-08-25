@@ -14,6 +14,6 @@
     api={session.api}
     rootRole={session.rootRole}
     canControl
-    refreshRevision={session.queueRevision}
+    section={session.currentQueueSection}
   />
 </section>

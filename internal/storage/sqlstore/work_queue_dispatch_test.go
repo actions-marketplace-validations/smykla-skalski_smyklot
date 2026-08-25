@@ -131,6 +131,51 @@ func TestEstimateQueuePositionsDoesNotLetFuturePriorityJumpReadyWork(t *testing.
 	}
 }
 
+func TestEstimateQueuePositionsAdmitsWorkBeforeTheNextVirtualSlot(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	first := dispatchFixture("first-low", workqueue.PriorityLow, "target", now)
+	second := dispatchFixture("second-low", workqueue.PriorityLow, "target", now)
+	urgent := dispatchFixture(
+		"future-urgent", workqueue.PriorityUrgent, "target", now.Add(time.Minute),
+	)
+
+	positions := estimateQueuePositions(
+		[]workqueue.Item{first, second, urgent}, queueDispatchState{}, 2*time.Minute, now,
+	)
+	if positions[urgent.ID].ahead != 1 {
+		t.Fatalf("future urgent work ahead = %d, want 1", positions[urgent.ID].ahead)
+	}
+	if positions[urgent.ID].estimated != now.Add(2*time.Minute) {
+		t.Fatalf(
+			"future urgent estimate = %s, want %s",
+			positions[urgent.ID].estimated,
+			now.Add(2*time.Minute),
+		)
+	}
+}
+
+func TestEstimateQueuePositionsKeepsWorkerBusyAcrossIdleGap(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	first := dispatchFixture(
+		"future-first", workqueue.PriorityNormal, "target", now.Add(time.Hour),
+	)
+	second := dispatchFixture(
+		"future-second", workqueue.PriorityNormal, "target", now.Add(time.Hour+30*time.Second),
+	)
+
+	positions := estimateQueuePositions(
+		[]workqueue.Item{first, second}, queueDispatchState{}, time.Minute, now,
+	)
+	if got, want := positions[first.ID].estimated, now.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("first estimate = %s, want %s", got, want)
+	}
+	if got, want := positions[second.ID].estimated, now.Add(time.Hour+time.Minute); !got.Equal(want) {
+		t.Fatalf("second estimate = %s, want %s", got, want)
+	}
+}
+
 func TestEstimateQueuePositionsMatchesReadyDispatcherOrder(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
@@ -177,6 +222,37 @@ func removeDispatchFixture(items []workqueue.Item, id string) []workqueue.Item {
 	}
 
 	return items
+}
+
+func TestQueueSummarySnapshotRequiresFullActiveRootScope(t *testing.T) {
+	t.Parallel()
+	filter := workqueue.Filter{
+		States: []workqueue.State{
+			workqueue.StateScheduled, workqueue.StateBlocked, workqueue.StateReady,
+			workqueue.StateRunning, workqueue.StateRetrying,
+		},
+		DispatchOrder: true,
+		Summary:       true,
+	}
+	if !queueSummarySnapshotComplete(filter) {
+		t.Fatal("full active Root summary should provide a complete scheduler snapshot")
+	}
+	filter.States = []workqueue.State{workqueue.StateReady}
+	if queueSummarySnapshotComplete(filter) {
+		t.Fatal("partial state summary must not estimate from an incomplete snapshot")
+	}
+}
+
+func TestDispatchOrderReadsOneCompleteSnapshot(t *testing.T) {
+	t.Parallel()
+	filter := workqueue.Filter{Limit: 3, Offset: 40, DispatchOrder: true}
+	limit, offset, bounded := queueSelectionBounds(filter)
+	if bounded {
+		t.Fatal("dispatch order must not limit a snapshot from an earlier count")
+	}
+	if limit != 3 || offset != 40 {
+		t.Fatalf("pagination = (%d, %d), want (3, 40)", limit, offset)
+	}
 }
 
 func dispatchFixture(

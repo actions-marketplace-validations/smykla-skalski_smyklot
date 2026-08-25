@@ -3,11 +3,39 @@
   import { fn } from 'storybook/test';
 
   import RootOverview from '#lib/components/RootOverview.svelte';
+  import { queueListKey, ROOT_OVERVIEW_ACTIVE_QUEUE } from '#lib/queue-cache.js';
+  import type { QueueItem, QueuePage } from '#lib/types.js';
   import Seeded from '../support/Seeded.svelte';
   import { stubApi } from '../support/api.js';
-  import { OVERVIEW } from '../support/fixtures.js';
+  import { GENERAL_QUEUE, OVERVIEW } from '../support/fixtures.js';
 
   const KEY = ['root-overview'] as const;
+  const ACTIVE_KEY = queueListKey(undefined, ROOT_OVERVIEW_ACTIVE_QUEUE);
+  const active = GENERAL_QUEUE.filter((item) =>
+    ['scheduled', 'blocked', 'ready', 'running', 'retrying'].includes(item.state),
+  );
+
+  function queuePage(items: QueueItem[]): QueuePage {
+    return {
+      items: items.slice(0, 3),
+      next_offset: 0,
+      total: items.length,
+      state_counts: GENERAL_QUEUE.reduce<NonNullable<QueuePage['state_counts']>>((counts, item) => {
+        counts[item.state] = (counts[item.state] ?? 0) + 1;
+        return counts;
+      }, {}),
+      facets: {
+        targets: [],
+        repositories: [],
+        profiles: [],
+        states: [],
+        workloads: [],
+        priorities: [],
+      },
+    };
+  }
+
+  const QUEUE_SEED: Array<[readonly unknown[], QueuePage]> = [[ACTIVE_KEY, queuePage(active)]];
 
   const base = {
     api: stubApi(),
@@ -22,8 +50,6 @@
     onOpenInbox: fn(),
     queueHref: '#/root/queue',
     onOpenQueue: fn(),
-    requestHref: (id: string) => `#/root/queue/request/${id}`,
-    onOpenRequest: fn(),
   };
 
   const { Story } = defineMeta({
@@ -41,7 +67,7 @@
 -->
 <Story name="Healthy">
   {#snippet template(args)}
-    <Seeded seed={[[KEY, OVERVIEW]]}><RootOverview {...args} /></Seeded>
+    <Seeded seed={[[KEY, OVERVIEW], ...QUEUE_SEED]}><RootOverview {...args} /></Seeded>
   {/snippet}
 </Story>
 
@@ -70,6 +96,7 @@
             },
           },
         ],
+        ...QUEUE_SEED,
       ]}
     >
       <RootOverview {...args} />
@@ -83,6 +110,7 @@
     <Seeded
       seed={[
         [KEY, { ...OVERVIEW, ownership: { fresh: 1, stale: 0, permission_pending: 2, error: 1 } }],
+        ...QUEUE_SEED,
       ]}
     >
       <RootOverview {...args} />
@@ -93,7 +121,7 @@
 <!-- Nothing has answered yet. -->
 <Story name="Loading">
   {#snippet template(args)}
-    <Seeded>
+    <Seeded seed={QUEUE_SEED}>
       <RootOverview {...args} api={stubApi({ fetchRootOverview: () => new Promise(() => {}) })} />
     </Seeded>
   {/snippet}

@@ -3,18 +3,25 @@
   import { fn } from 'storybook/test';
 
   import QueueSummary from '#lib/components/QueueSummary.svelte';
-  import { NOW, QUEUE } from '../support/fixtures.js';
+  import { GENERAL_QUEUE, NOW } from '../support/fixtures.js';
+
+  const active = GENERAL_QUEUE.filter((item) =>
+    ['scheduled', 'blocked', 'ready', 'running', 'retrying'].includes(item.state),
+  );
+  const approvals = GENERAL_QUEUE.filter((item) => item.state === 'awaiting_approval').length;
+  const review = active.filter((item) => ['blocked', 'retrying'].includes(item.state)).length;
 
   const { Story } = defineMeta({
     title: 'Views/QueueSummary',
     component: QueueSummary,
     args: {
-      queue: QUEUE,
+      items: active,
+      total: active.length,
+      approvals,
+      review,
       now: NOW,
       queueHref: '#/root/queue',
       onOpenQueue: fn(),
-      requestHref: (id: string) => `#/root/queue/request/${id}`,
-      onOpenRequest: fn(),
     },
   });
 </script>
@@ -27,9 +34,6 @@
 <Story name="Waiting and recent" />
 
 <!-- Nothing armed: the summary has to say so rather than draw an empty table. -->
-<Story name="Empty" args={{ queue: { active: [], deferred: [], recent: [] } }} />
+<Story name="Empty" args={{ items: [], total: 0, approvals: 0, review: 0 }} />
 
-<Story
-  name="Only deferred"
-  args={{ queue: { active: [], deferred: QUEUE.deferred, recent: [] } }}
-/>
+<Story name="Only approvals" args={{ items: [], total: 0, approvals: 2, review: 0 }} />

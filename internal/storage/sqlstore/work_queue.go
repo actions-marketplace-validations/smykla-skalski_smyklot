@@ -43,19 +43,23 @@ func (s *Store) ListWorkQueue(
 	if len(clauses) > 0 {
 		where = " WHERE " + strings.Join(clauses, " AND ")
 	}
+	limit, offset, bounded := queueSelectionBounds(filter)
 	var total int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM queue_items"+where, arguments...).Scan(&total); err != nil {
-		return workqueue.Page{}, fmt.Errorf("count queue items: %w", err)
+	if bounded {
+		if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM queue_items"+where, arguments...).Scan(&total); err != nil {
+			return workqueue.Page{}, fmt.Errorf("count queue items: %w", err)
+		}
 	}
-	limit := pageLimit(filter.Limit)
-	offset := max(filter.Offset, 0)
-	arguments = append(arguments, limit+1, offset)
-	rows, err := s.db.QueryContext(ctx, "SELECT"+queueItemColumns+`
-FROM queue_items`+where+`
+	query := "SELECT" + queueItemColumns + `
+FROM queue_items` + where + `
 ORDER BY CASE WHEN finished_at IS NULL THEN 0 ELSE 1 END,
          CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
-         eligible_at, updated_at DESC, id
-LIMIT ? OFFSET ?`, arguments...)
+         eligible_at, updated_at DESC, id`
+	if bounded {
+		query += "\nLIMIT ? OFFSET ?"
+		arguments = append(arguments, limit+1, offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return workqueue.Page{}, fmt.Errorf("list queue items: %w", err)
 	}
@@ -63,13 +67,55 @@ LIMIT ? OFFSET ?`, arguments...)
 	if err != nil {
 		return workqueue.Page{}, fmt.Errorf("read queue items: %w", err)
 	}
+	if !bounded {
+		total = len(items)
+	}
+	var positionErr error
+	if queueSummarySnapshotComplete(filter) {
+		positionErr = s.addQueuePositionsFromSnapshot(ctx, items)
+	} else {
+		positionErr = s.addQueuePositions(ctx, items)
+	}
+	if positionErr != nil {
+		return workqueue.Page{}, positionErr
+	}
+	if filter.DispatchOrder {
+		sortQueueItemsForDispatch(items)
+		items, next := paginateQueueItems(items, limit, offset)
+
+		return s.queuePageWithFacets(ctx, filter, items, next, total)
+	}
 	next := 0
 	if len(items) > limit {
 		items = items[:limit]
 		next = offset + limit
 	}
-	if err := s.addQueuePositions(ctx, items); err != nil {
-		return workqueue.Page{}, err
+
+	return s.queuePageWithFacets(ctx, filter, items, next, total)
+}
+
+func queueSelectionBounds(filter workqueue.Filter) (limit, offset int, bounded bool) {
+	limit, offset = pageLimit(filter.Limit), max(filter.Offset, 0)
+
+	return limit, offset, !filter.DispatchOrder
+}
+
+func (s *Store) queuePageWithFacets(
+	ctx context.Context,
+	filter workqueue.Filter,
+	items []workqueue.Item,
+	next, total int,
+) (workqueue.Page, error) {
+	if filter.Summary {
+		stateCounts, err := s.queueStateCounts(ctx, filter.TargetID)
+		if err != nil {
+			return workqueue.Page{}, err
+		}
+
+		return workqueue.Page{
+			Items: items, NextOffset: next, Total: total,
+			Facets: emptyQueueFacets(), StateCounts: stateCounts,
+		}, nil
 	}
 	facets, err := s.queueFacets(ctx, filter.TargetID)
 	if err != nil {
@@ -77,6 +123,78 @@ LIMIT ? OFFSET ?`, arguments...)
 	}
 
 	return workqueue.Page{Items: items, NextOffset: next, Total: total, Facets: facets}, nil
+}
+
+func queueSummarySnapshotComplete(filter workqueue.Filter) bool {
+	if !filter.Summary || !filter.DispatchOrder || len(filter.States) != 5 {
+		return false
+	}
+	active := map[workqueue.State]bool{
+		workqueue.StateScheduled: true, workqueue.StateBlocked: true,
+		workqueue.StateReady: true, workqueue.StateRunning: true,
+		workqueue.StateRetrying: true,
+	}
+	for _, state := range filter.States {
+		if !active[state] {
+			return false
+		}
+		delete(active, state)
+	}
+	if len(active) != 0 {
+		return false
+	}
+
+	return filter.TargetID == nil &&
+		filter.RepositoryID == nil && filter.ProfileID == nil && len(filter.Kinds) == 0 &&
+		len(filter.Priorities) == 0 && filter.CreatedAfter == nil && filter.CreatedBefore == nil
+}
+
+func paginateQueueItems(items []workqueue.Item, limit, offset int) ([]workqueue.Item, int) {
+	start := min(offset, len(items))
+	end := min(start+limit, len(items))
+	next := 0
+	if end < len(items) {
+		next = end
+	}
+
+	return items[start:end], next
+}
+
+func sortQueueItemsForDispatch(items []workqueue.Item) {
+	sort.SliceStable(items, func(left, right int) bool {
+		leftRank, rightRank := dispatchListRank(items[left]), dispatchListRank(items[right])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		leftAt, rightAt := queueItemEstimate(items[left]), queueItemEstimate(items[right])
+		if !leftAt.Equal(rightAt) {
+			return leftAt.Before(rightAt)
+		}
+		if items[left].WorkAhead != items[right].WorkAhead {
+			return items[left].WorkAhead < items[right].WorkAhead
+		}
+
+		return items[left].ID < items[right].ID
+	})
+}
+
+func dispatchListRank(item workqueue.Item) int {
+	switch item.State {
+	case workqueue.StateRunning:
+		return 0
+	case workqueue.StateBlocked:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func queueItemEstimate(item workqueue.Item) time.Time {
+	if item.EstimatedStartAt != nil {
+		return *item.EstimatedStartAt
+	}
+
+	return item.EligibleAt
 }
 
 func queueFilters(filter workqueue.Filter) ([]string, []any) {
@@ -123,11 +241,7 @@ func queueFilters(filter workqueue.Filter) ([]string, []any) {
 }
 
 func (s *Store) queueFacets(ctx context.Context, targetID *string) (workqueue.Facets, error) {
-	facets := workqueue.Facets{
-		Targets: []string{}, Repositories: []string{}, Profiles: []string{},
-		States: []workqueue.State{}, Kinds: []workqueue.Kind{},
-		Priorities: []workqueue.Priority{},
-	}
+	facets := emptyQueueFacets()
 	queries := []struct {
 		expression string
 		append     func(string)
@@ -146,6 +260,46 @@ func (s *Store) queueFacets(ctx context.Context, targetID *string) (workqueue.Fa
 	}
 
 	return facets, nil
+}
+
+func emptyQueueFacets() workqueue.Facets {
+	return workqueue.Facets{
+		Targets: []string{}, Repositories: []string{}, Profiles: []string{},
+		States: []workqueue.State{}, Kinds: []workqueue.Kind{},
+		Priorities: []workqueue.Priority{},
+	}
+}
+
+func (s *Store) queueStateCounts(
+	ctx context.Context,
+	targetID *string,
+) (map[workqueue.State]int, error) {
+	query := "SELECT state, COUNT(*) FROM queue_items"
+	var arguments []any
+	if targetID != nil {
+		query += " WHERE " + queryTargetIDEquals
+		arguments = append(arguments, *targetID)
+	}
+	query += " GROUP BY state"
+	rows, err := s.db.QueryContext(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("count queue states: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	counts := make(map[workqueue.State]int)
+	for rows.Next() {
+		var state workqueue.State
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, fmt.Errorf("read queue state count: %w", err)
+		}
+		counts[state] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read queue state counts: %w", err)
+	}
+
+	return counts, nil
 }
 
 func (s *Store) readQueueFacet(
@@ -190,7 +344,6 @@ func queueInClause[T ~string](column string, values []T) (string, []any) {
 }
 
 func (s *Store) addQueuePositions(ctx context.Context, items []workqueue.Item) error {
-	profiles := make(map[string]workqueue.Profile)
 	positions := make(map[string]queuePosition)
 	for _, lane := range []workqueue.Lane{
 		workqueue.LaneWebhook, workqueue.LanePendingCI, workqueue.LaneMaintenance,
@@ -203,6 +356,51 @@ func (s *Store) addQueuePositions(ctx context.Context, items []workqueue.Item) e
 			positions[id] = position
 		}
 	}
+
+	return s.decorateQueuePositions(ctx, items, positions)
+}
+
+func (s *Store) addQueuePositionsFromSnapshot(
+	ctx context.Context,
+	items []workqueue.Item,
+) error {
+	positions := make(map[string]queuePosition)
+	now := time.Now().UTC()
+	for _, lane := range []workqueue.Lane{
+		workqueue.LaneWebhook, workqueue.LanePendingCI, workqueue.LaneMaintenance,
+	} {
+		laneItems := make([]workqueue.Item, 0)
+		for _, item := range items {
+			if item.Lane != lane || item.State == workqueue.StateBlocked {
+				continue
+			}
+			laneItems = append(laneItems, item)
+		}
+		if len(laneItems) == 0 {
+			continue
+		}
+		state, err := s.readQueueDispatchState(ctx, lane)
+		if err != nil {
+			return err
+		}
+		duration, err := s.estimatedLaneDuration(ctx, lane)
+		if err != nil {
+			return err
+		}
+		for id, position := range estimateQueuePositions(laneItems, state, duration, now) {
+			positions[id] = position
+		}
+	}
+
+	return s.decorateQueuePositions(ctx, items, positions)
+}
+
+func (s *Store) decorateQueuePositions(
+	ctx context.Context,
+	items []workqueue.Item,
+	positions map[string]queuePosition,
+) error {
+	profiles := make(map[string]workqueue.Profile)
 	for index := range items {
 		if items[index].ProfileID != nil {
 			profile, ok := profiles[*items[index].ProfileID]
@@ -363,7 +561,11 @@ func estimateQueuePositions(
 		scheduler.add(item)
 	}
 	sortQueuePositionItems(waiting)
-	estimateWaitingQueuePositions(positions, waiting, scheduler, running, duration, now)
+	workers := 1
+	if len(items) > 0 {
+		workers = items[0].Lane.Workers()
+	}
+	estimateWaitingQueuePositions(positions, waiting, scheduler, running, workers, duration, now)
 
 	return positions
 }
@@ -404,19 +606,29 @@ func estimateWaitingQueuePositions(
 	waiting []workqueue.Item,
 	scheduler *queuePositionScheduler,
 	running int,
+	workers int,
 	duration time.Duration,
 	now time.Time,
 ) {
 	nextWaiting := 0
 	nextWaiting = addReadyQueuePositionItems(scheduler, waiting, nextWaiting, now)
+	workerAvailable := queueWorkerAvailability(workers, running, duration, now)
 	queuedAhead := 0
 	for scheduler.pending > 0 || nextWaiting < len(waiting) {
+		worker := earliestQueueWorker(workerAvailable)
+		slotAt := workerAvailable[worker]
+		if nextWaiting < len(waiting) {
+			nextWaiting = addReadyQueuePositionItems(scheduler, waiting, nextWaiting, slotAt)
+		}
 		if scheduler.pending == 0 {
+			if waiting[nextWaiting].EligibleAt.After(slotAt) {
+				slotAt = waiting[nextWaiting].EligibleAt
+			}
 			nextWaiting = addReadyQueuePositionItems(
 				scheduler,
 				waiting,
 				nextWaiting,
-				waiting[nextWaiting].EligibleAt,
+				slotAt,
 			)
 		}
 		item, ok := scheduler.next()
@@ -424,14 +636,42 @@ func estimateWaitingQueuePositions(
 			break
 		}
 		ahead := running + queuedAhead
-		estimated := item.EligibleAt
-		if estimated.Before(now) {
-			estimated = now
+		estimated := slotAt
+		if estimated.Before(item.EligibleAt) {
+			estimated = item.EligibleAt
 		}
-		estimated = estimated.Add(time.Duration(ahead/item.Lane.Workers()) * duration)
 		positions[item.ID] = queuePosition{ahead: ahead, estimated: estimated}
+		workerAvailable[worker] = estimated.Add(duration)
 		queuedAhead++
 	}
+}
+
+func queueWorkerAvailability(
+	workers int,
+	running int,
+	duration time.Duration,
+	now time.Time,
+) []time.Time {
+	available := make([]time.Time, workers)
+	for index := range available {
+		available[index] = now
+		if index < running {
+			available[index] = now.Add(duration)
+		}
+	}
+
+	return available
+}
+
+func earliestQueueWorker(available []time.Time) int {
+	earliest := 0
+	for index := 1; index < len(available); index++ {
+		if available[index].Before(available[earliest]) {
+			earliest = index
+		}
+	}
+
+	return earliest
 }
 
 func addReadyQueuePositionItems(

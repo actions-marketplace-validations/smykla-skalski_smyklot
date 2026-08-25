@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
+  import { onMount } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import type { PanelApi } from '#lib/api.js';
+  import { queueDetailKey, queueListKey, queueListScopeKey } from '#lib/queue-cache.js';
+  import type { QueueSection } from '#lib/routes.js';
   import type {
     QueueActionInput,
     QueueActionType,
@@ -20,35 +23,31 @@
   import QueueDetailDialog from './QueueDetailDialog.svelte';
   import QueueTable from './QueueTable.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
-  import SegmentedControl from './SegmentedControl.svelte';
   import TableToolsMenu, { type ToolsFilter } from './TableToolsMenu.svelte';
-
-  type Section = 'active' | 'approvals' | 'history';
 
   const {
     api,
     targetId,
     rootRole = '',
     canControl = false,
-    refreshRevision = 0,
+    section = 'active',
   }: {
     api: PanelApi;
     targetId?: string;
     rootRole?: string;
     canControl?: boolean;
-    refreshRevision?: number;
+    section?: QueueSection;
   } = $props();
 
-  let items = $state.raw<QueueItem[]>([]);
-  let facets = $state.raw<QueuePage['facets']>({
+  const emptyFacets: QueuePage['facets'] = {
     targets: [],
     repositories: [],
     profiles: [],
     states: [],
     workloads: [],
     priorities: [],
-  });
-  let section = $state<Section>('active');
+  };
+  const queryClient = useQueryClient();
   let workload = $state<QueueWorkload | 'all'>('all');
   let priority = $state<QueuePriority | 'all'>('all');
   let stateFilter = $state('all');
@@ -56,25 +55,39 @@
   let installation = $state('all');
   let repository = $state('all');
   let timeRange = $state<'all' | '24h' | '7d'>('all');
-  let loading = $state(true);
-  let error = $state('');
   let announcement = $state('');
   let selected = $state<QueueItem | null>(null);
   let selectedAction = $state<QueueActionType | null>(null);
   let actionBusy = $state(false);
   let actionError = $state('');
-  let detail = $state<QueueDetail | null>(null);
   let detailOpen = $state(false);
-  let detailLoading = $state(false);
-  let detailError = $state('');
-  let detailRefreshRevision = -1;
+  let detailItemID = $state<string | null>(null);
   let now = $state(Date.now());
+  let rangeNow = $state(Date.now());
   let offset = $state(0);
-  let nextOffset = $state(0);
-  let total = $state(0);
-  let loadGeneration = 0;
-  let detailLoadGeneration = 0;
   const pageSize = 50;
+  const query = $derived.by(queueQuery);
+
+  const queuePageQuery = createQuery(() => ({
+    queryKey: queueListKey(targetId, query),
+    queryFn: () =>
+      targetId === undefined ? api.fetchRootQueue(query) : api.fetchTargetQueue(targetId, query),
+  }));
+  const detailQuery = createQuery(() => ({
+    queryKey: queueDetailKey(targetId, detailItemID ?? ''),
+    queryFn: () => fetchDetail(detailItemID),
+    enabled: detailOpen && detailItemID !== null,
+  }));
+  const page = $derived<QueuePage | null>(queuePageQuery.data ?? null);
+  const items = $derived<QueueItem[]>(page?.items ?? []);
+  const facets = $derived<QueuePage['facets']>(page?.facets ?? emptyFacets);
+  const nextOffset = $derived(page?.next_offset ?? 0);
+  const total = $derived(page?.total ?? 0);
+  const loading = $derived(queuePageQuery.isFetching);
+  const error = $derived(errorMessage(queuePageQuery.error));
+  const detail = $derived<QueueDetail | null>(detailQuery.data ?? null);
+  const detailLoading = $derived(detailQuery.isFetching);
+  const detailError = $derived(errorMessage(detailQuery.error));
 
   const workloads = $derived(facets.workloads);
   const profiles = $derived(facets.profiles);
@@ -83,7 +96,6 @@
   const states = $derived(facets.states.filter((value) => sectionStates(section).includes(value)));
   const rangeStart = $derived(total === 0 ? 0 : offset + 1);
   const rangeEnd = $derived(Math.min(offset + items.length, total));
-  const query = $derived.by(queueQuery);
   const queueFilters = $derived<ToolsFilter[]>([
     {
       label: 'Workload',
@@ -198,6 +210,7 @@
       fallbackValue: 'all',
       onChange: (values: string[]) => {
         timeRange = (values[0] ?? 'all') as 'all' | '24h' | '7d';
+        rangeNow = Date.now();
         offset = 0;
       },
     },
@@ -225,36 +238,29 @@
   ]);
 
   onMount(() => {
-    const refresh = window.setInterval(() => {
-      void load(false);
-      const itemID = detailOpen ? detail?.item.id : undefined;
-      if (itemID !== undefined) void loadDetail(itemID, false, refreshRevision);
-    }, 30_000);
     const clock = window.setInterval(() => (now = Date.now()), 1_000);
+    const rangeClock = window.setInterval(() => {
+      if (timeRange !== 'all') rangeNow = Date.now();
+    }, 60_000);
     return () => {
-      window.clearInterval(refresh);
       window.clearInterval(clock);
+      window.clearInterval(rangeClock);
     };
   });
 
-  $effect(() => {
-    const revision = refreshRevision;
-    const nextQuery = query;
-    untrack(() => void load(items.length === 0, nextQuery, revision));
-  });
+  function errorMessage(cause: unknown): string {
+    if (cause === null || cause === undefined) return '';
+    return cause instanceof Error ? cause.message : String(cause);
+  }
 
-  $effect(() => {
-    const revision = refreshRevision;
-    const itemID = detailOpen ? detail?.item.id : undefined;
-    if (revision > detailRefreshRevision && itemID !== undefined) {
-      untrack(() => {
-        detailRefreshRevision = revision;
-        void loadDetail(itemID, false, revision);
-      });
-    }
-  });
+  async function fetchDetail(itemID: string | null): Promise<QueueDetail> {
+    if (itemID === null) throw new Error('Queue item is no longer selected');
+    return targetId === undefined
+      ? api.fetchRootQueueItem(itemID)
+      : api.fetchTargetQueueItem(targetId, itemID);
+  }
 
-  function sectionStates(value: Section): QueueItem['state'][] {
+  function sectionStates(value: QueueSection): QueueItem['state'][] {
     if (value === 'approvals') return ['awaiting_approval'];
     if (value === 'history') return ['succeeded', 'failed', 'cancelled', 'superseded'];
     return ['scheduled', 'blocked', 'ready', 'running', 'retrying'];
@@ -274,41 +280,14 @@
     if (repository !== 'all') query.set('repository', repository);
     if (timeRange !== 'all') {
       const age = timeRange === '24h' ? 86_400_000 : 604_800_000;
-      query.set('created_after', new Date(Date.now() - age).toISOString());
+      query.set('created_after', new Date(rangeNow - age).toISOString());
     }
 
     return `?${query.toString()}`;
   }
 
-  function selectSection(value: Section): void {
-    section = value;
-    stateFilter = 'all';
-  }
-
-  async function load(
-    showLoading = true,
-    query = queueQuery(),
-    refreshAtStart = refreshRevision,
-  ): Promise<void> {
-    const generation = ++loadGeneration;
-    if (showLoading) loading = true;
-    try {
-      const page =
-        targetId === undefined
-          ? await api.fetchRootQueue(query)
-          : await api.fetchTargetQueue(targetId, query);
-      if (generation !== loadGeneration || refreshAtStart !== refreshRevision) return;
-      items = page.items;
-      facets = page.facets;
-      nextOffset = page.next_offset;
-      total = page.total;
-      error = '';
-    } catch (cause) {
-      if (generation !== loadGeneration || refreshAtStart !== refreshRevision) return;
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      if (generation === loadGeneration) loading = false;
-    }
+  async function load(): Promise<void> {
+    await queuePageQuery.refetch();
   }
 
   function openAction(item: QueueItem, action: QueueActionType): void {
@@ -318,41 +297,14 @@
     actionError = '';
   }
 
-  async function openDetail(item: QueueItem): Promise<void> {
+  function openDetail(item: QueueItem): void {
     detailOpen = true;
-    detailLoading = true;
-    detailError = '';
-    detail = null;
-    detailRefreshRevision = refreshRevision;
-    await loadDetail(item.id, true, refreshRevision);
-  }
-
-  async function loadDetail(itemID: string, clear: boolean, refreshAtStart: number): Promise<void> {
-    const generation = ++detailLoadGeneration;
-    if (clear) detail = null;
-    try {
-      const refreshed =
-        targetId === undefined
-          ? await api.fetchRootQueueItem(itemID)
-          : await api.fetchTargetQueueItem(targetId, itemID);
-      if (generation !== detailLoadGeneration || !detailOpen || refreshAtStart !== refreshRevision)
-        return;
-      detail = refreshed;
-    } catch (cause) {
-      if (generation !== detailLoadGeneration || !detailOpen || refreshAtStart !== refreshRevision)
-        return;
-      detailError = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      if (generation === detailLoadGeneration && detailOpen && refreshAtStart === refreshRevision)
-        detailLoading = false;
-    }
+    detailItemID = item.id;
   }
 
   function closeDetail(): void {
-    detailLoadGeneration += 1;
     detailOpen = false;
-    detailError = '';
-    detailRefreshRevision = -1;
+    detailItemID = null;
   }
 
   function closeAction(): void {
@@ -370,15 +322,27 @@
         targetId === undefined
           ? await api.actOnRootQueue(selected.id, input)
           : await api.actOnTargetQueue(targetId, selected.id, input);
-      items = items.map((item) => (item.id === updated.id ? updated : item));
+      queryClient.setQueriesData<QueuePage>({ queryKey: queueListScopeKey(targetId) }, (current) =>
+        current === undefined
+          ? current
+          : {
+              ...current,
+              items: current.items.map((item) => (item.id === updated.id ? updated : item)),
+            },
+      );
+      queryClient.setQueryData<QueueDetail>(queueDetailKey(targetId, updated.id), (current) =>
+        current === undefined ? current : { ...current, item: updated },
+      );
       announcement = `${updated.title}: ${updated.state.replaceAll('_', ' ')}`;
       selected = null;
       selectedAction = null;
       actionError = '';
-      void load(false);
+      void queryClient.invalidateQueries({ queryKey: queueListScopeKey(targetId) });
     } catch (cause) {
       actionError = cause instanceof Error ? cause.message : String(cause);
-      if (actionError.toLowerCase().includes('changed')) void load(false);
+      if (actionError.toLowerCase().includes('changed')) {
+        void queryClient.invalidateQueries({ queryKey: queueListScopeKey(targetId) });
+      }
     } finally {
       actionBusy = false;
     }
@@ -423,20 +387,6 @@
   {/if}
 
   <div class="queue-toolbar">
-    <div class="queue-tabs">
-      <SegmentedControl
-        name="queue-view"
-        label="Queue views"
-        variant="navigation"
-        value={section}
-        options={[
-          { value: 'active', label: 'Active' },
-          { value: 'approvals', label: 'Approvals' },
-          { value: 'history', label: 'History' },
-        ]}
-        onSelect={(value) => selectSection(value as Section)}
-      />
-    </div>
     <div class="queue-tools">
       <span aria-live="polite">
         {loading
@@ -450,18 +400,21 @@
   <p class="visually-hidden" aria-live="polite">{announcement}</p>
   {#if loading && items.length === 0}
     <Plate label="Loading"><p class="dim" role="status">Reading the durable queue…</p></Plate>
-  {:else if error !== ''}
+  {:else if error !== '' && page === null}
     <Plate label="Queue unavailable" tone="alarm">
       <p>{error}</p>
       <Button onclick={() => void load()}>Try again</Button>
     </Plate>
   {:else}
-    <QueueTable
-      {items}
-      clock={() => now}
-      onOpen={(item) => void openDetail(item)}
-      onAction={openAction}
-    />
+    {#if error !== ''}
+      <Plate label="Queue update delayed" tone="alarm">
+        <p>{error}</p>
+        <Button onclick={() => void load()}>Try again</Button>
+      </Plate>
+    {/if}
+    {#key query}
+      <QueueTable {items} clock={() => now} onOpen={openDetail} onAction={openAction} />
+    {/key}
     {#if total > 0}
       <nav class="queue-pagination" aria-label="Queue pages">
         <p>Showing {rangeStart}–{rangeEnd} of {total}</p>
@@ -511,12 +464,7 @@
     align-items: center;
     display: flex;
     gap: var(--space-3);
-    justify-content: space-between;
-    padding-bottom: var(--space-1);
-  }
-  .queue-tabs {
-    display: flex;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
   .queue-tools {
     align-items: center;
@@ -544,16 +492,6 @@
     gap: var(--space-2);
   }
   @media (max-width: 36rem) {
-    .queue-toolbar {
-      align-items: stretch;
-      flex-direction: column;
-    }
-    .queue-tabs :global(fieldset) {
-      width: 100%;
-    }
-    .queue-tabs :global(label) {
-      flex: 1;
-    }
     .queue-tools {
       justify-content: space-between;
     }

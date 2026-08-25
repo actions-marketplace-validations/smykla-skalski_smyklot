@@ -365,6 +365,8 @@ type Filter struct {
 	Priorities    []Priority
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
+	DispatchOrder bool
+	Summary       bool
 	Limit         int
 	Offset        int
 }
@@ -379,10 +381,11 @@ type Facets struct {
 }
 
 type Page struct {
-	Items      []Item `json:"items"`
-	NextOffset int    `json:"next_offset"`
-	Total      int    `json:"total"`
-	Facets     Facets `json:"facets"`
+	Items       []Item        `json:"items"`
+	NextOffset  int           `json:"next_offset"`
+	Total       int           `json:"total"`
+	Facets      Facets        `json:"facets"`
+	StateCounts map[State]int `json:"state_counts,omitempty"`
 }
 
 type BacklogMetric struct {
@@ -430,6 +433,11 @@ type RecurringClaim struct {
 	LeaseDuration time.Duration
 }
 
+type RecurringLease struct {
+	Now           time.Time
+	LeaseDuration time.Duration
+}
+
 type RecurringRequest struct {
 	Kind         Kind
 	TargetID     *string
@@ -446,6 +454,7 @@ type Store interface {
 	ListQueueEvents(context.Context, string, int) ([]Event, error)
 	CreateQueueItem(context.Context, Item) (Item, error)
 	ApplyQueueAction(context.Context, string, ItemAction) (Item, error)
+	ClaimNextRecurringWork(context.Context, RecurringLease) (Item, bool, error)
 	ClaimRecurringWork(context.Context, RecurringClaim) (Item, bool, error)
 	EnsureRecurringWork(context.Context, RecurringClaim) (Item, error)
 	SupersedeMissingRecurringWork(context.Context, []RecurringClaim, time.Time) ([]Item, error)
