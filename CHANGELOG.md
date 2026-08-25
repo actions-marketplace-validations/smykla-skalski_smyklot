@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.1](https://github.com/smykla-skalski/smyklot/compare/v1.48.0...v1.48.1) (2026-08-25)
+
+### Bug Fixes
+
+* **queue:** restore production scheduling ([#319](https://github.com/smykla-skalski/smyklot/issues/319)) ([01274e8](https://github.com/smykla-skalski/smyklot/commit/01274e8fc094e5fe8666c5a1ef78e3aa16dffb7a))
+
 ## [1.48.0](https://github.com/smykla-skalski/smyklot/compare/v1.47.1...v1.48.0) (2026-08-25)
 
 ### Features
