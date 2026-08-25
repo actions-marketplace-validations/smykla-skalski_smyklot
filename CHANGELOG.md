@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.3](https://github.com/smykla-skalski/smyklot/compare/v1.48.2...v1.48.3) (2026-08-25)
+
+### Performance Improvements
+
+* **queue:** bound retention cleanup ([#324](https://github.com/smykla-skalski/smyklot/issues/324)) ([6d2c796](https://github.com/smykla-skalski/smyklot/commit/6d2c7960672b490d4d8ce661349069ed799aba97))
+
 ## [1.48.2](https://github.com/smykla-skalski/smyklot/compare/v1.48.1...v1.48.2) (2026-08-25)
 
 ### Bug Fixes
