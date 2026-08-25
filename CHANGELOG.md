@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.2](https://github.com/smykla-skalski/smyklot/compare/v1.48.1...v1.48.2) (2026-08-25)
+
+### Bug Fixes
+
+* **queue:** bound production dispatch work ([#320](https://github.com/smykla-skalski/smyklot/issues/320)) ([79bd262](https://github.com/smykla-skalski/smyklot/commit/79bd262c65df55fa424d0926cbdc9b6ff1d76e0a))
+* **queue:** keep durable work moving and visible ([#322](https://github.com/smykla-skalski/smyklot/issues/322)) ([b03b126](https://github.com/smykla-skalski/smyklot/commit/b03b1264a6e299a9d7ff6065fc09e22d9a4be1ea))
+
 ## [1.48.1](https://github.com/smykla-skalski/smyklot/compare/v1.48.0...v1.48.1) (2026-08-25)
 
 ### Bug Fixes
