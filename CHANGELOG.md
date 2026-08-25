@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.49.0](https://github.com/smykla-skalski/smyklot/compare/v1.48.4...v1.49.0) (2026-08-25)
+
+### Features
+
+* **merge:** allow merging draft pull requests ([#321](https://github.com/smykla-skalski/smyklot/issues/321)) ([f4df619](https://github.com/smykla-skalski/smyklot/commit/f4df6199d0dc90b5194c6a6dc9e4cfa456b008d7))
+
+### Bug Fixes
+
+* **queue:** stop disabled repository work ([#326](https://github.com/smykla-skalski/smyklot/issues/326)) ([b9d29b5](https://github.com/smykla-skalski/smyklot/commit/b9d29b5d57bbdfa5a289111bfbc8e8e0ff8d7ee5))
+
 ## [1.48.4](https://github.com/smykla-skalski/smyklot/compare/v1.48.3...v1.48.4) (2026-08-25)
 
 ### Bug Fixes
