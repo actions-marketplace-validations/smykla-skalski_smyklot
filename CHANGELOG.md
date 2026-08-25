@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.48.0](https://github.com/smykla-skalski/smyklot/compare/v1.47.1...v1.48.0) (2026-08-25)
+
+### Features
+
+* **queue:** schedule all background work ([#317](https://github.com/smykla-skalski/smyklot/issues/317)) ([4b9d93c](https://github.com/smykla-skalski/smyklot/commit/4b9d93cedf355b4791d765021f9682c3f48d7e0e))
+
 ## [1.47.1](https://github.com/smykla-skalski/smyklot/compare/v1.47.0...v1.47.1) (2026-08-24)
 
 ### Bug Fixes
