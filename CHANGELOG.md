@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.49.1](https://github.com/smykla-skalski/smyklot/compare/v1.49.0...v1.49.1) (2026-08-28)
+
+### Bug Fixes
+
+* **deps:** update module github.com/onsi/gomega to v1.43.0 ([#330](https://github.com/smykla-skalski/smyklot/issues/330)) ([e7b68e7](https://github.com/smykla-skalski/smyklot/commit/e7b68e794af1280ce45792c0577e1bd59eec95a6))
+
 ## [1.49.0](https://github.com/smykla-skalski/smyklot/compare/v1.48.4...v1.49.0) (2026-08-25)
 
 ### Features
