@@ -26,6 +26,8 @@ import {
   seed,
   VIEWER,
 } from '../../dev/fixtures.ts';
+import { CONFIG_KEYS } from '#lib/config.js';
+import { formattingSources, parseFormattingPatch } from '#lib/formatting.js';
 
 import type {
   ConfigSources,
@@ -42,6 +44,7 @@ import type {
   SecurityNotification,
   SyncConfig,
   SyncFilesContext,
+  SyncFileMergeEntry,
   SyncOverride,
   SyncPlan,
   SyncStatus,
@@ -134,7 +137,7 @@ export const CONFIG: ConfigValues = DEFAULT_CONFIG;
 
 /** Every key resolves from the deployment unless a story says otherwise. */
 const SOURCES = Object.fromEntries(
-  (Object.keys(CONFIG) as (keyof ConfigValues)[]).map((key) => [key, 'process' as const]),
+  CONFIG_KEYS.map((key) => [key, 'process' as const]),
 ) as ConfigSources;
 
 /** The panel accounts the mock seeds, across every system role and status. */
@@ -221,16 +224,11 @@ export const SYNC_STATUS_IN_STEP: SyncStatus = {
 /** One repository's own answer about the files the organisation keeps in step. */
 export const SYNC_OVERRIDES: ReadonlyMap<string, SyncOverride> = MOCK.syncOverrides;
 
-/** The file index and repository adjustments the mock derives for the files view. */
-export const SYNC_FILES_CONTEXT: SyncFilesContext = {
-  repositories: SYNC_STATUS.repositories.length,
-  covered: SYNC_STATUS.repositories.filter((row) => row.cells.files.state !== 'off').length,
-  known_paths: KNOWN_PATHS,
-  merges: [...SYNC_OVERRIDES].flatMap(([key, override]) => {
+function storyFileAdjustments(): SyncFileMergeEntry[] {
+  const adjustments = new Map<string, SyncFileMergeEntry>();
+  for (const [key, override] of SYNC_OVERRIDES) {
     const [repositoryId, kind] = key.split('/');
-    if (kind !== 'files' || repositoryId === undefined) return [];
-    const held = override.document.merges;
-    if (!Array.isArray(held)) return [];
+    if (kind !== 'files' || repositoryId === undefined) continue;
     const repository =
       PSEUDO_REPO_NAMES[repositoryId] ??
       MOCK.targets
@@ -238,13 +236,68 @@ export const SYNC_FILES_CONTEXT: SyncFilesContext = {
         .find((candidate) => candidate.detail.repository.id === repositoryId)?.detail.repository
         .name ??
       repositoryId;
+    const merges = override.document.merges;
+    if (Array.isArray(merges)) {
+      for (const merge of merges as Array<Record<string, unknown>>) {
+        if (typeof merge.path !== 'string') continue;
+        adjustments.set(`${repositoryId}\u0000${merge.path}`, {
+          repository,
+          repository_id: repositoryId,
+          path: merge.path,
+          merge,
+        });
+      }
+    }
+    const formats = override.document.formats;
+    if (!Array.isArray(formats)) continue;
+    for (const row of formats) {
+      if (
+        typeof row !== 'object' ||
+        row === null ||
+        !('path' in row) ||
+        typeof row.path !== 'string' ||
+        !('formatting' in row)
+      ) {
+        continue;
+      }
+      const formatting = parseFormattingPatch(row.formatting);
+      if (formatting === null) continue;
+      const adjustmentKey = `${repositoryId}\u0000${row.path}`;
+      adjustments.set(adjustmentKey, {
+        repository,
+        repository_id: repositoryId,
+        path: row.path,
+        ...(adjustments.get(adjustmentKey)?.merge === undefined
+          ? {}
+          : { merge: adjustments.get(adjustmentKey)?.merge }),
+        formatting,
+      });
+    }
+  }
+  return [...adjustments.values()];
+}
 
-    return (held as Array<Record<string, unknown>>).flatMap((merge) =>
-      typeof merge.path === 'string'
-        ? [{ repository, repository_id: repositoryId, path: merge.path, merge }]
-        : [],
-    );
+/** The file index and repository adjustments the mock derives for the files view. */
+export const SYNC_FILES_CONTEXT: SyncFilesContext = {
+  repositories: SYNC_STATUS.repositories.length,
+  covered: SYNC_STATUS.repositories.filter((row) => row.cells.files.state !== 'off').length,
+  known_paths: KNOWN_PATHS,
+  base_formatting: CONFIG.formatting,
+  repository_policies: [...SYNC_STATUS.repositories].map((row) => {
+    const found = MOCK.targets
+      .flatMap((target) => target.repositories)
+      .find((candidate) => candidate.detail.repository.name === row.repository)?.detail.repository;
+    const pseudoId = Object.entries(PSEUDO_REPO_NAMES).find(
+      ([, name]) => name === row.repository,
+    )?.[0];
+    return {
+      repository: row.repository,
+      repository_id: found?.id ?? pseudoId ?? `mock:${row.repository}`,
+      default_branch: found?.default_branch ?? 'main',
+      base_policy: CONFIG.formatting,
+    };
   }),
+  merges: storyFileAdjustments(),
 };
 
 export const OVERVIEW: RootOverview = {
@@ -430,6 +483,7 @@ export const REPOSITORY_DETAIL: RepositoryDetail = {
   inherited_config: CONFIG,
   effective_config: { ...CONFIG, allow_self_approval: true },
   config_sources: { ...SOURCES, allow_self_approval: 'repository_panel' },
+  formatting_sources: formattingSources('process'),
   config_file_patch: { command_prefix: '/smyklot ' },
   config_file_path: '.smyklot.toml',
   config_migration: 'none',

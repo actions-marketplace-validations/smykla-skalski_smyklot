@@ -11,8 +11,10 @@ import (
 type Format string
 
 const (
-	FormatJSON Format = "json"
-	FormatYAML Format = "yaml"
+	FormatJSON  Format = "json"
+	FormatJSONC Format = "jsonc"
+	FormatTOML  Format = "toml"
+	FormatYAML  Format = "yaml"
 )
 
 // yamlIndent matches what the templates in the organization are written with,

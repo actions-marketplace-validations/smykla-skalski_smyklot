@@ -50,6 +50,8 @@ import type {
   RootInstallation,
   RootOverview,
   SyncConfig,
+  SyncFileMergeEntry,
+  SyncFileRepositoryPolicy,
   SyncKind,
   SyncOverride,
   RootRuntimeSettings,
@@ -77,6 +79,13 @@ import type {
 } from '../src/lib/types.ts';
 import { SYNC_KINDS } from '../src/lib/types.ts';
 import { CONFIG_KEYS } from '../src/lib/config.ts';
+import {
+  applyFormattingPatch,
+  applyFormattingSources,
+  formattingSources,
+  parseFormattingPatch,
+  parseFormattingPolicy,
+} from '../src/lib/formatting.ts';
 import { canonicalStringify, PREF_DEFAULTS } from '../src/lib/preferences-sync.ts';
 /* The fixtures, which used to be nine hundred lines of this file and reachable by
    nothing. They are their own module so the Storybook catalogue can read the same data
@@ -106,6 +115,7 @@ import {
   type MockTarget,
 } from './fixtures.ts';
 import { parseInvitationToken, parsePanelRoute } from '../src/lib/routes.ts';
+import { renderMockSyncFile } from './mock-file-render.ts';
 
 type DevHttpServer = HttpServer;
 const BASE = '';
@@ -482,29 +492,56 @@ function resolveConfig(
   filePatch: ConfigPatch,
   panelPatch: ConfigPatch,
   bypass: boolean,
-): { values: ConfigValues; sources: ConfigSources } {
+): {
+  values: ConfigValues;
+  sources: ConfigSources;
+  formattingSources: PanelTarget['formatting_sources'];
+} {
   const values = structuredClone(DEFAULT_CONFIG);
-  const sources = Object.fromEntries(
-    Object.keys(DEFAULT_CONFIG).map((key) => [key, 'process']),
-  ) as ConfigSources;
-  applyPatch(values, sources, targetPatch, 'target');
-  if (!bypass) applyPatch(values, sources, filePatch, 'repository_file');
-  applyPatch(values, sources, panelPatch, 'repository_panel');
-  return { values, sources };
+  const sources = Object.fromEntries(CONFIG_KEYS.map((key) => [key, 'process'])) as ConfigSources;
+  let resolvedFormattingSources = formattingSources<ConfigSources[ConfigKey]>('process');
+  resolvedFormattingSources = applyPatch(
+    values,
+    sources,
+    resolvedFormattingSources,
+    targetPatch,
+    'target',
+  );
+  if (!bypass) {
+    resolvedFormattingSources = applyPatch(
+      values,
+      sources,
+      resolvedFormattingSources,
+      filePatch,
+      'repository_file',
+    );
+  }
+  resolvedFormattingSources = applyPatch(
+    values,
+    sources,
+    resolvedFormattingSources,
+    panelPatch,
+    'repository_panel',
+  );
+  return { values, sources, formattingSources: resolvedFormattingSources };
 }
 
 function applyPatch(
   values: ConfigValues,
   sources: ConfigSources,
+  currentFormattingSources: PanelTarget['formatting_sources'],
   patch: ConfigPatch,
   source: ConfigSources[ConfigKey],
-): void {
-  for (const key of Object.keys(patch) as ConfigKey[]) {
+): PanelTarget['formatting_sources'] {
+  for (const key of CONFIG_KEYS) {
     const value = patch[key];
     if (value === undefined) continue;
     Object.assign(values, { [key]: structuredClone(value) });
     sources[key] = source;
   }
+  if (patch.formatting === undefined) return currentFormattingSources;
+  values.formatting = applyFormattingPatch(values.formatting, patch.formatting);
+  return applyFormattingSources(currentFormattingSources, patch.formatting, source);
 }
 
 function recomputeTarget(target: MockTarget): void {
@@ -512,6 +549,7 @@ function recomputeTarget(target: MockTarget): void {
   target.value.inherited_config = structuredClone(DEFAULT_CONFIG);
   target.value.effective_config = targetResolved.values;
   target.value.config_sources = targetResolved.sources;
+  target.value.formatting_sources = targetResolved.formattingSources;
   for (const repository of target.repositories) recomputeRepository(target, repository);
   const enabled = target.repositories.filter(
     (entry) => entry.detail.repository.effective_enabled,
@@ -540,6 +578,7 @@ function recomputeRepository(target: MockTarget, repository: MockRepository): vo
   detail.inherited_config = inherited.values;
   detail.effective_config = resolved.values;
   detail.config_sources = resolved.sources;
+  detail.formatting_sources = resolved.formattingSources;
   detail.repository.effective_enabled =
     detail.repository.enabled_override ?? target.value.repository_default_enabled;
   detail.repository.enabled_source =
@@ -1256,39 +1295,93 @@ async function handle(
     const syncFilesContextMatch = /^\/api\/v1\/targets\/([^/]+)\/sync\/files\/context$/.exec(
       path.slice(route('').length),
     );
+    const syncFileRenderMatch = /^\/api\/v1\/targets\/([^/]+)\/sync\/files\/render$/.exec(
+      path.slice(route('').length),
+    );
+    if (syncFileRenderMatch && method === 'POST') {
+      findTarget(state, syncFileRenderMatch[1] ?? '');
+      respond(res, 200, renderMockSyncFile(await readBody<unknown>(req)));
+      return;
+    }
     if (syncFilesContextMatch && method === 'GET') {
       const targetId = decodeURIComponent(syncFilesContextMatch[1] ?? '');
+      const target = findTarget(state, targetId);
       const status = state.syncStatus.get(targetId);
       const rows = status?.repositories ?? [];
       const covered = rows.filter((row) => row.cells.files.state !== 'off').length;
-      const merges: Array<{
-        repository: string;
-        repository_id: string;
-        path: string;
-        merge: Record<string, unknown>;
-      }> = [];
+      const adjustments = new Map<string, SyncFileMergeEntry>();
       for (const [key, override] of state.syncOverrides) {
         const [repositoryId, kind] = key.split('/');
         if (kind !== 'files' || repositoryId === undefined) continue;
-        const held = override.document.merges;
-        if (!Array.isArray(held)) continue;
         const name =
           PSEUDO_REPO_NAMES[repositoryId] ??
-          state.targets
-            .flatMap((target) => target.repositories)
-            .find((repository) => repository.detail.repository.id === repositoryId)?.detail
-            .repository.name ??
+          target.repositories.find((repository) => repository.detail.repository.id === repositoryId)
+            ?.detail.repository.name ??
           repositoryId;
-        for (const merge of held as Array<Record<string, unknown>>) {
-          if (typeof merge.path !== 'string') continue;
-          merges.push({ repository: name, repository_id: repositoryId, path: merge.path, merge });
+        const heldMerges = override.document.merges;
+        if (Array.isArray(heldMerges)) {
+          for (const merge of heldMerges as Array<Record<string, unknown>>) {
+            if (typeof merge.path !== 'string') continue;
+            adjustments.set(`${repositoryId}\u0000${merge.path}`, {
+              repository: name,
+              repository_id: repositoryId,
+              path: merge.path,
+              merge,
+            });
+          }
+        }
+        const heldFormats = override.document.formats;
+        if (Array.isArray(heldFormats)) {
+          for (const format of heldFormats) {
+            if (
+              typeof format !== 'object' ||
+              format === null ||
+              !('path' in format) ||
+              typeof format.path !== 'string' ||
+              !('formatting' in format)
+            ) {
+              continue;
+            }
+            const formatting = parseFormattingPatch(format.formatting);
+            if (formatting === null) continue;
+            const adjustmentKey = `${repositoryId}\u0000${format.path}`;
+            const current = adjustments.get(adjustmentKey);
+            adjustments.set(adjustmentKey, {
+              repository: name,
+              repository_id: repositoryId,
+              path: format.path,
+              ...(current?.merge === undefined ? {} : { merge: current.merge }),
+              formatting,
+            });
+          }
         }
       }
+      const repositoryPolicies: SyncFileRepositoryPolicy[] = rows.map((row) => {
+        const pseudoId = Object.entries(PSEUDO_REPO_NAMES).find(
+          ([, name]) => name === row.repository,
+        )?.[0];
+        const repository = target.repositories.find(
+          (candidate) => candidate.detail.repository.name === row.repository,
+        );
+        const repositoryId =
+          repository?.detail.repository.id ?? pseudoId ?? `mock:${row.repository}`;
+        return {
+          repository:
+            repository?.detail.repository.name ?? PSEUDO_REPO_NAMES[repositoryId] ?? row.repository,
+          repository_id: repositoryId,
+          default_branch: repository?.detail.repository.default_branch ?? 'main',
+          base_policy:
+            repository?.detail.effective_config.formatting ??
+            target.value.effective_config.formatting,
+        };
+      });
       respond(res, 200, {
         repositories: rows.length,
         covered,
         known_paths: KNOWN_PATHS,
-        merges,
+        base_formatting: target.value.effective_config.formatting,
+        repository_policies: repositoryPolicies,
+        merges: [...adjustments.values()],
       });
       return;
     }
@@ -3634,6 +3727,12 @@ function mockCheckpointConfigPatch(value: unknown): ConfigPatch {
   }
   const patch = value as Record<string, unknown>;
   for (const [key, held] of Object.entries(patch)) {
+    if (key === 'formatting') {
+      if (parseFormattingPatch(held) === null) {
+        blockedMockInstallationRestore('the selected checkpoint contains an invalid policy');
+      }
+      continue;
+    }
     if (!CONFIG_KEYS.includes(key as ConfigKey) || !isMockConfigValue(key as ConfigKey, held)) {
       blockedMockInstallationRestore('the selected checkpoint contains an invalid policy');
     }
@@ -4264,7 +4363,8 @@ function validateMockRootRuntimeDuration(
 function isMockRootRuntimeConfig(value: unknown): value is ConfigValues {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
-  if (Object.keys(candidate).length !== CONFIG_KEYS.length) return false;
+  if (Object.keys(candidate).length !== CONFIG_KEYS.length + 1) return false;
+  if (parseFormattingPolicy(candidate.formatting) === null) return false;
   return CONFIG_KEYS.every((key) => {
     const held = candidate[key];
     if (key === 'allowed_commands') return Array.isArray(held) && held.every(isStringValue);
@@ -4367,11 +4467,7 @@ function copyOptionalConfig(value: ConfigValues | null): ConfigValues | null {
 }
 
 function copyConfig(value: ConfigValues): ConfigValues {
-  return {
-    ...value,
-    allowed_commands: [...value.allowed_commands],
-    command_aliases: { ...value.command_aliases },
-  };
+  return structuredClone(value);
 }
 
 function rootOverviewValue(state: MockState): RootOverview {

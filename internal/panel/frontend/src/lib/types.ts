@@ -1,4 +1,16 @@
 import type { ArrayStrategy } from '#lib/merge.js';
+import type {
+  FormattingPatch,
+  FormattingPolicy,
+  FormattingSources,
+} from './formatting.generated.ts';
+
+export type {
+  FormattingFieldKey,
+  FormattingPatch,
+  FormattingPolicy,
+  FormattingSources,
+} from './formatting.generated.ts';
 
 export const COMMANDS = [
   'approve',
@@ -13,6 +25,7 @@ export const COMMANDS = [
 export type CommandName = (typeof COMMANDS)[number];
 
 export interface ConfigValues {
+  formatting: FormattingPolicy;
   quiet_success: boolean;
   quiet_reactions: boolean;
   quiet_pending: boolean;
@@ -29,9 +42,11 @@ export interface ConfigValues {
 }
 
 /** Omitted values inherit from the next lower-precedence source. */
-export type ConfigPatch = Partial<ConfigValues>;
+export type ConfigPatch = Partial<Omit<ConfigValues, 'formatting'>> & {
+  formatting?: FormattingPatch;
+};
 
-export type ConfigKey = keyof ConfigValues;
+export type ConfigKey = Exclude<keyof ConfigValues, 'formatting'>;
 export type ConfigSource = 'process' | 'target' | 'repository_file' | 'repository_panel';
 export type ConfigSources = Record<ConfigKey, ConfigSource>;
 
@@ -257,6 +272,7 @@ export interface PanelTarget {
   inherited_config: ConfigValues;
   effective_config: ConfigValues;
   config_sources: ConfigSources;
+  formatting_sources: FormattingSources<ConfigSource>;
   revision: number;
   repository_counts: RepositoryCounts;
   effective_role: InstallationRole;
@@ -817,6 +833,7 @@ export interface RepositoryDetail {
   inherited_config: ConfigValues;
   effective_config: ConfigValues;
   config_sources: ConfigSources;
+  formatting_sources: FormattingSources<ConfigSource>;
   config_file_patch: ConfigPatch;
   config_file_error?: string;
   config_file_path?: string;
@@ -1247,6 +1264,8 @@ export interface SyncRulesetCodeScanningTool {
 export interface SyncFile {
   path: string;
   content: string;
+  /** Overrides the workspace policy for this shared template only. */
+  formatting?: FormattingPatch;
 }
 
 /**
@@ -1441,7 +1460,18 @@ export interface SyncFilesContext {
   covered: number;
   /** Every path any repository holds, deduped, with how many hold it. */
   known_paths: Array<{ path: string; repositories: number }>;
+  /** Runtime through workspace settings, before one template's overlay. */
+  base_formatting: FormattingPolicy;
+  /** Every repository's complete policy, sent once and joined to path overlays locally. */
+  repository_policies: SyncFileRepositoryPolicy[];
   merges: SyncFileMergeEntry[];
+}
+
+export interface SyncFileRepositoryPolicy {
+  repository: string;
+  repository_id: string;
+  default_branch: string;
+  base_policy: FormattingPolicy;
 }
 
 /** One repository's adjustment of one template. */
@@ -1450,7 +1480,30 @@ export interface SyncFileMergeEntry {
   repository_id: string;
   path: string;
   /** The stored merge, whole - strategy, overrides, arrays, sections. */
-  merge: Record<string, unknown>;
+  merge?: Record<string, unknown>;
+  /** The exact-path formatting overlay, including format-only adjustments. */
+  formatting?: FormattingPatch;
+}
+
+export interface SyncFileRenderInput {
+  path: string;
+  draft_content: string;
+  merge?: Omit<SyncFileMerge, 'path'>;
+  default_branch?: string;
+  base_policy: FormattingPolicy;
+  overlays?: FormattingPatch[];
+}
+
+export interface SyncFileRenderDiagnostic {
+  code: string;
+  message: string;
+}
+
+export interface SyncFileRenderResponse {
+  valid: boolean;
+  content: string;
+  changed: boolean;
+  diagnostics: SyncFileRenderDiagnostic[];
 }
 
 /** One change a plan would make. */

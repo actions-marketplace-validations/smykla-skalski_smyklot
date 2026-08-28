@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { PanelApiError, createPanelApi } from '../src/lib/api';
+import { CONFIG_KEYS } from '../src/lib/config';
+import { defaultFormattingPolicy, formattingSources } from '../src/lib/formatting';
 import type {
   ConfigSources,
   ConfigValues,
@@ -43,6 +45,7 @@ function emptyResponse(status: number): Response {
 }
 
 const CONFIG: ConfigValues = {
+  formatting: defaultFormattingPolicy(),
   quiet_success: false,
   quiet_reactions: false,
   quiet_pending: false,
@@ -58,9 +61,7 @@ const CONFIG: ConfigValues = {
   allow_draft_merges: false,
 };
 
-const SOURCES = Object.fromEntries(
-  Object.keys(CONFIG).map((key) => [key, 'process']),
-) as ConfigSources;
+const SOURCES = Object.fromEntries(CONFIG_KEYS.map((key) => [key, 'process'])) as ConfigSources;
 
 const VIEWER = {
   account: {
@@ -104,6 +105,7 @@ const TARGET: PanelTarget = {
   inherited_config: CONFIG,
   effective_config: CONFIG,
   config_sources: SOURCES,
+  formatting_sources: formattingSources('process'),
   revision: 1,
   repository_counts: { total: 1, enabled: 0, disabled: 1 },
   effective_role: 'owner',
@@ -128,12 +130,37 @@ const REPOSITORY = {
   updated_at: '2026-08-08T10:00:00Z',
 };
 
+describe('file rendering', () => {
+  it('posts the complete typed render request to the encoded installation route', async () => {
+    const response = { valid: true, content: '{}\n', changed: true, diagnostics: [] };
+    const stub = stubFetch([jsonResponse(200, response)]);
+    const api = createPanelApi('/panel', stub.fetch);
+    const input = {
+      path: 'renovate.json',
+      draft_content: '{}',
+      base_policy: defaultFormattingPolicy(),
+      overlays: [{ common: { final_newline: 'insert' as const } }],
+    };
+
+    await expect(api.renderSyncFile('target.1', input)).resolves.toEqual(response);
+    expect(stub.calls[0]).toMatchObject({
+      url: '/panel/api/v1/targets/target%2E1/sync/files/render',
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    });
+  });
+});
+
 const DETAIL: RepositoryDetail = {
   repository: REPOSITORY,
   config_patch: {},
   inherited_config: CONFIG,
   effective_config: CONFIG,
   config_sources: SOURCES,
+  formatting_sources: formattingSources('process'),
   config_file_patch: {},
   config_migration: 'none' as const,
   ignore_repository_file: false,

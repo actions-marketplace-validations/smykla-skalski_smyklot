@@ -1,7 +1,6 @@
 package configgen
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -47,100 +46,151 @@ const (
 const (
 	jsonBoolean = "boolean"
 	jsonString  = "string"
+	jsonInteger = "integer"
 	jsonArray   = "array"
 	jsonObject  = "object"
 )
 
 // RenderSchema produces the JSON Schema for a repository's configuration file.
 //
-// The bytes are canonical and ordered by hand rather than left to a formatter.
-// dotsync's generator round-tripped through a map and emitted alphabetically
-// while the committed file was in a formatter's order, so regenerating locally
-// always showed a diff that was not a change - which is why its schema came to
-// be hand-edited and then described types that had moved on.
+// The bytes come from one typed schema model and one encoding/json boundary.
+// encoding/json sorts map keys, so the output is deterministic without a
+// second formatter whose ordering could disagree with the generator.
 //
 // additionalProperties is false because the strict decoders reject an unknown
 // key. The schema and the decoder are two statements of the same thing, and a
 // schema that accepted what the code refuses would send somebody to write a
 // file that an editor called valid and Smyklot called broken.
 func RenderSchema(model Model) ([]byte, error) {
-	var buffer bytes.Buffer
-
-	buffer.WriteString("{\n")
-	writeHeader(&buffer, "$schema", SchemaDialect)
-	writeHeader(&buffer, "$id", SchemaID)
-	writeHeader(&buffer, "title", "Smyklot repository configuration")
-	writeHeader(&buffer, "description", schemaDescription)
-	writeHeader(&buffer, "type", jsonObject)
-	writeRaw(&buffer, 1, "additionalProperties", "false", true)
-
-	buffer.WriteString("  \"properties\": {\n")
-
-	for index, field := range model.Fields {
-		property, err := renderProperty(field)
+	properties := make(map[string]schemaProperty, len(model.Fields))
+	for _, field := range model.Fields {
+		property, err := schemaPropertyFor(field)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", field.Key, err)
 		}
-
-		writeRaw(&buffer, 2, field.Key, property, index < len(model.Fields)-1)
+		properties[field.Key] = property
 	}
 
-	buffer.WriteString("  }\n}\n")
-
-	// Parsing what was just written is cheap and catches a template mistake
-	// here rather than in an editor that silently ignores a broken schema.
-	if !json.Valid(buffer.Bytes()) {
-		return nil, errInvalidSchema
+	document, err := json.MarshalIndent(schemaDocument{
+		Dialect:              SchemaDialect,
+		ID:                   SchemaID,
+		Title:                "Smyklot repository configuration",
+		Description:          schemaDescription,
+		Type:                 jsonObject,
+		AdditionalProperties: false,
+		Properties:           properties,
+	}, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode schema: %w", err)
 	}
 
-	return buffer.Bytes(), nil
+	return append(document, '\n'), nil
 }
 
 const schemaDescription = "Settings a repository may set for Smyklot, in .smyklot.toml, " +
 	".smyklot/config.toml, .github/.smyklot.toml or the legacy .github/smyklot.yaml."
 
-// renderProperty renders one setting as a compact one-line schema, so the
-// document reads as a table of settings rather than as nested punctuation.
-func renderProperty(field Field) (string, error) {
-	var parts []string
+type schemaDocument struct {
+	Dialect              string                    `json:"$schema"`
+	ID                   string                    `json:"$id"`
+	Title                string                    `json:"title"`
+	Description          string                    `json:"description"`
+	Type                 string                    `json:"type"`
+	AdditionalProperties bool                      `json:"additionalProperties"`
+	Properties           map[string]schemaProperty `json:"properties"`
+}
 
-	add := func(key string, value any) error {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return fmt.Errorf("encode %s: %w", key, err)
-		}
+type schemaProperty struct {
+	Type                 string                    `json:"type"`
+	Description          string                    `json:"description,omitempty"`
+	Enum                 []string                  `json:"enum,omitempty"`
+	Items                *schemaProperty           `json:"items,omitempty"`
+	AdditionalProperties any                       `json:"additionalProperties,omitempty"`
+	Minimum              *int                      `json:"minimum,omitempty"`
+	Maximum              *int                      `json:"maximum,omitempty"`
+	Properties           map[string]schemaProperty `json:"properties,omitempty"`
+	Default              *any                      `json:"default,omitempty"`
+}
 
-		parts = append(parts, strconv.Quote(key)+": "+string(encoded))
-
-		return nil
+func schemaPropertyFor(field Field) (schemaProperty, error) {
+	defaultValue := defaultValue(field)
+	property := schemaProperty{
+		Type:        jsonType(field),
+		Description: field.Description,
+		Default:     &defaultValue,
 	}
-
-	if err := add("type", jsonType(field)); err != nil {
-		return "", err
-	}
-
-	if err := add("description", field.Description); err != nil {
-		return "", err
-	}
-
 	switch field.Kind {
 	case KindStringSlice:
-		parts = append(parts, `"items": {"type": "string"}`)
+		property.Items = &schemaProperty{Type: jsonString}
 
 	case KindStringMap:
-		parts = append(parts, `"additionalProperties": {"type": "string"}`)
+		property.AdditionalProperties = schemaProperty{Type: jsonString}
 
 	case KindEnum:
-		if err := add("enum", field.Enum); err != nil {
-			return "", err
+		property.Enum = field.Enum
+
+	case KindInt:
+		var err error
+		if field.Min != "" {
+			property.Minimum, err = schemaInteger(field.Min)
+			if err != nil {
+				return schemaProperty{}, fmt.Errorf("minimum: %w", err)
+			}
 		}
+		if field.Max != "" {
+			property.Maximum, err = schemaInteger(field.Max)
+			if err != nil {
+				return schemaProperty{}, fmt.Errorf("maximum: %w", err)
+			}
+		}
+
+	case KindObject:
+		property.Type = jsonObject
+		property.AdditionalProperties = false
+		property.Properties = make(map[string]schemaProperty, len(field.Children))
+		for _, child := range field.Children {
+			childProperty, err := schemaPropertyFor(child)
+			if err != nil {
+				return schemaProperty{}, fmt.Errorf("%s: %w", child.Key, err)
+			}
+			property.Properties[localKey(child.Key)] = childProperty
+		}
+		objectDefault := any(objectDefault(field))
+		property.Default = &objectDefault
 	}
 
-	if err := add("default", defaultValue(field)); err != nil {
-		return "", err
+	return property, nil
+}
+
+func schemaInteger(value string) (*int, error) {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return nil, err
 	}
 
-	return "{" + strings.Join(parts, ", ") + "}", nil
+	return &parsed, nil
+}
+
+func localKey(key string) string {
+	if at := strings.LastIndexByte(key, '.'); at >= 0 {
+		return key[at+1:]
+	}
+
+	return key
+}
+
+func objectDefault(field Field) map[string]any {
+	result := make(map[string]any, len(field.Children))
+	for _, child := range field.Children {
+		if child.Kind == KindObject {
+			result[localKey(child.Key)] = objectDefault(child)
+			continue
+		}
+
+		result[localKey(child.Key)] = defaultValue(child)
+	}
+
+	return result
 }
 
 func jsonType(field Field) string {
@@ -148,10 +198,16 @@ func jsonType(field Field) string {
 	case KindBool:
 		return jsonBoolean
 
+	case KindInt:
+		return jsonInteger
+
 	case KindStringSlice:
 		return jsonArray
 
 	case KindStringMap:
+		return jsonObject
+
+	case KindObject:
 		return jsonObject
 
 	default:
@@ -169,6 +225,11 @@ func defaultValue(field Field) any {
 	case KindBool:
 		return field.Default == "true"
 
+	case KindInt:
+		value, _ := strconv.Atoi(field.Default)
+
+		return value
+
 	case KindStringSlice:
 		return []string{}
 
@@ -178,26 +239,4 @@ func defaultValue(field Field) any {
 	default:
 		return field.Default
 	}
-}
-
-// writeHeader writes one of the document's own top-level strings. Every one of
-// them is followed by something, so the comma is not a decision.
-func writeHeader(buffer *bytes.Buffer, key, value string) {
-	writeRaw(buffer, 1, key, strconv.Quote(value), true)
-}
-
-func writeRaw(buffer *bytes.Buffer, depth int, key, value string, more bool) {
-	for range depth {
-		buffer.WriteString("  ")
-	}
-
-	buffer.WriteString(strconv.Quote(key))
-	buffer.WriteString(": ")
-	buffer.WriteString(value)
-
-	if more {
-		buffer.WriteString(",")
-	}
-
-	buffer.WriteString("\n")
 }
