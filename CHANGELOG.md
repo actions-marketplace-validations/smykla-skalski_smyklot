@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.50.0](https://github.com/smykla-skalski/smyklot/compare/v1.49.1...v1.50.0) (2026-08-28)
+
+### Features
+
+* **sync:** configure preserve-first file formatting ([#333](https://github.com/smykla-skalski/smyklot/issues/333)) ([c88a4cc](https://github.com/smykla-skalski/smyklot/commit/c88a4cc5cd33a492988809141defb4998679657f))
+
+### Bug Fixes
+
+* **deps:** update github.com/tailscale/hujson digest to b80ff77 ([#334](https://github.com/smykla-skalski/smyklot/issues/334)) ([f21349c](https://github.com/smykla-skalski/smyklot/commit/f21349cb7c6b7a5d11b2886d33040cdb57c1a521))
+* **panel:** stabilize frontend release validation ([#336](https://github.com/smykla-skalski/smyklot/issues/336)) ([bb2ab68](https://github.com/smykla-skalski/smyklot/commit/bb2ab68332b7bd1118ce71524fa61464c373cffc))
+
 ## [1.49.1](https://github.com/smykla-skalski/smyklot/compare/v1.49.0...v1.49.1) (2026-08-28)
 
 ### Bug Fixes
