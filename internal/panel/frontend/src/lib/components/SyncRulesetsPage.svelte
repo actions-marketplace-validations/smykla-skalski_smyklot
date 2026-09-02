@@ -15,22 +15,26 @@
   }
 </script>
 
-<script lang="ts">
-  /**
-   * The rulesets list: named objects, two levels deep and no deeper - press
-   * a row for the ruleset's own page. Enforcement is worn as a pill on the
-   * row, so Evaluate mode is visible from the list. Below, the same two
-   * decisions every kind carries: removal, and the names left alone.
-   */
-  import type { SyncConfig, SyncPlan } from '../types';
-  import type { SyncSection } from '../routes';
+<!--
+@component
+The rulesets list: named objects, two levels deep and no deeper - press
+a row for the ruleset's own page. Enforcement is worn as a pill on the
+row, so Evaluate mode is visible from the list. Below, the same two
+decisions every kind carries: removal, and the names left alone.
+-->
 
+<script lang="ts">
+  import { receipts } from '../receipts.svelte';
+  import type { SyncConfig, SyncPlan, SyncStatus } from '../types';
+
+  import Card from './Card.svelte';
   import FormError from './FormError.svelte';
   import Icon from './Icon.svelte';
-  import PanePath from './PanePath.svelte';
+  import PageHeader from './PageHeader.svelte';
   import PatternEntries from './PatternEntries.svelte';
   import Popover from './Popover.svelte';
   import Switch from './Switch.svelte';
+  import SyncKindFacts, { syncSwitchLabel, syncSwitchWord } from './SyncKindFacts.svelte';
 
   const {
     config,
@@ -38,8 +42,8 @@
     plan,
     readOnly,
     problem = null,
-    sectionHref,
-    onOpenSection,
+    syncStatus = null,
+    nowMs,
     rulesetHref,
     onOpenRuleset,
     onToggleEnabled,
@@ -52,8 +56,9 @@
     plan: SyncPlan | null;
     readOnly: boolean;
     problem?: string | null;
-    sectionHref: (section: SyncSection) => string;
-    onOpenSection: (section: SyncSection) => void;
+    /** The fleet, for how far this kind reaches. */
+    syncStatus?: SyncStatus | null;
+    nowMs: number;
     rulesetHref: (name: string) => string;
     onOpenRuleset: (name: string) => void;
     onToggleEnabled: (enabled: boolean) => void;
@@ -154,65 +159,30 @@
       rules: {},
     };
     onChangeDocument({ ...stored, rulesets: [...rulesets, born] });
+    receipts.say(`${name} added, enforcing nothing yet - its rules are chosen on this page`);
     onOpenRuleset(name);
   }
 </script>
 
 <div class="view-frame">
-  <PanePath
-    segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
-    ]}
-  />
-
-  <div class="kind-head" class:is-unsaved={dirtyEnabled} data-unsaved={dirtyEnabled || undefined}>
-    <div class="kind-head-say">
-      <h2 class="card-title">Rulesets</h2>
-      <p class="kind-head-sub">
-        A ruleset named here is owned whole: what it does not say stops being enforced, and the plan
-        shows exactly that before anything changes
-      </p>
-    </div>
-    <Switch
-      checked={enabled}
-      label="Ruleset sync"
-      word="Syncing"
-      disabled={frozen}
-      onToggle={onToggleEnabled}
-    />
-  </div>
-
-  {#if problem !== null}
-    <FormError message={problem} />
-  {/if}
-
-  {#if unreadable}
-    <p class="sync-notice" role="alert">
-      This installation's rulesets are stored in a form this version of Smyklot cannot read, so they
-      are not shown and nothing here can be changed. Nothing has been lost.
-    </p>
-  {/if}
-
-  {#if unavailable !== '' && enabled}
-    <p class="sync-notice" role="status">
-      {unavailable}. Nothing here will be planned or changed until an owner grants it on the
-      installation's page on GitHub.
-    </p>
-  {/if}
-
-  <div class="card" class:is-unsaved={dirtyDocument} data-unsaved={dirtyDocument || undefined}>
-    <div class="card-head">
-      <h3 class="card-title">{rulesets.length} {rulesets.length === 1 ? 'ruleset' : 'rulesets'}</h3>
+  <PageHeader
+    id="sync-rulesets-heading"
+    section="Sync"
+    title="Rulesets"
+    description="Smyklot owns synced rulesets end to end; the next plan previews enforcement changes"
+    statusUnsaved={dirtyEnabled}
+  >
+    {#snippet actions()}
       <Popover role="dialog" label="Name the ruleset" align="end" bind:open={adding}>
         {#snippet trigger(attributes)}
           <button {...attributes} class="btn" disabled={frozen}>
-            <Icon name="plus" size={13} />
+            <Icon name="plus" size="sm" />
             <span class="button-label">Add a ruleset</span>
           </button>
         {/snippet}
         <div class="name-menu">
           <div class="menu-search">
-            <Icon name="search" size={12} />
+            <Icon name="search" size="xs" />
             <input
               placeholder="main-protection"
               aria-label="Name for the new ruleset"
@@ -228,6 +198,47 @@
           </div>
         </div>
       </Popover>
+    {/snippet}
+    {#snippet status()}
+      <SyncKindFacts
+        kind="rulesets"
+        {enabled}
+        status={syncStatus}
+        updatedBy={config?.updated_by ?? ''}
+        updatedAt={config?.updated_at ?? ''}
+        {nowMs}
+      />
+      <Switch
+        checked={enabled}
+        label={syncSwitchLabel('rulesets', enabled)}
+        word={syncSwitchWord(enabled)}
+        disabled={frozen}
+        onToggle={onToggleEnabled}
+      />
+    {/snippet}
+  </PageHeader>
+
+  {#if problem !== null}
+    <FormError message={problem} />
+  {/if}
+
+  {#if unreadable}
+    <p class="sync-notice" role="alert">
+      This workspace's rulesets are stored in a form this version of Smyklot cannot read, so they
+      are not shown and nothing here can be changed. Nothing has been lost.
+    </p>
+  {/if}
+
+  {#if unavailable !== '' && enabled}
+    <p class="sync-notice" role="status">
+      {unavailable}. Nothing here will be planned or changed until an owner grants it on the
+      workspace's App page on GitHub.
+    </p>
+  {/if}
+
+  <Card unsaved={dirtyDocument}>
+    <div class="card-head">
+      <h2 class="card-title">{rulesets.length} {rulesets.length === 1 ? 'ruleset' : 'rulesets'}</h2>
     </div>
     {#if rulesets.length > 0}
       <div class="object-list">
@@ -262,19 +273,24 @@
                   ></span
                 >
               {:else}
-                <span class="mx-mark mx-instep"><Icon name="check" size={14} /></span>
+                <span class="mx-mark mx-instep"><Icon name="check" size="sm" /></span>
               {/if}
-              <Icon name="chevron-right" size={12} />
+              <Icon name="chevron-right" size="xs" />
             </span>
           </a>
         {/each}
       </div>
     {:else if !unreadable}
-      <p class="sync-empty">No rulesets yet</p>
+      <div class="state-panel">
+        <span
+          ><strong>No rulesets are synced here.</strong> Every repository keeps whatever protections it
+          sets itself - add one and the next plan previews it everywhere</span
+        >
+      </div>
     {/if}
-  </div>
+  </Card>
 
-  <div class="card">
+  <Card>
     <div class="setting-rows">
       <div
         class="setting-row"
@@ -283,14 +299,15 @@
           undefined}
       >
         <span class="setting-say">
-          <span class="setting-name">Remove rulesets this list does not name</span>
+          <span class="setting-name">Delete unlisted rulesets</span>
           <span class="setting-why"
-            >Off, a repository may keep rulesets of its own. On, everything unnamed is deleted</span
+            >Off, a repository may keep rulesets of its own. On, unnamed rulesets are deleted from
+            every syncing repository, except ignored matches</span
           >
         </span>
         <Switch
           checked={allowRemoval}
-          label="Remove rulesets this list does not name"
+          label="Delete unlisted rulesets"
           disabled={frozen}
           onToggle={(next) => stage({ allow_removal: next })}
         />
@@ -302,9 +319,10 @@
           undefined}
       >
         <span class="setting-say">
-          <span class="setting-name">Rulesets to leave alone</span>
+          <span class="setting-name">Ignored rulesets</span>
           <span class="setting-why"
-            >Name or pattern. Neither written nor removed, whatever the list above says</span
+            >Names or globs Smyklot never creates, updates, or deletes. Ignoring overrides every
+            list above</span
           >
         </span>
         <span class="setting-value">
@@ -316,56 +334,13 @@
         </span>
       </div>
     </div>
-  </div>
+  </Card>
 </div>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
-  .kind-head {
-    align-items: start;
-    display: flex;
-    gap: var(--space-4);
-    justify-content: space-between;
-    margin-bottom: var(--space-4);
-  }
-
-  .kind-head-say {
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  .kind-head-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-  }
-
-  .kind-head :global(.switch) {
-    min-block-size: auto;
-  }
-
-  .kind-head.is-unsaved,
-  .object-row.is-unsaved,
-  .setting-row.is-unsaved {
+  .object-row.is-unsaved {
     background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
     box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .kind-head.is-unsaved {
-    margin-inline: calc(var(--space-2) * -1);
-    padding: var(--space-2);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
   }
 
   .card.is-unsaved {
@@ -373,22 +348,23 @@
   }
 
   .card + .card {
-    margin-top: var(--space-4);
+    /* THE DISTANCE BETWEEN TWO CARDS ON A PAGE, and there is only one. */
+    margin-block-start: var(--rhythm-card-gap);
   }
 
-  .card-title {
-    font-size: var(--font-size-card-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 13px;
-    text-box: trim-both cap alphabetic;
-  }
-
+  /* THE HEAD'S LINE IS ITS TITLE'S CAP, so the title-to-first-row ink never
+     depends on which adornments the card happens to carry. A control in the
+     head gives its own slack back rather than growing the line. */
   .card-head {
     align-items: center;
     display: flex;
     gap: var(--space-3);
-    margin-bottom: var(--space-4);
+    margin-bottom: var(--rhythm-card-head-body);
+    min-block-size: var(--card-head-line);
+  }
+
+  .card-head :global(.btn) {
+    margin-block: calc((var(--card-head-line) - var(--control-height-compact)) / 2);
   }
 
   .sync-notice {
@@ -397,12 +373,6 @@
     font-size: var(--font-size-meta);
     margin: 0 0 var(--space-4);
     padding: var(--space-2) var(--space-3);
-  }
-
-  .sync-empty {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    margin: 0;
   }
 
   /* ---------- The list: one pressable row per named object ---------- */
@@ -420,17 +390,17 @@
     gap: var(--space-4);
     grid-template-columns: 1fr auto;
     margin-inline: calc(var(--space-3) * -1);
-    padding: 0.75rem var(--space-3);
+    padding: var(--row-pad-default) var(--space-3);
     position: relative;
     text-decoration: none;
   }
 
   .object-row:hover {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
   .object-row:active {
-    background: var(--table-row-pressed);
+    background: var(--row-pressed);
     box-shadow: var(--pressed-inset);
     translate: 0 1px;
   }
@@ -463,7 +433,7 @@
     align-items: center;
     display: flex;
     gap: var(--space-2);
-    min-block-size: 20px;
+    min-block-size: var(--object-name-line);
   }
 
   .object-name {
@@ -487,13 +457,13 @@
 
   .pill {
     align-items: center;
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -515,39 +485,6 @@
   .pill-muted {
     background: var(--surface-inset);
     color: var(--text-muted);
-  }
-
-  .mx-mark {
-    align-items: center;
-    block-size: 20px;
-    border-radius: var(--r-chip);
-    box-sizing: border-box;
-    display: inline-flex;
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    gap: 0.25rem;
-    line-height: 1;
-    padding: 0 0.5rem;
-  }
-
-  .mx-mark .t {
-    display: block;
-    text-box: trim-both cap alphabetic;
-  }
-
-  /* On the board an in-step cell is the quiet norm; on a list row the same
-     mark is the row's whole verdict, standing beside a worded pending pill -
-     here it earns the success ink. */
-  .mx-instep {
-    color: var(--success);
-  }
-
-  .mx-pending {
-    background: var(--cell-pending-bg);
-    border: 1px solid color-mix(in srgb, var(--cell-pending) 38%, transparent);
-    color: var(--cell-pending);
-    font-weight: 500;
   }
 
   /* ---------- The name popover ---------- */
@@ -590,87 +527,13 @@
     color: var(--text-muted);
     font-size: var(--font-size-micro);
     font-variant-numeric: tabular-nums;
-    line-height: 16px;
+    line-height: var(--leading-tight);
     padding: var(--space-1) var(--space-3) var(--space-2);
   }
 
   /* ---------- The bottom card ---------- */
 
-  .setting-rows {
-    display: grid;
-  }
-
-  .card > .setting-rows:only-child {
-    margin-block: calc(var(--space-5) * -1);
-  }
-
-  .card > .setting-rows:only-child > .setting-row {
-    align-items: start;
-    padding-block: var(--space-5);
-  }
-
-  .setting-row :global(.switch) {
-    align-self: center;
-    margin-block: calc((20px - var(--touch-target)) / 2);
-  }
-
-  .setting-row {
-    align-items: center;
-    border-radius: var(--r-ctl);
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-auto-columns: auto;
-    grid-auto-flow: column;
-    grid-template-columns: 1fr;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: var(--touch-target);
-    padding: var(--space-3) var(--space-2);
-    position: relative;
-  }
-
-  .setting-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-value {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    justify-content: end;
-    justify-self: end;
-    min-inline-size: 0;
-  }
-
   @media (max-width: 36rem) {
-    .card {
-      padding: var(--space-4);
-    }
-
     .object-row {
       gap: var(--space-2);
       grid-template-columns: minmax(0, 1fr) auto;
@@ -699,16 +562,6 @@
 
     .mx-pending .scope-word {
       display: none;
-    }
-
-    .setting-row {
-      grid-auto-flow: row;
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .setting-value {
-      justify-content: start;
-      justify-self: stretch;
     }
   }
 </style>

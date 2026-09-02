@@ -1,13 +1,4 @@
 <script lang="ts">
-  /**
-   * Org-wide label sync: what an installation expects its repositories to carry,
-   * and what the service would change to make that true.
-   *
-   * Two halves, in the order the questions arrive. What is configured, which is
-   * the thing somebody edits. Then what that would do, which is the thing
-   * somebody approves - and those are deliberately not the same act. A sync that
-   * applied on save would give nobody the chance to read the deletions first.
-   */
   import { untrack } from 'svelte';
 
   import { formatJson, type JsonValue } from '#lib/merge.js';
@@ -127,7 +118,7 @@
 
   const drafts = getSettingsDraftRegistry();
   const settingsScope = $derived({
-    type: 'installation',
+    type: 'workspace',
     targetId,
   } as const satisfies SettingsScope);
   let canonicalConfigs = $state.raw<Partial<Record<SyncKind, SyncConfig>>>({});
@@ -402,6 +393,17 @@
   }
 </script>
 
+<!--
+@component
+Org-wide label sync: what a workspace expects its repositories to carry,
+and what the service would change to make that true.
+
+Two halves, in the order the questions arrive. What is configured, which is
+the thing somebody edits. Then what that would do, which is the thing
+somebody approves - and those are deliberately not the same act. A sync that
+applied on save would give nobody the chance to read the deletions first.
+-->
+
 {#if section === 'overview'}
   {#if error !== null}
     <FormError message={error} />
@@ -417,6 +419,7 @@
         files: documents.files ?? undefined,
       }}
       {nowMs}
+      repositories={filesContext?.repositories ?? null}
       {sectionHref}
       {onOpenSection}
       onToggleKind={toggleKind}
@@ -437,8 +440,6 @@
     {approving}
     {discarding}
     runNowBusy={runningNow}
-    {sectionHref}
-    {onOpenSection}
     onApprove={(planId, digest) => void onApprove(planId, digest)}
     onDiscard={(planId) => void onDiscard(planId)}
     onRunNow={(reason) => void onRunNow(reason)}
@@ -449,8 +450,8 @@
       {config}
       {readOnly}
       problem={labelsError}
-      {sectionHref}
-      {onOpenSection}
+      {syncStatus}
+      {nowMs}
       onChange={stageLabels}
       {dirtyControls}
     />
@@ -475,8 +476,8 @@
       {plan}
       {readOnly}
       problem={documentError.rulesets}
-      {sectionHref}
-      {onOpenSection}
+      {syncStatus}
+      {nowMs}
       {rulesetHref}
       {onOpenRuleset}
       onToggleEnabled={(wanted) => toggleKind(RULESETS, wanted)}
@@ -512,12 +513,10 @@
       savedDocument={canonicalConfigs.files?.document}
       context={filesContext}
       {plan}
-      status={syncStatus}
+      {syncStatus}
       {nowMs}
       {readOnly}
       problem={documentError.files}
-      {sectionHref}
-      {onOpenSection}
       {fileHref}
       {onOpenFile}
       onToggleEnabled={(wanted) => toggleKind(FILES, wanted)}
@@ -532,8 +531,8 @@
     savedDocument={canonicalConfigs.settings?.document}
     {readOnly}
     problem={documentError.settings}
-    {sectionHref}
-    {onOpenSection}
+    {syncStatus}
+    {nowMs}
     onToggleEnabled={(wanted) => toggleKind(SETTINGS, wanted)}
     onChangeDocument={(document) => void stageDocument(SETTINGS, document)}
     dirtyEnabled={dirtyControls.includes('sync.settings.enabled')}
@@ -543,9 +542,9 @@
   <section class="sync-page" aria-labelledby="sync-heading">
     <PageHeader
       id="sync-heading"
-      eyebrow="Sync"
+      section="Sync"
       title="Sync"
-      description="What every repository in this installation should look like, and what Smyklot would change to make that true"
+      description="What every repository in this workspace should look like, and what Smyklot would change to make that true"
     />
   </section>
 {/if}
@@ -561,7 +560,7 @@
   }
 
   .sync-run-notice {
-    border-inline-start: 2px solid var(--signal);
+    border-inline-start: 2px solid var(--info);
     color: var(--text-secondary);
     margin: var(--space-3) 0;
     padding: var(--space-2) var(--space-3);

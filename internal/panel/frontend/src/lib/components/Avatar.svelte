@@ -15,7 +15,7 @@
      *
      * The distinction is GitHub's own - it draws organisations square and people
      * round - and the panel already keeps it, in the rounded square the Root
-     * console puts an installation's monogram in. It earns its place in the top
+     * console puts a workspace's monogram in. It earns its place in the top
      * bar on a phone, where the workspace switcher and the account menu lose
      * their labels and stand next to each other as two identical discs.
      */
@@ -50,6 +50,24 @@
           : 'var(--font-size-title)',
   );
 </script>
+
+<!--
+@component
+Who or what, at whatever size the place asks for. The outline carries the
+distinction and it is GitHub's own: a person is a circle, a workspace a rounded
+square. It earns its place in the top bar on a phone, where the workspace switcher
+and the account menu lose their labels and stand next to each other as two otherwise
+identical discs.
+
+Initials are coloured from the account rather than from a palette entry, so the same
+account is the same colour everywhere it appears and nobody has to keep a table of
+people and swatches.
+
+`size` is a number and not a scale, because the places that need one - a rail tile, a
+row, a menu - do not agree on a step and never will. Decorative by design: the name it
+stands for is always beside it, so announcing it again is one more thing for a screen
+reader to read and nothing more to learn.
+-->
 
 <!-- Decorative: the name it belongs to is always beside it, so announcing the
      picture as well would read the same account twice. The referrer is withheld

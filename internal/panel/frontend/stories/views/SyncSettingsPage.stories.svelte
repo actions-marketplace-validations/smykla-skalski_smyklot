@@ -5,6 +5,8 @@
   import SyncSettingsPage from '#lib/components/SyncSettingsPage.svelte';
   import type { SyncConfig } from '#lib/types.js';
 
+  import { SYNC_STATUS } from '../support/fixtures.js';
+
   const NOW = Date.UTC(2026, 7, 18, 12, 0, 0);
   const hours = (count: number): string => new Date(NOW - count * 3_600_000).toISOString();
 
@@ -42,8 +44,8 @@
       config: CONFIG,
       readOnly: false,
       problem: null,
-      sectionHref: (section: string) => `#/sync/${section}`,
-      onOpenSection: fn(),
+      syncStatus: SYNC_STATUS,
+      nowMs: NOW,
       onToggleEnabled: fn(),
       onChangeDocument: fn(),
     },
@@ -67,7 +69,7 @@
 <!-- A reader without write: the policy still reads, the controls stand down. -->
 <Story name="Read only" args={{ readOnly: true }} />
 
-<!-- A permission the installation has not granted, surfaced while the kind
+<!-- A permission the workspace has not granted, surfaced while the kind
      is switched on and waiting on it. -->
 <Story
   name="Missing permission"

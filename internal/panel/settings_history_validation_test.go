@@ -11,10 +11,10 @@ import (
 	"github.com/smykla-skalski/smyklot/internal/storage"
 )
 
-func TestInstallationSettingsRestoreRejectsMalformedSelections(t *testing.T) {
+func TestWorkspaceSettingsRestoreRejectsMalformedSelections(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
-	path := installationSettingsCheckpointPath + "1/restore"
+	path := workspaceSettingsCheckpointPath + "1/restore"
 	tests := []struct {
 		name string
 		body string
@@ -62,13 +62,13 @@ func TestInstallationSettingsRestoreRejectsMalformedSelections(t *testing.T) {
 		`"code":"invalid_request"`)
 }
 
-func TestInstallationSettingsCheckpointCannotCrossScopeOrTarget(t *testing.T) {
+func TestWorkspaceSettingsCheckpointCannotCrossScopeOrTarget(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
 	rootCheckpointID := saveRuntimeSettingsCheckpoint(t, harness, "debug", 0)
 	wrongScope := harness.request(t, http.MethodGet,
-		installationSettingsCheckpointPath+strconv.FormatInt(rootCheckpointID, 10), nil, session)
-	requireResponse(t, wrongScope, "Root checkpoint through installation scope",
+		workspaceSettingsCheckpointPath+strconv.FormatInt(rootCheckpointID, 10), nil, session)
+	requireResponse(t, wrongScope, "Root checkpoint through workspace scope",
 		http.StatusNotFound, `"code":"not_found"`)
 
 	target, err := harness.store.GetTarget(t.Context(), "github:installation:10")
@@ -76,15 +76,15 @@ func TestInstallationSettingsCheckpointCannotCrossScopeOrTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	saved := saveTargetSettingsCheckpoint(t, harness, session, target, true)
-	_, other := seedNonOwnedInstallation(t, harness)
+	_, other := seedNonOwnedWorkspace(t, harness)
 	wrongTarget := harness.request(t, http.MethodGet,
-		"/panel/api/v1/root/installations/"+other.TargetID+"/settings/checkpoints/"+
+		"/panel/api/v1/root/workspaces/"+other.TargetID+"/settings/checkpoints/"+
 			*saved.CheckpointID, nil, session)
 	requireResponse(t, wrongTarget, "checkpoint through another target",
 		http.StatusNotFound, `"code":"not_found"`)
 }
 
-func TestInstallationSettingsInspectionExposesIncompatibility(t *testing.T) {
+func TestWorkspaceSettingsInspectionExposesIncompatibility(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
 	target, err := harness.store.GetTarget(t.Context(), "github:installation:10")
@@ -100,7 +100,7 @@ func TestInstallationSettingsInspectionExposesIncompatibility(t *testing.T) {
 	}
 	rewriteSettingsCheckpointDocumentVersion(t, harness, checkpointID,
 		storage.SettingsCheckpointItemIdentity{Kind: storage.SettingsCheckpointItemTarget})
-	path := installationSettingsCheckpointPath + *saved.CheckpointID
+	path := workspaceSettingsCheckpointPath + *saved.CheckpointID
 	response := harness.request(t, http.MethodGet, path, nil, session)
 	requireResponse(t, response, "incompatible settings inspection", http.StatusOK,
 		`"restorable":false`, `"differs":false`,
@@ -112,10 +112,10 @@ func TestInstallationSettingsInspectionExposesIncompatibility(t *testing.T) {
 		`"code":"settings_restore_blocked"`)
 }
 
-func TestRootInstallationSettingsRestoreRequiresElevation(t *testing.T) {
+func TestRootWorkspaceSettingsRestoreRequiresElevation(t *testing.T) {
 	harness := newPanelHarness(t, "root")
 	rootSession := harness.signIn(t)
-	owner, snapshot := seedNonOwnedInstallation(t, harness)
+	owner, snapshot := seedNonOwnedWorkspace(t, harness)
 	target, err := harness.store.GetTarget(t.Context(), snapshot.TargetID)
 	if err != nil {
 		t.Fatal(err)
@@ -127,11 +127,11 @@ func TestRootInstallationSettingsRestoreRequiresElevation(t *testing.T) {
 		t, harness, *first.Target, target.RepositoryDefaultEnabled, owner.ID,
 		harness.now.Add(2*time.Minute),
 	)
-	path := "/panel/api/v1/root/installations/" + target.ID + "/settings/checkpoints/" +
+	path := "/panel/api/v1/root/workspaces/" + target.ID + "/settings/checkpoints/" +
 		strconv.FormatInt(*first.CheckpointID, 10)
 	inspection := harness.request(t, http.MethodGet, path, nil, rootSession)
 	requireResponse(t, inspection, "Root settings inspection", http.StatusOK,
-		`"differs":true`, `"login":"installation-owner"`)
+		`"differs":true`, `"login":"workspace-owner"`)
 	body := `{"state":"after","selections":[{"kind":"target","expected_revision":3}]}`
 	blocked := harness.request(t, http.MethodPost, path+"/restore",
 		strings.NewReader(body), rootSession)
@@ -139,7 +139,7 @@ func TestRootInstallationSettingsRestoreRequiresElevation(t *testing.T) {
 		http.StatusForbidden, `"code":"elevation_required"`)
 
 	elevated := harness.request(t, http.MethodPost,
-		"/panel/api/v1/root/installations/"+target.ID+"/elevation",
+		"/panel/api/v1/root/workspaces/"+target.ID+"/elevation",
 		strings.NewReader(`{"acknowledged":true,"reason":"restore settings history"}`),
 		rootSession)
 	requireResponse(t, elevated, "start settings elevation", http.StatusCreated)

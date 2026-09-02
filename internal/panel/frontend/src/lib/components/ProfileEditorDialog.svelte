@@ -107,6 +107,16 @@
   }
 </script>
 
+<!--
+@component
+A named set of windows during which work may run. One dialog for both making and
+editing, told apart by whether it was given a profile - the fields are identical, and
+two dialogs would be two places to add the next one.
+
+A profile is referred to by policies, so this edits the definition and never the uses:
+changing a window here changes when every policy that names it runs.
+-->
+
 <ConfirmDialog
   id="profile-editor"
   {open}
@@ -125,8 +135,8 @@
       <p class="impact" role="status">
         Saving recomputes {profile.affected_items ?? 0} future queue
         {profile.affected_items === 1 ? ' item' : ' items'} across
-        {profile.affected_installations ?? 0}
-        {profile.affected_installations === 1 ? ' installation' : ' installations'}.
+        {profile.affected_workspaces ?? 0}
+        {profile.affected_workspaces === 1 ? ' workspace' : ' workspaces'}.
         {profile.affected_policies ?? 0}
         {profile.affected_policies === 1 ? ' policy uses' : ' policies use'} this profile.
       </p>
@@ -171,22 +181,22 @@
     background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--radius-control);
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     min-height: 2.75rem;
     padding: var(--space-2) var(--space-3);
   }
   .helper {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.72rem;
     margin: calc(var(--space-2) * -1) 0 0;
   }
   .impact {
     background: var(--surface-raised);
-    border-inline-start: 2px solid var(--signal);
+    border-inline-start: 2px solid var(--info);
     color: var(--text-secondary);
     font-size: 0.75rem;
-    line-height: 1.5;
+    line-height: var(--leading-compact);
     margin: 0;
     padding: var(--space-3);
   }

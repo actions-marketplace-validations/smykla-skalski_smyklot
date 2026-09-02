@@ -4,7 +4,7 @@
   import { createQuery, QueryClientProvider } from '@tanstack/svelte-query';
   import { tick, untrack } from 'svelte';
 
-  import { initializePanel } from '#lib/boot.js';
+  import { initializePanel, panelHasSettled } from '#lib/boot.js';
   import { createPanelApi } from '#lib/api.js';
   import { panelAddress } from '#lib/addresses.js';
   import { readPanelBuild } from '#lib/base.js';
@@ -15,10 +15,7 @@
   import { createPanelQueryClient } from '#lib/query-client.js';
   import { applyDocumentTheme } from '#lib/preferences.js';
   import { prefText } from '#lib/preferences-sync.js';
-  import {
-    rebaseInstallationConflicts,
-    saveInstallationDrafts,
-  } from '#lib/installation-settings-save.js';
+  import { rebaseWorkspaceConflicts, saveWorkspaceDrafts } from '#lib/workspace-settings-save.js';
   import { rebaseRootSettingsConflict, saveRootSettingsDraft } from '#lib/root-settings-save.js';
   import { ROOT_SETTINGS_SCOPE } from '#lib/runtime-settings.js';
   import {
@@ -31,17 +28,12 @@
   import { SettingsDraftAttentionController } from '#lib/settings-draft-attention.js';
   import type { PanelTarget } from '#lib/types.js';
   import {
-    ACCESS_SECTIONS,
-    HISTORY_SECTIONS,
-    QUEUE_SECTIONS,
-    ROOT_RUNTIME_SECTIONS,
     SYNC_SECTIONS,
+    SYNC_SECTION_LABELS,
     panelViewSection,
     routeSegmentLabel,
-    type PanelSection,
     type PanelView,
-    type QueueSection,
-    type RootInstallationView,
+    type RootWorkspaceView,
     type RootRuntimeSection,
     type RootSection,
     type SyncSection,
@@ -53,8 +45,16 @@
   import PageFooter from '#lib/components/PageFooter.svelte';
   import Plate from '#lib/components/Plate.svelte';
   import Rail from '#lib/components/Rail.svelte';
-  import Sidebar, { type SidebarPage } from '#lib/components/Sidebar.svelte';
+  import FindPalette, { type FindEntry } from '#lib/components/FindPalette.svelte';
+  import MutationReceipt from '#lib/components/MutationReceipt.svelte';
+  import { setFinder } from '#lib/finder.svelte.js';
+  import Sidebar, {
+    isGroup,
+    type SidebarEntry,
+    type SidebarRow,
+  } from '#lib/components/Sidebar.svelte';
   import SignInPage from '#lib/components/SignInPage.svelte';
+  import TopBar from '#lib/components/TopBar.svelte';
   import SettingsSaveComposer from '#lib/components/SettingsSaveComposer.svelte';
   import SettingsDraftAttention, {
     type SettingsDraftAttentionKind,
@@ -79,7 +79,20 @@
   setPanelSession(session);
   const settingsDraftRegistry = new SettingsDraftRegistry();
   setSettingsDraftRegistry(settingsDraftRegistry);
-  let attentionNotice = $state<'restored' | 'inactive' | null>(null);
+  /* A getter and not the value: what the finder can reach changes with the console and
+     the workspace, and a context holding one snapshot would hand the search page the
+     answer that was true when the shell mounted. */
+  setFinder(() => ({
+    entries: findEntries,
+    lookup: session.isRootMode ? undefined : findLookup,
+    crossLabel: session.isRootMode ? 'this workspace' : 'the console',
+    scopeName: session.isRootMode
+      ? 'Operations console'
+      : (session.selectedTarget?.account.display_name ??
+        session.selectedTarget?.account.login ??
+        ''),
+  }));
+  let attentionNotice = $state<'inactive' | null>(null);
   let dismissedStorageProblem = $state<string | null>(null);
   let resolvingSettingsConflict = $state(false);
   let selectedSaveProblemControl = $state<SettingsDirtyControl | null>(null);
@@ -109,7 +122,7 @@
   const rootProblemControl = $derived(rootDirtyControls[0]);
   const selectedSettingsScope = $derived.by((): SettingsScope | null => {
     const targetId = session.selectedTarget?.id;
-    return targetId === undefined ? null : { type: 'installation', targetId };
+    return targetId === undefined ? null : { type: 'workspace', targetId };
   });
   const selectedDirtyControls = $derived.by((): SettingsDirtyControl[] => {
     if (selectedSettingsScope === null) return [];
@@ -169,7 +182,7 @@
   function markEveryDirtySettingsScope(): boolean {
     let marked = false;
     for (const targetId of settingsDraftRegistry.dirtyTargetIds) {
-      marked = settingsDraftRegistry.markAttention({ type: 'installation', targetId }) || marked;
+      marked = settingsDraftRegistry.markAttention({ type: 'workspace', targetId }) || marked;
     }
     return settingsDraftRegistry.markAttention(ROOT_SETTINGS_SCOPE) || marked;
   }
@@ -224,6 +237,12 @@
 
   const { children } = $props();
 
+  /* Reads nothing, so it runs once the routed tree is mounted - which is one of the two
+     things the page was waiting on. See `panelHasSettled`. */
+  $effect(() => {
+    void panelHasSettled(document);
+  });
+
   $effect(() => {
     // `syncRouteContext` reads the route and its parameters, so tracking them is what
     // this depends on.
@@ -248,10 +267,12 @@
       if (settingsDraftRegistry.accountId === accountId) return;
       attentionNotice = null;
       dismissedStorageProblem = null;
-      const restored = settingsDraftRegistry.hydrate(accountId);
-      if (restored.restoredResources > 0) {
+      /* A draft that came back from an earlier session says so where the draft is:
+         the tree marks every scope holding one, and the composer counts them on the
+         page that owns them. It used to raise a notice as well, which announced a
+         thing the reader had not done and covered the page saying it. */
+      if (settingsDraftRegistry.hydrate(accountId).restoredResources > 0) {
         markEveryDirtySettingsScope();
-        attentionNotice = 'restored';
       }
     });
   });
@@ -283,18 +304,22 @@
   // --- Target resolution: watches the route's account param ---
   $effect(() => {
     if (session.viewer === null || session.loading) return;
-    if (session.isRootMode || session.isInbox || session.isInvitation) return;
+    if (session.isRootMode || session.isInvitation) return;
     const account = page.params.account;
     if (account === undefined) {
-      if (!session.isRootMode && session.targets.length > 0 && session.selectedId === null) {
-        const last = session.prefs.get('last_installation');
+      if (session.targets.length > 0 && session.selectedId === null) {
+        const last = session.prefs.get('last_workspace');
         const login = prefText(last);
         const target =
           session.targets.find((t) => t.account.login.toLowerCase() === login.toLowerCase()) ??
           session.targets[0];
         if (target !== undefined) {
           session.selectedId = target.id;
-          void session.openTarget(target, true);
+          /* A PERSONAL PAGE STILL HAS A WORKSPACE BEHIND IT, but is not one: the inbox
+             and the search page carry no account, and opening one would take a reader
+             straight back off the page they asked for. So the workspace is selected -
+             the chrome names it and the search reaches its pages - and nothing moves. */
+          if (!session.isPersonal) void session.openTarget(target, true);
         }
       }
       return;
@@ -303,11 +328,11 @@
     const target = session.targets.find((t) => t.account.login.toLowerCase() === folded);
     if (target !== undefined) {
       session.selectedId = target.id;
-      session.prefs.set('last_installation', target.account.login);
+      session.prefs.set('last_workspace', target.account.login);
       return;
     }
 
-    const remembered = prefText(session.prefs.get('last_installation')).toLowerCase();
+    const remembered = prefText(session.prefs.get('last_workspace')).toLowerCase();
     const fallback =
       session.targets.find((candidate) => candidate.account.login.toLowerCase() === remembered) ??
       session.targets[0];
@@ -412,10 +437,10 @@
     const targetId = session.selectedTarget?.id;
     if (targetId === undefined) return;
     selectedSaveProblemControl = null;
-    const result = await saveInstallationDrafts(
+    const result = await saveWorkspaceDrafts(
       settingsDraftRegistry,
       targetId,
-      api.saveInstallationSettings,
+      api.saveWorkspaceSettings,
     );
     if (!result.saved) {
       selectedSaveProblemControl = result.problemControl ?? null;
@@ -483,7 +508,7 @@
     selectedSaveProblemControl = null;
     resolvingSettingsConflict = true;
     await tick();
-    rebaseInstallationConflicts(settingsDraftRegistry, targetId);
+    rebaseWorkspaceConflicts(settingsDraftRegistry, targetId);
     settingsDraftRegistry.resolveExternalConflicts(scope);
     if (!settingsDraftRegistry.hasConflicts(scope)) {
       settingsDraftRegistry.dismissProblem(scope);
@@ -507,7 +532,7 @@
       return section === null ? session.viewHref('sync') : session.syncSectionHref(section);
     }
     if (control.location.section === 'repositories') return session.viewHref('repositories');
-    if (control.location.section === 'defaults') return session.viewHref('defaults');
+    if (control.location.section === 'defaults') return session.viewHref('settings');
     return undefined;
   }
 
@@ -523,7 +548,7 @@
       return panelAddress({ account, view: 'repositories' });
     }
     if (control.location.section === 'defaults') {
-      return panelAddress({ account, view: 'defaults' });
+      return panelAddress({ account, view: 'settings' });
     }
     if (control.location.section === 'sync') {
       const section = syncSection(control) ?? 'overview';
@@ -540,7 +565,7 @@
       const section = syncSection(control);
       return section === null ? 'Sync' : routeSegmentLabel(section);
     }
-    return control.location.section === 'repositories' ? 'Repositories' : 'Workspace defaults';
+    return control.location.section === 'repositories' ? 'Repositories' : 'Workspace settings';
   }
 
   function openSettingsProblem(): void {
@@ -551,7 +576,7 @@
     } else if (control.location.section === 'repositories') {
       session.selectView('repositories');
     } else if (control.location.section === 'defaults') {
-      session.selectView('defaults');
+      session.selectView('settings');
     }
   }
 
@@ -582,258 +607,460 @@
     return plan.counts.create + plan.counts.update + plan.counts.delete;
   });
 
-  const WORKSPACE_ORDER = [
-    'defaults',
-    'repositories',
-    'sync',
-    'queue',
-    'schedules',
-    'access',
-    'history',
-  ] as const satisfies readonly PanelSection[];
-  const workspaceIcon = {
-    defaults: 'sliders',
-    repositories: 'repositories',
-    sync: 'refresh',
-    queue: 'pending',
-    schedules: 'sliders',
-    access: 'users',
-    history: 'history',
-  } as const;
+  /* How much has stopped, said on the row that opens it. One row of the page is
+     asked for and only its total is read - the tree wants the number, not the list.
+     Both sides ask, and which one is enabled is what decides which is answered. */
+  const failureCountQuery = createQuery(
+    () => ({
+      queryKey: ['failure-count', session.isRootMode ? 'root' : (session.selectedTarget?.id ?? '')],
+      queryFn: () => {
+        const ask = { query: '', sort: 'newest' as const, limit: 1, kind: 'all' as const };
 
-  const syncKids = $derived(
-    SYNC_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.syncSectionHref(section),
-      active:
-        !session.isInbox &&
-        session.currentView === 'sync' &&
-        session.currentSyncSection === section,
-      count: section === 'plan' ? planCount : undefined,
-      signal: section === 'plan' && planCount !== undefined,
-      dirty:
-        section !== 'overview' &&
-        section !== 'plan' &&
-        selectedSettingsDirtyAt({ section: 'sync', path: [section] }),
-    })),
-  );
-
-  const accessKids = $derived(
-    ACCESS_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.accessHref(section),
-      active: !session.isInbox && session.currentView === section,
-    })),
-  );
-
-  const historyKids = $derived(
-    HISTORY_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.historyHref(section),
-      active:
-        !session.isInbox &&
-        session.currentView === 'history' &&
-        session.currentHistorySection === section,
-    })),
-  );
-
-  const queueKids = $derived(
-    QUEUE_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.queueSectionHref(section),
-      active:
-        !session.isInbox &&
-        session.currentView === 'queue' &&
-        session.currentQueueSection === section,
-    })),
-  );
-
-  const workspacePages = $derived.by((): SidebarPage[] =>
-    WORKSPACE_ORDER.filter(
-      (section) =>
-        section !== 'access' || session.selectedTarget?.capabilities.manage_target_users === true,
-    ).map((section) => {
-      const view: PanelView = section === 'access' ? 'users' : section;
-      return {
-        id: section,
-        label: routeSegmentLabel(section),
-        icon: workspaceIcon[section],
-        href:
-          section === 'sync'
-            ? session.syncSectionHref('overview')
-            : section === 'access'
-              ? session.accessHref('users')
-              : section === 'history'
-                ? session.historyHref('audit')
-                : session.viewHref(view),
-        active: !session.isInbox && panelViewSection(session.currentView) === section,
-        dirty:
-          section === 'defaults'
-            ? selectedSettingsDirtyAt({ section: 'defaults' })
-            : section === 'repositories'
-              ? selectedSettingsDirtyAt({ section: 'repositories' })
-              : undefined,
-        kids:
-          section === 'sync'
-            ? syncKids
-            : section === 'queue'
-              ? queueKids
-              : section === 'access'
-                ? accessKids
-                : section === 'history'
-                  ? historyKids
-                  : undefined,
-      };
+        return session.isRootMode
+          ? api.fetchRootFailures(ask)
+          : api.fetchFailures(session.selectedTarget?.id ?? '', ask);
+      },
+      enabled:
+        session.isInvitation === false &&
+        session.viewer !== null &&
+        (session.isRootMode || session.selectedTarget !== null),
     }),
+    () => queryClient,
   );
+  const failureCount = $derived.by((): number | undefined => {
+    const total = failureCountQuery.data?.total ?? 0;
 
-  const ROOT_ORDER = [
-    'overview',
-    'queue',
-    'schedules',
-    'installations',
-    'access',
-    'history',
-    'runtime',
-  ] as const satisfies readonly RootSection[];
-  const rootIcon = {
-    overview: 'system',
-    queue: 'pending',
-    schedules: 'sliders',
-    installations: 'repositories',
-    access: 'users',
-    history: 'history',
-    runtime: 'sliders',
-  } as const;
+    return total === 0 ? undefined : total;
+  });
 
-  const rootAccessKids = $derived(
-    ACCESS_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.rootAccessHref(section),
-      active:
-        !session.isInbox &&
-        (section === 'users'
-          ? session.currentRootRoute.rootView === 'access-users'
-          : session.currentRootRoute.rootView === 'access-invitations'),
-    })),
-  );
+  /**
+   * The workspace tree: every page one row, under the headings that group them.
+   *
+   * The order and the words are the design's, not the route table's - "Sync status"
+   * rather than the segment `overview`, "Repository options" rather than `settings`,
+   * and "Workspace settings" standing apart at the foot rather than leading as
+   * `Defaults`. No two rows in one tree may share a label, which is why the sync
+   * board is Status and its options page says options.
+   */
+  const workspaceEntries = $derived.by((): SidebarEntry[] => {
+    const rows: SidebarEntry[] = [
+      {
+        id: 'overview',
+        label: 'Overview',
+        icon: 'gauge',
+        href: session.viewHref('overview'),
+        active: !session.isInbox && session.currentView === 'overview',
+      },
+      {
+        id: 'repositories',
+        label: 'Repositories',
+        icon: 'book',
+        href: session.viewHref('repositories'),
+        active: !session.isInbox && panelViewSection(session.currentView) === 'repositories',
+        dirty: selectedSettingsDirtyAt({ section: 'repositories' }),
+      },
+      {
+        id: 'queue',
+        label: 'Queue',
+        icon: 'pending',
+        href: session.queueSectionHref('active'),
+        active: !session.isInbox && session.currentView === 'queue',
+      },
+      { kind: 'group', id: 'group-sync', label: 'Sync' },
+      ...SYNC_SECTIONS.map((section): SidebarRow => {
+        const icons = {
+          overview: 'refresh',
+          labels: 'tag',
+          settings: 'sliders',
+          rulesets: 'branch',
+          files: 'file',
+          plan: 'plan',
+        } as const;
+        return {
+          id: `sync-${section}`,
+          label: SYNC_SECTION_LABELS[section],
+          icon: icons[section],
+          href: session.syncSectionHref(section),
+          active:
+            !session.isInbox &&
+            session.currentView === 'sync' &&
+            session.currentSyncSection === section,
+          count: section === 'plan' ? planCount : undefined,
+          signal: section === 'plan' && planCount !== undefined,
+          dirty:
+            section !== 'overview' &&
+            section !== 'plan' &&
+            selectedSettingsDirtyAt({ section: 'sync', path: [section] }),
+        };
+      }),
+    ];
 
-  const rootHistoryKids = $derived(
-    HISTORY_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: section === 'audit' ? session.rootAuditHref() : session.rootFailuresHref(),
-      active:
-        !session.isInbox &&
-        (section === 'audit'
-          ? session.currentRootRoute.rootView === 'history-audit'
-          : session.currentRootRoute.rootView === 'history-failures'),
-    })),
-  );
+    if (session.selectedTarget?.capabilities.manage_target_users === true) {
+      rows.push(
+        { kind: 'group', id: 'group-access', label: 'Access' },
+        {
+          id: 'access-users',
+          label: 'Users',
+          icon: 'users',
+          href: session.accessHref('users'),
+          active: !session.isInbox && session.currentView === 'users',
+        },
+        {
+          id: 'access-invitations',
+          label: 'Invitations',
+          icon: 'mail',
+          href: session.accessHref('invitations'),
+          active: !session.isInbox && session.currentView === 'invitations',
+        },
+      );
+    }
 
-  const rootQueueKids = $derived(
-    QUEUE_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.rootQueueSectionHref(section),
-      active:
-        !session.isInbox &&
-        session.currentRootRoute.rootView ===
-          (section === 'active'
-            ? 'queue'
-            : section === 'approvals'
-              ? 'queue-approvals'
-              : 'queue-history'),
-    })),
-  );
+    rows.push(
+      { kind: 'group', id: 'group-activity', label: 'Activity' },
+      {
+        id: 'history-audit',
+        label: 'Audit',
+        icon: 'history',
+        href: session.historyHref('audit'),
+        active:
+          !session.isInbox &&
+          session.currentView === 'history' &&
+          session.currentHistorySection === 'audit',
+      },
+      {
+        id: 'history-failures',
+        label: 'Failures',
+        icon: 'failure',
+        href: session.historyHref('failures'),
+        active:
+          !session.isInbox &&
+          session.currentView === 'history' &&
+          session.currentHistorySection === 'failures',
+        count: failureCount,
+        signal: failureCount !== undefined,
+      },
+      {
+        id: 'settings',
+        label: 'Workspace settings',
+        icon: 'gear',
+        href: session.viewHref('settings'),
+        active: !session.isInbox && panelViewSection(session.currentView) === 'settings',
+        dirty: selectedSettingsDirtyAt({ section: 'defaults' }),
+        foot: true,
+      },
+    );
 
-  const rootRuntimeKids = $derived(
-    ROOT_RUNTIME_SECTIONS.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      href: session.rootRuntimeHref(section),
-      active: !session.isInbox && session.currentRootRoute.rootView === `runtime-${section}`,
-      dirty:
-        section === 'settings' &&
-        settingsDraftRegistry.dirtyAt(ROOT_SETTINGS_SCOPE, { section: 'runtime' }),
-    })),
-  );
+    return rows;
+  });
 
-  const rootInstallationKids = $derived.by(() => {
+  /** One workspace opened inside the console, as its own group of rows. */
+  const rootWorkspaceRows = $derived.by((): SidebarEntry[] => {
     const route = session.currentRootRoute;
-    if (route.rootView !== 'installation') return undefined;
+    if (route.rootView !== 'workspace') return [];
     const target = session.targets.find(
       (candidate) => candidate.account.login.toLowerCase() === route.account.toLowerCase(),
     );
     const scope: SettingsScope | null =
-      target === undefined ? null : { type: 'installation', targetId: target.id };
+      target === undefined ? null : { type: 'workspace', targetId: target.id };
     const leaves = [
-      { id: 'defaults', view: 'defaults' },
-      { id: 'repositories', view: 'repositories' },
-      { id: 'users', view: 'users' },
-      { id: 'invitations', view: 'invitations' },
-      { id: 'audit', view: 'history', section: 'audit' },
-      { id: 'failures', view: 'history', section: 'failures' },
+      { id: 'settings', view: 'settings', label: 'Workspace settings', icon: 'gear' },
+      { id: 'repositories', view: 'repositories', label: 'Repositories', icon: 'book' },
+      { id: 'users', view: 'users', label: 'Users', icon: 'users' },
+      { id: 'invitations', view: 'invitations', label: 'Invitations', icon: 'mail' },
+      { id: 'audit', view: 'history', section: 'audit', label: 'Audit', icon: 'history' },
+      {
+        id: 'failures',
+        view: 'history',
+        section: 'failures',
+        label: 'Failures',
+        icon: 'failure',
+      },
     ] as const;
 
-    return leaves.map((leaf) => ({
-      id: leaf.id,
-      label: routeSegmentLabel(leaf.id),
-      href: session.rootInstallationHref(
-        route.account,
-        leaf.view as RootInstallationView,
-        'section' in leaf ? leaf.section : undefined,
-      ),
-      active:
-        route.view === leaf.view &&
-        (leaf.view !== 'history' ||
-          ('section' in leaf && session.currentHistorySection === leaf.section)),
-      dirty:
-        scope !== null && (leaf.id === 'defaults' || leaf.id === 'repositories')
-          ? settingsDraftRegistry.dirtyAt(scope, { section: leaf.id })
-          : undefined,
-    }));
+    return [
+      { kind: 'group', id: 'group-workspace', label: target?.account.login ?? route.account },
+      ...leaves.map((leaf): SidebarRow => ({
+        id: `workspace-${leaf.id}`,
+        label: leaf.label,
+        icon: leaf.icon,
+        href: session.rootWorkspaceHref(
+          route.account,
+          leaf.view as RootWorkspaceView,
+          'section' in leaf ? leaf.section : undefined,
+        ),
+        active:
+          route.view === leaf.view &&
+          (leaf.view !== 'history' ||
+            ('section' in leaf && session.currentHistorySection === leaf.section)),
+        /* The tree's word and the draft store's word part company here: the page is
+           addressed and written "settings", and what it holds is still the workspace's
+           defaults for its repositories, which is what the store files them under. */
+        dirty:
+          scope !== null && (leaf.id === 'settings' || leaf.id === 'repositories')
+            ? settingsDraftRegistry.dirtyAt(scope, {
+                section: leaf.id === 'settings' ? 'defaults' : leaf.id,
+              })
+            : undefined,
+      })),
+    ];
   });
 
-  const rootPages = $derived.by((): SidebarPage[] =>
-    ROOT_ORDER.map((section) => ({
-      id: section,
-      label: routeSegmentLabel(section),
-      icon: rootIcon[section],
-      href: session.rootHrefFor(section),
-      active: !session.isInbox && session.rootValue === section,
-      dirty:
-        section === 'installations'
-          ? dirtyTargetIds.size > 0
-          : section === 'runtime'
-            ? rootDirty
-            : undefined,
-      kids:
-        section === 'queue'
-          ? rootQueueKids
-          : section === 'access'
-            ? rootAccessKids
-            : section === 'history'
-              ? rootHistoryKids
-              : section === 'runtime'
-                ? rootRuntimeKids
-                : section === 'installations'
-                  ? rootInstallationKids
-                  : undefined,
-    })),
-  );
+  const rootEntries = $derived.by((): SidebarEntry[] => [
+    {
+      id: 'overview',
+      label: 'Overview',
+      icon: 'gauge',
+      href: session.rootHrefFor('overview'),
+      active: !session.isInbox && session.rootValue === 'overview',
+    },
+    {
+      id: 'workspaces',
+      label: 'Workspaces',
+      icon: 'book',
+      href: session.rootHrefFor('workspaces'),
+      active: !session.isInbox && session.rootValue === 'workspaces',
+      dirty: dirtyTargetIds.size > 0,
+    },
+    {
+      id: 'queue',
+      label: 'Queue',
+      icon: 'pending',
+      href: session.rootQueueSectionHref('active'),
+      active: !session.isInbox && session.rootValue === 'queue',
+    },
+    {
+      id: 'schedules',
+      label: 'Schedules',
+      icon: 'calendar',
+      href: session.rootHrefFor('schedules'),
+      active: !session.isInbox && session.rootValue === 'schedules',
+    },
+    {
+      id: 'history-audit',
+      label: 'Audit',
+      icon: 'history',
+      href: session.rootAuditHref(),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'history-audit',
+    },
+    {
+      id: 'history-failures',
+      label: 'Failures',
+      icon: 'failure',
+      href: session.rootFailuresHref(),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'history-failures',
+      count: failureCount,
+      signal: failureCount !== undefined,
+    },
+    { kind: 'group', id: 'group-access', label: 'Access' },
+    {
+      id: 'access-users',
+      label: 'Users',
+      icon: 'users',
+      href: session.rootAccessHref('users'),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'access-users',
+    },
+    {
+      id: 'access-invitations',
+      label: 'Invitations',
+      icon: 'mail',
+      href: session.rootAccessHref('invitations'),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'access-invitations',
+    },
+    { kind: 'group', id: 'group-system', label: 'System' },
+    {
+      id: 'runtime-service',
+      label: 'Service health',
+      icon: 'server',
+      href: session.rootRuntimeHref('service'),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'runtime-service',
+    },
+    {
+      id: 'runtime-settings',
+      label: 'Service settings',
+      icon: 'gear',
+      href: session.rootRuntimeHref('settings'),
+      active: !session.isInbox && session.currentRootRoute.rootView === 'runtime-settings',
+      dirty: settingsDraftRegistry.dirtyAt(ROOT_SETTINGS_SCOPE, { section: 'runtime' }),
+    },
+    ...rootWorkspaceRows,
+  ]);
+
+  /**
+   * What the phone's bar says you are looking at.
+   *
+   * The tree's own word for the page, not the document title: the tab says
+   * "Users | Access | SMYKLOT" because a tab is read out of context, and the bar is
+   * read directly under the tree that named it. The inbox is not in either tree, and a
+   * page the tree does not carry falls back to the console it is in.
+   */
+  const topBarTitle = $derived.by(() => {
+    if (session.isInbox) return 'Inbox';
+    const rows = (session.isRootMode ? rootEntries : workspaceEntries).filter(
+      (entry): entry is SidebarRow => !isGroup(entry),
+    );
+    const here = rows.find((row) => row.active);
+    if (here !== undefined) return here.label;
+    return session.isRootMode
+      ? 'Operations'
+      : (session.selectedTarget?.account.display_name ??
+          session.selectedTarget?.account.login ??
+          'Workspace');
+  });
+
+  /** Where a row leads, by its id. The tree is flat, so this is one switch. */
+  function openSidebarRow(row: SidebarRow): void {
+    drawerOpen = false;
+    const [head, tail] = row.id.split('-') as [string, string | undefined];
+
+    if (session.isRootMode) {
+      if (head === 'workspace' && tail !== undefined) {
+        const route = session.currentRootRoute;
+        if (route.rootView !== 'workspace') return;
+        if (tail === 'audit' || tail === 'failures') session.selectRootWorkspaceHistory(tail);
+        else session.selectRootWorkspace(route.account, tail as RootWorkspaceView);
+        return;
+      }
+      if (head === 'queue') session.selectRootQueueSection('active');
+      else if (head === 'access') session.selectRootAccessSection(tail as 'users' | 'invitations');
+      else if (head === 'history') session.selectRootHistorySection(tail as 'audit' | 'failures');
+      else if (head === 'runtime') session.selectRootRuntimeSection(tail as RootRuntimeSection);
+      else if (row.id === 'workspaces') session.selectRootWorkspaces();
+      else session.selectRootSection(row.id as RootSection);
+      return;
+    }
+
+    if (head === 'sync') session.selectSyncSection(tail as SyncSection);
+    else if (head === 'access') session.selectUserSection(tail as 'users' | 'invitations');
+    else if (head === 'history') session.selectHistorySection(tail as 'audit' | 'failures');
+    else if (row.id === 'queue') session.selectQueueSection('active');
+    else session.selectView(row.id as PanelView);
+  }
+
+  /**
+   * What each page IS, for the palette - never what its address is.
+   *
+   * Beside the tree rather than inside it: a row carries a word a reader chooses
+   * from a list they are already looking at, and a search result carries a sentence
+   * to someone who has not found the list yet.
+   */
+  const PAGE_SAYS: Record<string, string> = {
+    repositories: 'every repository and its switch',
+    queue: 'what Smyklot is about to do',
+    schedules: 'when the background work runs',
+    'sync-overview': 'the sync board - which repositories are settled',
+    'sync-labels': 'the labels every repository should carry',
+    'sync-settings': 'repository settings the sync holds in step',
+    'sync-rulesets': 'branch protections the sync holds in step',
+    'sync-files': 'shared files the sync copies around',
+    'sync-plan': 'changes waiting for an apply',
+    'access-users': 'who is in this workspace',
+    'access-invitations': 'links that bring people in',
+    'history-audit': 'everything done here, day by day',
+    'history-failures': 'work that stopped, and why',
+    settings: 'what every repository here inherits',
+    overview: 'what needs an operator',
+    workspaces: 'every workspace the service serves',
+    'runtime-service': 'the service, its credentials and the store it runs on',
+    'runtime-settings': 'what the deployment sets, and what you set here',
+  };
+
+  let searchOpen = $state(false);
+
+  function pageEntries(rows: readonly SidebarEntry[], cross?: string): FindEntry[] {
+    return rows
+      .filter((entry): entry is SidebarRow => !isGroup(entry))
+      .map((row) => ({
+        group: 'Pages',
+        title: row.label,
+        say: PAGE_SAYS[row.id] ?? '',
+        href: row.href,
+        cross,
+        select: () => {
+          if (cross === undefined) openSidebarRow(row);
+          else void goto(row.href);
+        },
+      }));
+  }
+
+  const findEntries = $derived.by((): FindEntry[] => {
+    const here = session.isRootMode ? rootEntries : workspaceEntries;
+    const there = session.isRootMode ? workspaceEntries : rootEntries;
+    const crossName = session.isRootMode ? 'This workspace' : 'Operations';
+    return [
+      ...pageEntries(here),
+      {
+        group: 'Pages',
+        title: 'Inbox',
+        say: 'what happened in the workspaces you belong to',
+        href: session.inboxHref(),
+        select: () => session.openInbox(),
+      },
+      ...session.targets
+        .filter((target) => target.id !== session.selectedId || session.isRootMode)
+        .map((target): FindEntry => ({
+          group: 'Workspaces',
+          title: target.account.display_name || target.account.login,
+          say: `@${target.account.login}`,
+          href: session.targetHref(target),
+          select: () => void session.selectTarget(target.id),
+        })),
+      ...pageEntries(there, crossName),
+    ];
+  });
+
+  /** Repositories and people are asked for, because only the service knows them. */
+  async function findLookup(query: string): Promise<FindEntry[]> {
+    const targetId = session.selectedTarget?.id;
+    if (targetId === undefined) return [];
+    const [repositories, people] = await Promise.all([
+      session.api
+        .fetchRepositories(targetId, {
+          query,
+          sort: 'name_asc',
+          limit: 6,
+          state: 'all',
+          files: [],
+          setting: { mode: 'all' },
+        })
+        .catch(() => null),
+      session.api.suggestUsers(targetId, query).catch(() => null),
+    ]);
+    const account = session.selectedTarget?.account.login ?? '';
+    return [
+      ...(repositories?.items ?? []).map((repository): FindEntry => ({
+        group: 'Repositories',
+        title: repository.name,
+        say: repository.effective_enabled ? 'on' : 'off - Smyklot stands down there',
+        href: session.repositoryHref(repository.name),
+        select: () => session.openRepository(repository.name),
+      })),
+      ...(people ?? []).slice(0, 5).map((person): FindEntry => ({
+        group: 'People',
+        title: person.display_name || person.login,
+        say: `@${person.login} in ${account}`,
+        href: session.accessHref('users'),
+        select: () => session.selectUserSection('users'),
+      })),
+    ];
+  }
+
+  function searchShortcut(event: KeyboardEvent): void {
+    if (event.key !== 'k' || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    searchOpen = !searchOpen;
+  }
 
   const showSidebar = $derived(
     session.viewer !== null && (session.isRootMode || session.selectedTarget !== null),
   );
 </script>
 
-<svelte:window onkeydown={closeDrawerOnEscape} />
+<svelte:window
+  onkeydown={(event) => {
+    closeDrawerOnEscape(event);
+    searchShortcut(event);
+  }}
+/>
 
 <svelte:head>
   {#if !session.signedOut}
@@ -852,8 +1079,8 @@
     <PanelBoot />
   {:else if session.signedOut}
     <SignInPage {api} {build} ended={session.sessionEnded} />
-  {:else if session.awaitingInstallation}
-    <NightPage title="No installations" documentTitle="No installations" {build} size="compact">
+  {:else if session.awaitingWorkspace}
+    <NightPage title="No workspaces" documentTitle="No workspaces" {build} size="compact">
       <div class="install-prompt">
         <span class="install-mark" aria-hidden="true">+</span>
         <div class="install-copy">
@@ -868,6 +1095,33 @@
     </NightPage>
   {:else}
     <a class="skip-link" href="#panel-content">Skip to panel content</a>
+    {#if showSidebar}
+      <FindPalette
+        bind:open={searchOpen}
+        placeholder={session.isRootMode ? 'Search the console' : 'Search this workspace'}
+        entries={findEntries}
+        lookup={session.isRootMode ? undefined : findLookup}
+        crossLabel={session.isRootMode ? 'this workspace' : 'the console'}
+      />
+    {/if}
+    {#if showSidebar}
+      <!-- The phone's whole shell. Above 48rem it draws nothing: the rail and the
+           sidebar are both in flow there and this would be a third chrome column. -->
+      <TopBar
+        open={drawerOpen}
+        onToggle={() => (drawerOpen = !drawerOpen)}
+        title={topBarTitle}
+        targets={session.targets}
+        selected={session.selectedTarget}
+        targetHref={(target: PanelTarget) => session.targetHref(target)}
+        onSelectTarget={(targetId: string) => void session.selectTarget(targetId)}
+        {dirtyTargetIds}
+        rootMode={session.isRootMode}
+        console={session.viewer !== null && session.viewer.system_role !== 'none'
+          ? { href: session.rootEntryHref(), onEnter: () => session.enterRoot() }
+          : null}
+      />
+    {/if}
     <main
       class="app-shell"
       class:sidebar-collapsed={session.effectiveSidebarCollapsed}
@@ -893,61 +1147,40 @@
         theme={session.theme}
         onSelectTheme={(t: ThemeDisplay) => session.selectTheme(t)}
         onSignOut={signOut}
-        pagesOpen={drawerOpen}
-        onTogglePages={() => (drawerOpen = !drawerOpen)}
       />
 
       {#if showSidebar}
         <Sidebar
-          kicker={session.isRootMode ? 'Root console' : 'Workspace'}
+          kicker={session.isRootMode ? 'Console' : 'Workspace'}
           title={session.isRootMode
             ? 'Operations'
             : (session.selectedTarget?.account.display_name ??
               session.selectedTarget?.account.login ??
               '')}
-          pages={session.isRootMode ? rootPages : workspacePages}
+          entries={session.isRootMode ? rootEntries : workspaceEntries}
           collapsed={session.effectiveSidebarCollapsed}
           onToggleCollapsed={() => session.toggleSidebar()}
-          onSelectPage={(pageRow) => {
-            drawerOpen = false;
-            if (session.isRootMode) {
-              if (pageRow.id === 'access') session.selectRootAccessSection('users');
-              else if (pageRow.id === 'history') session.selectRootHistorySection('audit');
-              else if (pageRow.id === 'installations') session.selectRootInstallations();
-              else session.selectRootSection(pageRow.id as RootSection);
-            } else if (pageRow.id === 'sync') session.selectSyncSection('overview');
-            else if (pageRow.id === 'access') session.selectUserSection('users');
-            else if (pageRow.id === 'history') session.selectHistorySection('audit');
-            else session.selectView(pageRow.id as PanelView);
-          }}
-          onSelectKid={(pageRow, kid) => {
-            drawerOpen = false;
-            if (!session.isRootMode) {
-              if (pageRow.id === 'sync') session.selectSyncSection(kid.id as SyncSection);
-              else if (pageRow.id === 'queue') session.selectQueueSection(kid.id as QueueSection);
-              else if (pageRow.id === 'access')
-                session.selectUserSection(kid.id as 'users' | 'invitations');
-              else if (pageRow.id === 'history')
-                session.selectHistorySection(kid.id as 'audit' | 'failures');
-              return;
-            }
-
-            if (pageRow.id === 'queue') session.selectRootQueueSection(kid.id as QueueSection);
-            else if (pageRow.id === 'access')
-              session.selectRootAccessSection(kid.id as 'users' | 'invitations');
-            else if (pageRow.id === 'history')
-              session.selectRootHistorySection(kid.id as 'audit' | 'failures');
-            else if (pageRow.id === 'runtime')
-              session.selectRootRuntimeSection(kid.id as RootRuntimeSection);
-            else if (pageRow.id === 'installations') {
-              const route = session.currentRootRoute;
-              if (route.rootView !== 'installation') return;
-              if (kid.id === 'audit' || kid.id === 'failures') {
-                session.selectRootInstallationHistory(kid.id);
-              } else {
-                session.selectRootInstallation(route.account, kid.id as RootInstallationView);
-              }
-            }
+          onSelectRow={openSidebarRow}
+          onOpenSearch={() => (searchOpen = true)}
+          searchLabel={session.isRootMode ? 'Search the console' : 'Search this workspace'}
+          chrome={{
+            targets: session.targets,
+            selected: session.selectedTarget,
+            targetHref: (target: PanelTarget) => session.targetHref(target),
+            onSelectTarget: (targetId: string) => void session.selectTarget(targetId),
+            dirtyTargetIds,
+            rootMode: session.isRootMode,
+            rootEnabled: session.viewer !== null && session.viewer.system_role !== 'none',
+            rootEntryHref: session.rootEntryHref(),
+            onEnterRoot: () => session.enterRoot(),
+            inboxHref: session.inboxHref(),
+            inboxActive: session.isInbox,
+            onSelectInbox: () => session.openInbox(),
+            unreadCount: notificationUnread,
+            viewer: session.viewer,
+            theme: session.theme,
+            onSelectTheme: (t: ThemeDisplay) => session.selectTheme(t),
+            onSignOut: signOut,
           }}
         />
       {/if}
@@ -970,7 +1203,7 @@
         </div>
       {/if}
 
-      <div class="workspace" class:table-scroll-view={session.tableScrollView}>
+      <div class="workspace">
         <div id="panel-content" class="workspace-content" tabindex="-1">
           {#if session.failure !== null}
             <Plate label="Problem" tone="alarm">
@@ -1014,7 +1247,7 @@
             onDismiss={dismissSelectedSettingsNotice}
             onOpenProblem={openSettingsProblem}
           />
-        {:else if session.isRootMode && session.currentRootRoute.rootView !== 'installation'}
+        {:else if session.isRootMode && session.currentRootRoute.rootView !== 'workspace'}
           <SettingsSaveComposer
             count={rootDirtyControls.length}
             saving={rootSettingsOperation.saving}
@@ -1024,7 +1257,7 @@
             problemHref={rootProblemControl === undefined
               ? undefined
               : session.rootRuntimeHref('settings')}
-            problemLabel={rootProblemControl === undefined ? undefined : 'Runtime settings'}
+            problemLabel={rootProblemControl === undefined ? undefined : 'Service settings'}
             notice={rootSettingsOperation.notice}
             conflict={rootSettingsConflict}
             onSave={() => void saveRootSettings()}
@@ -1038,6 +1271,9 @@
       </div>
     </main>
   {/if}
+  <!-- The shell's, not a page's: a change made in a dialog is reported once the dialog
+       has closed, and a receipt a page owned would leave with the page. -->
+  <MutationReceipt />
 </QueryClientProvider>
 
 <style>
@@ -1065,7 +1301,7 @@
        different ranges, and collapsing them was not allowed to move any of them. */
     --skeleton-from: 0.52;
     --skeleton-to: 0.9;
-    animation: skeleton-pulse 1.35s ease-in-out infinite alternate;
+    animation: skeleton-pulse var(--rhythm-shimmer) var(--ease-inout) infinite alternate;
     background: var(--surface-inset);
     border-radius: var(--radius-control);
     display: block;
@@ -1098,16 +1334,16 @@
     font-size: 1rem;
   }
   .install-copy p {
-    color: var(--dim);
+    color: var(--text-muted);
     margin: var(--space-2) 0 0;
-    max-width: 26rem;
+    max-width: var(--measure-note);
   }
   .install-mark {
     align-items: center;
-    background: var(--accent-tint);
-    border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+    background: var(--brand-action-tint);
+    border: 1px solid color-mix(in srgb, var(--brand-action) 34%, transparent);
     border-radius: var(--radius-control);
-    color: var(--accent);
+    color: var(--brand-action);
     display: inline-flex;
     font: 650 1.5rem/1 var(--sans);
     height: 3rem;

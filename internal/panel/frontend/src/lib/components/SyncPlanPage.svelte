@@ -1,23 +1,17 @@
 <script lang="ts">
-  /**
-   * The plan: Terraform's grammar under the overview's register. The verdict
-   * is the hero, the state is the sentence rather than a badge, and every
-   * fact lives once - scale in the hero, freshness and expiry on its
-   * baseline, operation counts and the promise on the apply bar, scope on
-   * the button.
-   */
   import { SvelteSet } from 'svelte/reactivity';
 
   import { formatDateTime, formatRelative, formatUntil } from '../format';
   import { SYNC_KINDS, type SyncAction, type SyncPlan } from '../types';
-  import type { SyncSection } from '../routes';
+  import { SYNC_SECTION_LABELS } from '../routes';
 
   import ApplyBar from './ApplyBar.svelte';
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DiffBlock from './DiffBlock.svelte';
   import Icon from './Icon.svelte';
-  import PanePath from './PanePath.svelte';
+  import PageHeader from './PageHeader.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
 
   const {
@@ -28,8 +22,6 @@
     approving,
     discarding,
     runNowBusy,
-    sectionHref,
-    onOpenSection,
     onApprove,
     onDiscard,
     onRunNow,
@@ -42,8 +34,6 @@
     approving: boolean;
     discarding: boolean;
     runNowBusy: boolean;
-    sectionHref: (section: SyncSection) => string;
-    onOpenSection: (section: SyncSection) => void;
     onApprove: (planId: string, digest: string) => void;
     onDiscard: (planId: string) => void;
     onRunNow: (reason: string) => void;
@@ -54,12 +44,7 @@
 
   /* ---------- The kind filter ---------- */
 
-  const KIND_LABEL: Record<string, string> = {
-    labels: 'Labels',
-    settings: 'Settings',
-    rulesets: 'Rulesets',
-    files: 'Files',
-  };
+  const KIND_LABEL: Record<string, string> = SYNC_SECTION_LABELS;
 
   let filter = $state('all');
 
@@ -184,9 +169,6 @@
     else flipped.add(repository);
   }
 
-  /** The lifecycle card's demo group, open until somebody folds it. */
-  let demoOpen = $state(true);
-
   /* ---------- The apply bar and the confirmation ---------- */
 
   const approvable = $derived(plan !== null && plan.state === 'computed' && total > 0);
@@ -226,33 +208,38 @@
       timeZoneName: 'short',
     }).format(new Date(value));
   }
-
-  /* The lifecycle map speaks at the plan's own scale; its transitions keep
-     the demo fractions where the plan has not been there yet. */
-  const applyingShown = $derived(Math.min(3, Math.max(total, 1)));
-  const failedShown = $derived(Math.min(2, Math.max(total, 1)));
 </script>
 
+<!--
+@component
+The plan: Terraform's grammar under the overview's register. The verdict
+is the hero, the state is the sentence rather than a badge, and every
+fact lives once - scale in the hero, freshness and expiry on its
+baseline, operation counts and the promise on the apply bar, scope on
+the button.
+-->
+
 <div class="view-frame">
-  <PanePath
-    segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
-    ]}
-  />
+  <PageHeader id="sync-plan-heading" section="Sync" title="Plan" />
 
   {#if plan === null || total === 0}
-    <div class="hero">
-      <h2>Nothing is waiting</h2>
-      {#if canControl}
-        <Button tone="signal" disabled={runNowBusy} onclick={() => (runConfirming = true)}
-          >{runNowBusy ? 'Queuing scan…' : 'Check drift now'}</Button
+    <!-- Having no plan is a state, not a verdict: the page-tier heading and the
+         paragraph under it were the loaded page's shape worn by the empty one.
+         `Check drift now` is the panel's one act rather than a button beside a
+         headline about nothing. -->
+    <Card>
+      <div class="state-panel">
+        <span
+          ><strong>No plan is open.</strong> Every repository matches the configuration - a reconcile
+          runs on a timer and writes a plan here the moment something drifts</span
         >
-      {/if}
-    </div>
-    <p class="plan-rule">
-      A reconcile runs on a timer and proposes whatever differs - a plan appears here the moment one
-      does
-    </p>
+        {#if canControl}
+          <Button tone="signal" disabled={runNowBusy} onclick={() => (runConfirming = true)}
+            >{runNowBusy ? 'Queuing scan…' : 'Check drift now'}</Button
+          >
+        {/if}
+      </div>
+    </Card>
   {:else}
     <div class="hero">
       <h2>
@@ -293,14 +280,14 @@
         </div>
         <dl class="schedule-facts">
           <div>
-            <dt>Earliest eligible</dt>
+            <dt>Runs no earlier than</dt>
             <dd>
               <time datetime={queued.eligible_at}>{formatDateTime(queued.eligible_at)}</time>
               <small>{formatUntil(queued.eligible_at, nowMs)} in your timezone</small>
             </dd>
           </div>
           <div>
-            <dt>Window</dt>
+            <dt>Hours</dt>
             <dd>
               {queued.profile_name ?? queued.profile_id ?? 'One-time bypass'}
               <small>{profileTime(queued.eligible_at, queued.profile_timezone)}</small>
@@ -313,7 +300,9 @@
                 ? formatDateTime(queued.estimated_start_at)
                 : 'Not estimated'}
               <small
-                >{queued.work_ahead === 0 ? 'Next in lane' : `${queued.work_ahead} items ahead`} · estimate</small
+                >{queued.work_ahead === 0
+                  ? 'Nothing ahead of it'
+                  : `${queued.work_ahead} items ahead`} · estimate</small
               >
             </dd>
           </div>
@@ -356,7 +345,7 @@
           aria-expanded={open}
           onclick={() => toggleGroup(group.repository)}
         >
-          <span class="summary-icon"><Icon name="chevron-right" size={12} /></span>
+          <span class="summary-icon"><Icon name="chevron-right" size="xs" /></span>
           <span class="repo-group-name">{group.repository}</span>
           {#if groupFailed > 0}
             <span class="pill pill-danger"><span class="t">{groupFailed} failed</span></span>
@@ -440,122 +429,6 @@
       </ApplyBar>
     {/if}
 
-    <div class="card block-gap-top">
-      <div class="card-head"><h3 class="card-title">The plan's lifecycle</h3></div>
-      <p class="plan-rule">
-        One plan, six states. The spine is the happy path, every exit hangs from the state it leaves
-        with its cause on the hanger - whichever holds, only the verdict line changes
-      </p>
-      <div class="state-map" role="presentation">
-        <div class="state-node is-wait">
-          <span class="state-dot"></span>
-          <span class="state-name">Waiting for you</span>
-          <span class="state-rail"></span>
-          <span class="state-say"
-            >Nothing reaches GitHub until someone applies the {total}
-            {total === 1 ? 'change' : 'changes'}</span
-          >
-          <div class="state-exits">
-            <div class="state-exit">
-              <span class="exit-cause"
-                ><span class="t">The configuration moves</span><Icon
-                  name="chevron-down"
-                  size={12}
-                /></span
-              >
-              <span class="state-say"
-                ><span class="state-word is-stale">Stale</span> - this plan no longer says what sync would
-                do</span
-              >
-            </div>
-            <div class="state-exit">
-              <span class="exit-cause"
-                ><span class="t">Six hours pass</span><Icon name="chevron-down" size={12} /></span
-              >
-              <span class="state-say"
-                ><span class="state-word is-expired">Expired</span> - the next sweep computes a fresh
-                one</span
-              >
-            </div>
-          </div>
-        </div>
-        <div class="state-edge">
-          <span class="t">You apply</span><Icon name="chevron-right" size={12} />
-        </div>
-        <div class="state-node is-applying">
-          <span class="state-dot"></span>
-          <span class="state-name">Applying</span>
-          <span class="state-rail"></span>
-          <span class="state-say">{applyingShown} of {total} landed - the page follows along</span>
-          <div class="state-exits">
-            <div class="state-exit">
-              <span class="exit-cause"
-                ><span class="t">GitHub refuses a write</span><Icon
-                  name="chevron-down"
-                  size={12}
-                /></span
-              >
-              <span class="state-say"
-                ><span class="state-word is-failed">{failedShown} of {total} failed</span> - everything
-                behind the failure was not tried</span
-              >
-            </div>
-          </div>
-        </div>
-        <div class="state-edge">
-          <span class="t">Every write lands</span><Icon name="chevron-right" size={12} />
-        </div>
-        <div class="state-node is-applied">
-          <span class="state-dot"></span>
-          <span class="state-name">Applied</span>
-          <span class="state-say"
-            >All {total} landed - the file changes wait as pull requests in each repository</span
-          >
-        </div>
-      </div>
-      <p class="map-caption">Failed, on the rows - the error inline, the untried named</p>
-      <!-- One exit made concrete, at the demo scale the map's caption promises.
-           An illustration, deliberately not this plan's data: the failed shape
-           has to be readable before anything has failed. -->
-      <section class="repo-group" class:is-open={demoOpen}>
-        <button
-          type="button"
-          class="repo-group-head"
-          aria-expanded={demoOpen}
-          onclick={() => (demoOpen = !demoOpen)}
-        >
-          <span class="summary-icon"><Icon name="chevron-right" size={12} /></span>
-          <span class="repo-group-name">af</span>
-          <span class="pill pill-danger"><span class="t">2 failed</span></span>
-        </button>
-        {#if demoOpen}
-          <div class="action-rows">
-            <div class="action-row" data-kind="settings">
-              <span class="action-op is-chg">~ change</span>
-              <span class="action-kind">settings</span>
-              <span class="action-what">squash merging <span class="from-to">off → on</span></span>
-              <span class="action-fail"
-                >GitHub answered 403: the App's Administration permission was revoked</span
-              >
-            </div>
-            <div class="action-row" data-kind="settings">
-              <span class="action-op is-chg">~ change</span>
-              <span class="action-kind"></span>
-              <span class="action-what">wiki <span class="from-to">on → off</span></span>
-              <span class="action-fail">not tried: squash merging failed first</span>
-            </div>
-            <div class="action-row" data-kind="labels">
-              <span class="action-op is-add">+ add</span>
-              <span class="action-kind">labels</span>
-              <span class="action-what"
-                >dependencies <span class="from-to">- applied before the failure</span></span
-              >
-            </div>
-          </div>
-        {/if}
-      </section>
-    </div>
-
     <ConfirmDialog
       id="apply-plan-dialog"
       open={confirming}
@@ -625,32 +498,32 @@
 </div>
 
 <style>
+  /* The reading column is the sheet's; what is this page's own is the apply bar's seat -
+     the marker's named view timeline is declared in the slot after it and handed back up
+     here. */
   .view-frame {
-    box-sizing: border-box;
-    inline-size: 100%;
-    margin-inline: auto;
-    max-width: var(--content-max);
-    min-inline-size: 0;
-    /* The apply bar's seat is measured by the slot after it: the marker's
-       named view timeline is declared there and handed back up here. */
     timeline-scope: --bar-slot;
   }
 
   /* ---------- The hero, in the overview's own register ---------- */
 
+  /* No margin above: the frame's gap is what stands this off the head, and the 8px
+     here was added to it - the one page whose head exited at 32 where every other
+     exits at 24. */
   .hero {
     align-items: end;
     display: grid;
     gap: var(--space-4);
     grid-template-columns: 1fr auto;
-    margin-block: var(--space-2) var(--space-4);
+    margin-block-end: var(--space-4);
   }
 
   .hero h2 {
-    font-size: 2.375rem;
+    /* The page tier, as on the sync overview's hero beside it. */
+    font-size: var(--font-size-page-title);
     font-weight: 700;
     letter-spacing: -0.03em;
-    line-height: round(1.1em, 1px);
+    line-height: var(--leading-page);
     margin: 0;
     min-block-size: 29px;
     text-box: trim-both cap alphabetic;
@@ -693,11 +566,12 @@
     text-box: trim-both cap alphabetic;
   }
 
-  /* The kind filter on its own line - a control never shares a line with
-     prose. The gap below is the group list's own rhythm. */
+  /* The kind filter on its own line - a control never shares a line with prose.
+     No margin below: this bar is always a child of the frame, whose gap is the
+     distance to what it acts on, and a margin here as well made 32px where the
+     drawing has 16. */
   .plan-tools {
     display: flex;
-    margin-block-end: var(--space-3);
   }
 
   .schedule-card {
@@ -797,7 +671,7 @@
   }
 
   .repo-group-head:hover {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
   .summary-icon {
@@ -856,11 +730,11 @@
     font-size: var(--font-size-compact);
     gap: var(--space-3);
     grid-template-columns: 4.2rem 5.2rem 1fr;
-    padding: 0.5rem var(--space-2);
+    padding: var(--row-pad-compact) var(--space-2);
   }
 
   .action-row:hover {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
   /* An expandable row's grid lives on its inner line - the outer box holds
@@ -944,7 +818,7 @@
     color: var(--danger);
     font-size: var(--font-size-micro);
     grid-column: 3;
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-micro);
     margin-block-start: calc(var(--space-1) - var(--space-3));
   }
 
@@ -967,21 +841,8 @@
     color: var(--text-secondary);
     flex: 1;
     font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-meta);
     text-box: trim-both cap alphabetic;
-  }
-
-  /* ---------- The lifecycle card ---------- */
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
-  .block-gap-top {
-    margin-top: var(--space-6);
   }
 
   .card-head {
@@ -992,228 +853,24 @@
     margin-bottom: var(--space-4);
   }
 
-  .card-title {
-    font-size: var(--font-size-card-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 13px;
-    text-box: trim-both cap alphabetic;
-  }
-
   .plan-rule {
     color: var(--text-secondary);
     font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-meta);
     margin: 0;
     text-wrap: pretty;
-  }
-
-  /* A group nested in a card takes one honest step up - the same surface
-     twice with only a border between them is the hollow-frame defect. */
-  .card .repo-group {
-    background: var(--surface-raised);
-  }
-
-  /* ---------- The state map ----------
-     A state machine, not a wizard. Nodes are content-sized, so every spare
-     pixel goes to the EDGES, which are drawn: a shaft from name to next dot
-     with the cause on it and the arrowhead at its end. One text edge per
-     node: dot in a 16px marker column, name, sentence and exits share the
-     second column, and the rail drops from the dot down the marker column -
-     the thread the exits hang from. */
-  .state-map {
-    align-items: start;
-    column-gap: 0;
-    display: grid;
-    grid-template-columns:
-      minmax(0, 1fr) minmax(max-content, 0.5fr) minmax(0, 1fr) minmax(max-content, 0.5fr)
-      minmax(0, 1fr);
-    margin-block-start: var(--space-5);
-  }
-
-  .state-node {
-    align-items: start;
-    column-gap: var(--space-2);
-    display: grid;
-    grid-template-columns: 16px 1fr;
-    row-gap: var(--space-2);
-  }
-
-  .state-node.is-wait {
-    --state-c: var(--diff-chg-ink);
-  }
-
-  .state-node.is-applying {
-    --state-c: var(--info);
-  }
-
-  .state-node.is-applied {
-    --state-c: var(--success);
-  }
-
-  /* Dot centre and name cap centre both at 10px from the row's top. */
-  .state-dot {
-    background: var(--state-c);
-    block-size: 8px;
-    border-radius: 50%;
-    grid-column: 1;
-    grid-row: 1;
-    inline-size: 8px;
-    justify-self: start;
-    margin-block-start: 6px;
-  }
-
-  .state-name {
-    color: var(--state-c);
-    font-size: var(--font-size-meta);
-    font-weight: 650;
-    grid-column: 2;
-    grid-row: 1;
-    margin-block-start: 5px;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .state-node > .state-say {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
-  .state-say {
-    color: var(--text-secondary);
-    font-size: var(--font-size-compact);
-    line-height: round(1.5em, 1px);
-    text-wrap: pretty;
-  }
-
-  .state-word {
-    font-weight: 600;
-  }
-
-  .state-word.is-failed {
-    color: var(--danger);
-  }
-
-  .state-word.is-stale {
-    color: var(--warning);
-  }
-
-  .state-word.is-expired {
-    color: var(--text-muted);
-  }
-
-  /* The thread: from just under the dot to the last exit, on the dot's own
-     centre line. */
-  .state-rail {
-    align-self: stretch;
-    background: var(--border-subtle);
-    grid-column: 1;
-    grid-row: 1 / 4;
-    inline-size: 1px;
-    justify-self: start;
-    margin-block-start: 18px;
-    margin-inline-start: 3.5px;
-  }
-
-  /* The transition drawn: shaft, cause, shaft, arrowhead - the head lands at
-     the next node's dot. Flex order puts the pseudo shafts around the label
-     with the chevron last. */
-  .state-edge {
-    align-items: center;
-    color: var(--text-muted);
-    display: flex;
-    gap: var(--space-1);
-    margin-block-start: 4px;
-    padding-inline: var(--space-2);
-  }
-
-  .state-edge::before,
-  .state-edge::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    content: '';
-    flex: 1;
-    min-inline-size: var(--space-2);
-  }
-
-  .state-edge::before {
-    order: 1;
-  }
-
-  .state-edge .t {
-    font-size: 0.625rem;
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    order: 2;
-    text-box: trim-both cap alphabetic;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-
-  .state-edge::after {
-    order: 3;
-  }
-
-  /* Seated on the shaft: -4px cancels the flex gap and -3 more rides the
-     glyph's own transparent lead-in, so the arrowhead grows out of the line
-     instead of floating a hair past it. */
-  .state-edge :global(svg) {
-    margin-inline-start: -7px;
-    order: 4;
-  }
-
-  /* +4 over the node's 8px row gap: every hanger hangs 12 below the
-     sentence above it, first exit and second alike. */
-  .state-exits {
-    display: grid;
-    gap: var(--space-3);
-    grid-column: 2;
-    grid-row: 3;
-    margin-block-start: var(--space-1);
-  }
-
-  .state-exit {
-    display: grid;
-    gap: var(--space-1);
-  }
-
-  .exit-cause {
-    align-items: center;
-    color: var(--text-muted);
-    display: flex;
-    font-size: 0.625rem;
-    font-weight: 600;
-    gap: var(--space-1);
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-  }
-
-  .exit-cause .t {
-    text-box: trim-both cap alphabetic;
-  }
-
-  /* The demo below is one exit made concrete - the caption says which. */
-  .map-caption {
-    color: var(--text-muted);
-    font-size: 0.625rem;
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    margin: var(--space-5) 0 var(--space-2);
-    min-block-size: 8px;
-    text-box: trim-both cap alphabetic;
-    text-transform: uppercase;
   }
 
   .pill {
     align-items: center;
     /* A chip's height is a decision: 20px, the app's chip-small. */
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -1271,8 +928,8 @@
   }
 
   .run-reason textarea:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-offset);
   }
 
   @media (max-width: 36rem) {
@@ -1336,28 +993,6 @@
     .action-fail {
       grid-column: 1 / -1;
       margin-block-start: 0;
-      min-inline-size: 0;
-      overflow-wrap: anywhere;
-    }
-
-    .card {
-      padding: var(--space-4);
-    }
-
-    .state-map {
-      gap: var(--space-4);
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .state-edge {
-      margin-block-start: 0;
-      min-inline-size: 0;
-      padding-inline: 0;
-    }
-
-    .state-node,
-    .state-say,
-    .exit-cause {
       min-inline-size: 0;
       overflow-wrap: anywhere;
     }

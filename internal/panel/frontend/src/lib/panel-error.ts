@@ -113,15 +113,15 @@ const BY_STATUS_AND_CODE: Readonly<Record<string, ErrorContent>> = {
   '502:catalog_unavailable': {
     status: 502,
     title: 'GitHub unreachable',
-    lead: 'Your installations could not be loaded',
-    note: 'GitHub did not answer when Smyklot asked which installations you have, so the sign-in stopped short. Nothing is wrong with your account. Try again in a moment',
+    lead: 'Your workspaces could not be loaded',
+    note: 'GitHub did not answer when Smyklot asked which workspaces you have, so the sign-in stopped short. Nothing is wrong with your account. Try again in a moment',
     action: SIGN_IN_AGAIN,
   },
   '403:forbidden': {
     status: 403,
     title: 'No access',
     lead: 'This GitHub account cannot open the panel',
-    note: 'The panel is open to people who own an installation of Smyklot, and to anyone invited by name. If you were expecting to get in, ask whoever runs Smyklot to invite this account',
+    note: 'The panel is open to people who own a workspace Smyklot is installed in, and to anyone invited by name. If you were expecting to get in, ask whoever runs Smyklot to invite this account',
     action: { kind: 'sign-in', label: 'Try a different account' },
   },
   '400:invalid_invitation': {

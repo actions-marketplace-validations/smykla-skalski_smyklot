@@ -216,13 +216,13 @@ describe('SettingsCheckpointDialog [Component]', () => {
       'Repositories on by default · Pending CI labels · 1 policy override',
     );
     expect(settingsCheckpointSummary(repository!, repository!.after.state)).toBe(
-      'Enabled · Repository file read · 0 policy overrides',
+      'On · Repository file read · 0 policy overrides',
     );
     expect(settingsCheckpointSummary(syncConfig!, syncConfig!.after.state)).toBe(
       'On · 1 label · removal allowed · 0 exclusions',
     );
     expect(settingsCheckpointSummary(syncOverride!, syncOverride!.after.state)).toBe(
-      'Inherits enablement · 1 stored field',
+      'From the workspace · 1 stored field',
     );
     expect(settingsCheckpointSummary(runtime, runtime.after.state)).toBe(
       '2 overrides · Current deployment fills the rest',
@@ -233,7 +233,7 @@ describe('SettingsCheckpointDialog [Component]', () => {
     mount();
 
     await screen.findByText('Saved by Bart Smykla');
-    expect(screen.getByRole('checkbox', { name: 'Restore Installation defaults' })).toHaveProperty(
+    expect(screen.getByRole('checkbox', { name: 'Restore Workspace settings' })).toHaveProperty(
       'checked',
       true,
     );
@@ -248,13 +248,13 @@ describe('SettingsCheckpointDialog [Component]', () => {
     expect(screen.getByText('This stored document is no longer compatible')).toBeTruthy();
 
     const rawToggle = screen.getByRole('button', {
-      name: 'View stored state for Installation defaults',
+      name: 'View stored state for Workspace settings',
     });
     await fireEvent.click(rawToggle);
     expect(screen.getAllByText(/"before":/)[0]?.textContent).toContain('"current"');
     expect(rawToggle.getAttribute('aria-controls')).toBe('settings-checkpoint-raw-target::');
 
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Restore Installation defaults' }));
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Restore Workspace settings' }));
     await fireEvent.click(
       screen.getByRole('checkbox', {
         name: 'Restore smykla-skalski/website · Files override',
@@ -292,7 +292,7 @@ describe('SettingsCheckpointDialog [Component]', () => {
     const { restore } = mount();
     await screen.findByText('Saved by Bart Smykla');
 
-    expect(screen.getByRole('checkbox', { name: 'Restore Installation defaults' })).toHaveProperty(
+    expect(screen.getByRole('checkbox', { name: 'Restore Workspace settings' })).toHaveProperty(
       'checked',
       true,
     );
@@ -302,7 +302,7 @@ describe('SettingsCheckpointDialog [Component]', () => {
     );
 
     await fireEvent.click(screen.getByRole('radio', { name: 'Before change' }));
-    expect(screen.getByRole('checkbox', { name: 'Restore Installation defaults' })).toHaveProperty(
+    expect(screen.getByRole('checkbox', { name: 'Restore Workspace settings' })).toHaveProperty(
       'checked',
       false,
     );

@@ -44,6 +44,20 @@
   }
 </script>
 
+<!--
+@component
+What someone may do here, chosen from the roles this workspace defines. A listbox
+rather than a menu, because these are values to pick among and not acts to perform -
+which is also what a screen reader is told.
+
+The layer is `min-trigger` wide: the trigger is a role's name and the options carry the
+sentence that tells each role from its neighbours, so the list is wider than the button
+that opens it and the button is the floor rather than the measure.
+
+Focus opens on the current value rather than the top of the list, so the keyboard starts
+where the reader already is.
+-->
+
 <Popover
   bind:open
   width="min-trigger"
@@ -64,10 +78,10 @@
         {...attributes}
       >
         {#if selected !== undefined}
-          <span class="role-icon" aria-hidden="true"><Icon name={selected.icon} size={14} /></span>
+          <span class="role-icon" aria-hidden="true"><Icon name={selected.icon} size="sm" /></span>
           <span class="band-trim">{selected.label}</span>
         {/if}
-        <span class="role-chevron" aria-hidden="true"><Icon name="chevron-down" size={14} /></span>
+        <span class="role-chevron" aria-hidden="true"><Icon name="chevron-down" size="sm" /></span>
       </button>
     </div>
   {/snippet}
@@ -83,9 +97,9 @@
         aria-selected={isSelected}
         onclick={() => choose(option.value)}
       >
-        <Icon name={option.icon} size={15} />
+        <Icon name={option.icon} size="base" />
         <span>{option.label}</span>
-        {#if isSelected}<Icon name="success" size={15} />{/if}
+        {#if isSelected}<Icon name="success" size="base" />{/if}
       </button>
     {/each}
   </div>
@@ -98,12 +112,12 @@
 
   .role-trigger {
     align-items: center;
-    background: var(--control-surface);
+    background: var(--control-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--r-ctl);
-    color: var(--text);
+    color: var(--text-primary);
     display: inline-flex;
-    font: 600 var(--font-size-compact) / 1 var(--sans);
+    font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
     gap: var(--space-2);
     /* The panel's compact control height, not a third one of its own: 1.875rem
        is 30px, which lined up with nothing it ever sat beside. */
@@ -124,7 +138,7 @@
 
   .role-trigger:active:not(:disabled) {
     background: var(--control-bg-pressed);
-    transform: scale(var(--press-scale-compact));
+    box-shadow: var(--pressed-inset);
   }
 
   .role-trigger:focus-visible {
@@ -183,7 +197,7 @@
     border-radius: var(--radius-control);
     color: var(--text-secondary);
     display: grid;
-    font: 600 var(--font-size-compact) / 1 var(--sans);
+    font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
     /* The symbol sits closer to its word than the row does to its edge: a mark and
        the word it belongs to are one object, and at --space-2 they read as two
        columns that happen to be adjacent. */

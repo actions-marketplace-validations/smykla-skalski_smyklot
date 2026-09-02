@@ -123,6 +123,18 @@
   }
 </script>
 
+<!--
+@component
+Confirming one act on one piece of queued work, with what that act would actually do
+shown before it is taken. `onPreview` is why this is a dialog rather than a button:
+rescheduling asks the service when the work would then run, and a reader agreeing to a
+new time should see the time.
+
+One dialog for every queue action rather than one per verb - the shape is the same and
+only the sentence differs, and four dialogs asking the same question is how they come
+to ask it four different ways.
+-->
+
 <ConfirmDialog
   id="queue-action"
   open={item !== null && action !== null}
@@ -138,9 +150,12 @@
 >
   <div class="queue-action-form">
     {#if action === 'run_now'}
-      <p>This bypasses cadence and the assigned window once. Running work is never interrupted.</p>
+      <p>
+        Smyklot runs this once now, ignoring how often the job runs and the hours it keeps. Work
+        already running is never interrupted.
+      </p>
     {:else if action === 'next_window'}
-      <p>The delay is cleared, but the assigned execution window still applies.</p>
+      <p>The delay is cleared, but the job's hours still apply.</p>
     {:else if action === 'schedule_at'}
       <label for="queue-action-time">Not before</label>
       <input id="queue-action-time" type="datetime-local" bind:value={at} />
@@ -153,14 +168,14 @@
             previewKey = '';
           }}
         />
-        <span>Allow this run outside the assigned window</span>
+        <span>Allow this run outside the job's hours</span>
       </label>
       <Button row disabled={at === '' || previewBusy} onclick={() => void refreshPreview()}
-        >{previewBusy ? 'Calculating…' : 'Preview eligibility'}</Button
+        >{previewBusy ? 'Calculating…' : 'Preview when it runs'}</Button
       >
       {#if preview !== null && previewKey === scheduleKey()}
         <div class="schedule-preview" role="status">
-          <strong>First eligible instant</strong>
+          <strong>It would first run</strong>
           <time datetime={preview.eligible_at}>{previewTime(preview.eligible_at)}</time>
           {#if preview.profile_timezone !== undefined}
             <span
@@ -168,7 +183,7 @@
               {previewTime(preview.eligible_at, preview.profile_timezone)}</span
             >
           {:else}
-            <span>One-time outside-window bypass</span>
+            <span>This once, outside the job's hours</span>
           {/if}
         </div>
       {:else if previewError !== ''}
@@ -206,7 +221,7 @@
     gap: var(--space-3);
   }
   .queue-action-form p {
-    color: var(--dim);
+    color: var(--text-muted);
     margin: 0;
   }
   label:not(.check-line) {
@@ -220,13 +235,13 @@
     background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--radius-control);
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     min-height: 2.75rem;
     padding: var(--space-2) var(--space-3);
   }
   textarea {
-    line-height: 1.45;
+    line-height: var(--leading-body);
     resize: vertical;
   }
   .check-line {
@@ -240,13 +255,13 @@
   }
   .schedule-preview {
     background: var(--surface-raised);
-    border-inline-start: 2px solid var(--signal);
+    border-inline-start: 2px solid var(--info);
     display: grid;
     font-size: 0.76rem;
     gap: var(--space-1);
     padding: var(--space-3);
   }
   .schedule-preview span {
-    color: var(--dim);
+    color: var(--text-muted);
   }
 </style>

@@ -12,7 +12,21 @@ import (
 	"github.com/smykla-skalski/smyklot/internal/workqueue"
 )
 
-func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.Time)) {
+// queueRuntime is what every queue spec asks for: a live context, the store
+// under test, and the instant the suite calls now.
+type queueRuntime = func() (context.Context, storage.Store, time.Time)
+
+// declareWorkQueueSpecs runs the queue's conformance suite on one engine, in
+// four groups: what the policies say, what a reader can list, what a schedule
+// permits, and what leasing actually does.
+func declareWorkQueueSpecs(runtime queueRuntime) {
+	declareQueuePolicySpecs(runtime)
+	declareQueueListingSpecs(runtime)
+	declareQueueScheduleSpecs(runtime)
+	declareQueueLeaseSpecs(runtime)
+}
+
+func declareQueuePolicySpecs(runtime queueRuntime) {
 	It("seeds the always-open profile and current workload policies", func() {
 		ctx, store, _ := runtime()
 
@@ -140,27 +154,29 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		Expect(webhook.Enabled).To(BeTrue())
 		Expect(webhook.Cadence).To(BeZero())
 	})
+}
 
+func declareQueueListingSpecs(runtime queueRuntime) {
 	It("publishes every recurring workload through the shared scheduler", func() {
 		ctx, store, now := runtime()
 		targetID, repositoryID := "installation:scheduled", "repository:scheduled"
 		claims := []workqueue.RecurringClaim{
-			{Kind: workqueue.KindCatalogRefresh, Title: "Refresh installation catalog"},
-			{Kind: workqueue.KindDeliveryCleanup, Title: "Clean up retained background work"},
-			{Kind: workqueue.KindAuthCleanup, Title: "Clean up expired authentication"},
-			{Kind: workqueue.KindSyncScan, TargetID: &targetID, Title: "Scan organization sync drift"},
-			{Kind: workqueue.KindPathRefresh, TargetID: &targetID, Title: "Refresh repository paths"},
+			{Kind: workqueue.KindCatalogRefresh, Title: "Refresh the list of repositories"},
+			{Kind: workqueue.KindDeliveryCleanup, Title: "Tidy finished background work"},
+			{Kind: workqueue.KindAuthCleanup, Title: "Tidy expired sign-ins"},
+			{Kind: workqueue.KindSyncScan, TargetID: &targetID, Title: "Check which repositories are in step"},
+			{Kind: workqueue.KindPathRefresh, TargetID: &targetID, Title: "Refresh which paths are watched"},
 			{
 				Kind: workqueue.KindPendingCIGate, TargetID: &targetID,
-				RepositoryID: &repositoryID, Title: "Reconcile pending CI protection",
+				RepositoryID: &repositoryID, Title: "Hold pull requests until CI settles",
 			},
 			{
 				Kind: workqueue.KindConfigMigration, TargetID: &targetID,
-				RepositoryID: &repositoryID, Title: "Check configuration migration",
+				RepositoryID: &repositoryID, Title: "Check the repository's configuration file",
 			},
 			{
 				Kind: workqueue.KindReactionScan, TargetID: &targetID,
-				RepositoryID: &repositoryID, Title: "Discover pull request reactions",
+				RepositoryID: &repositoryID, Title: "Scan for new commands",
 			},
 		}
 		for index := range claims {
@@ -216,6 +232,80 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		Expect(page.Items[0].ID).To(Equal(firstID))
 	})
 
+	It("names the repository a row is about, and finds it by its words", func() {
+		ctx, store, now := runtime()
+		account, target := seedInstallation(ctx, store, now)
+		itemID := createQueueFixture(ctx, store, account.ID, target.TargetID, "repo-1", now)
+
+		page, err := store.ListWorkQueue(ctx, workqueue.Filter{TargetID: &target.TargetID})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(HaveLen(1))
+		Expect(page.Items[0].RepositoryName).To(Equal("smykla-skalski/smyklot"))
+
+		item, err := store.GetQueueItem(ctx, itemID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(item.RepositoryName).To(Equal("smykla-skalski/smyklot"))
+		// Read through the same slice the positions are written onto: a detail that
+		// answered from the row as it was scanned carried neither.
+		Expect(item.ProfileName).NotTo(BeEmpty())
+
+		// Folded on both sides, because one engine matches case and the other does not.
+		page, err = store.ListWorkQueue(ctx, workqueue.Filter{Search: "REACTION"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(HaveLen(1))
+		Expect(page.Items[0].ID).To(Equal(itemID))
+		Expect(page.Total).To(Equal(1))
+
+		page, err = store.ListWorkQueue(ctx, workqueue.Filter{Search: "nothing here"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(BeEmpty())
+		Expect(page.Total).To(BeZero())
+	})
+
+	It("lists what finished lately rather than what was created lately", func() {
+		ctx, store, now := runtime()
+		account := testAccount(now)
+		Expect(store.UpsertAccount(ctx, account)).To(Succeed())
+		policy, err := store.GetEffectiveQueuePolicy(ctx, workqueue.KindReactionScan, nil)
+		Expect(err).NotTo(HaveOccurred())
+		policy.Enabled, policy.Cadence = true, 5*time.Minute
+		_, err = store.SaveQueuePolicy(ctx, policyChange(policy, account.ID, now))
+		Expect(err).NotTo(HaveOccurred())
+		for _, suffix := range []string{"a", "b"} {
+			targetID := "finish-target-" + suffix
+			_, err = store.EnsureRecurringWork(ctx, workqueue.RecurringClaim{
+				Kind: workqueue.KindReactionScan, TargetID: &targetID,
+				Title: "Scan for new commands", Now: now, LeaseDuration: time.Minute,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		/* One finished two days ago and one a minute ago. Both were accepted at the
+		   same instant, which is the whole point: a merge held for a day of checks is
+		   old work that finished recently, and "what has this service done lately"
+		   cannot be answered from when it was accepted. */
+		finished := map[string]time.Time{}
+		for _, at := range []time.Time{now.Add(-48 * time.Hour), now.Add(-time.Minute)} {
+			item, claimed, claimErr := store.ClaimNextRecurringWork(
+				ctx,
+				workqueue.RecurringLease{Now: now, LeaseDuration: time.Minute},
+			)
+			Expect(claimErr).NotTo(HaveOccurred())
+			Expect(claimed).To(BeTrue())
+			_, err = store.FinishRecurringWork(ctx, item.ID, workqueue.RecurringCompletion{}, at)
+			Expect(err).NotTo(HaveOccurred())
+			finished[item.ID] = at
+		}
+
+		since := now.Add(-24 * time.Hour)
+		page, err := store.ListWorkQueue(ctx, workqueue.Filter{
+			States: []workqueue.State{workqueue.StateSucceeded}, FinishedAfter: &since,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(HaveLen(1))
+		Expect(finished[page.Items[0].ID]).To(Equal(now.Add(-time.Minute)))
+	})
+
 	It("limits the dispatch-ordered page after scheduler position", func() {
 		ctx, store, now := runtime()
 		account := testAccount(now)
@@ -239,7 +329,9 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 			Priorities: []workqueue.Priority{},
 		}))
 	})
+}
 
+func declareQueueScheduleSpecs(runtime queueRuntime) {
 	It("applies audited optimistic queue controls", func() {
 		ctx, store, now := runtime()
 		account, target := seedInstallation(ctx, store, now)
@@ -472,11 +564,13 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stale.State).To(Equal(workqueue.RequestStale))
 	})
+}
 
+func declareQueueLeaseSpecs(runtime queueRuntime) {
 	It("leases, retries, and coalesces recurring occurrences", func() {
 		ctx, store, now := runtime()
 		claim := workqueue.RecurringClaim{
-			Kind: workqueue.KindCatalogRefresh, Title: "Refresh installation catalog",
+			Kind: workqueue.KindCatalogRefresh, Title: "Refresh the list of repositories",
 			Now: now, LeaseDuration: time.Minute,
 		}
 		item, claimed, err := store.ClaimRecurringWork(ctx, claim)
@@ -519,7 +613,7 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 	It("holds stable recurring blockers without scheduling a retry", func() {
 		ctx, store, now := runtime()
 		item, claimed, err := store.ClaimRecurringWork(ctx, workqueue.RecurringClaim{
-			Kind: workqueue.KindPendingCIGate, Title: "Reconcile pending CI protection",
+			Kind: workqueue.KindPendingCIGate, Title: "Hold pull requests until CI settles",
 			Now: now, LeaseDuration: time.Minute,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -544,12 +638,12 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		claims := []workqueue.RecurringClaim{
 			{
 				Kind:  workqueue.KindCatalogRefresh,
-				Title: "Refresh installation catalog",
+				Title: "Refresh the list of repositories",
 				Now:   now, LeaseDuration: time.Minute,
 			},
 			{
 				Kind:  workqueue.KindAuthCleanup,
-				Title: "Clean up expired authentication",
+				Title: "Tidy expired sign-ins",
 				Now:   now, LeaseDuration: time.Minute,
 			},
 		}
@@ -577,7 +671,7 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		ctx, store, now := runtime()
 		account, _ := seedInstallation(ctx, store, now)
 		claim := workqueue.RecurringClaim{
-			Kind: workqueue.KindCatalogRefresh, Title: "Refresh installation catalog",
+			Kind: workqueue.KindCatalogRefresh, Title: "Refresh the list of repositories",
 			Now: now, LeaseDuration: time.Minute,
 		}
 		first, claimed, err := store.ClaimRecurringWork(ctx, claim)
@@ -624,7 +718,7 @@ func declareWorkQueueSpecs(runtime func() (context.Context, storage.Store, time.
 		repositoryID := "repo-1"
 		claim := workqueue.RecurringClaim{
 			Kind: workqueue.KindReactionScan, TargetID: &target.TargetID,
-			RepositoryID: &repositoryID, Title: "Discover pull request reactions",
+			RepositoryID: &repositoryID, Title: "Scan for new commands",
 			Now: now, LeaseDuration: time.Minute,
 		}
 		scheduled, err := store.EnsureRecurringWork(ctx, claim)
@@ -981,13 +1075,13 @@ func seedDispatchOrderedQueue(
 		repositoryID := "dispatch-repository-" + string(rune('a'+index))
 		_, err = store.EnsureRecurringWork(ctx, workqueue.RecurringClaim{
 			Kind: workqueue.KindReactionScan, TargetID: &targetID,
-			RepositoryID: &repositoryID, Title: "Discover pull request reactions",
+			RepositoryID: &repositoryID, Title: "Scan for new commands",
 			Now: now, LeaseDuration: time.Minute,
 		})
 		Expect(err).NotTo(HaveOccurred())
 	}
 	_, err = store.EnsureRecurringWork(ctx, workqueue.RecurringClaim{
-		Kind: workqueue.KindCatalogRefresh, Title: "Refresh installation catalog",
+		Kind: workqueue.KindCatalogRefresh, Title: "Refresh the list of repositories",
 		Now: now, LeaseDuration: time.Minute,
 	})
 	Expect(err).NotTo(HaveOccurred())

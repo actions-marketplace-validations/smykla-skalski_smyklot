@@ -190,7 +190,7 @@ func parseRootFailureKind(r *http.Request) (*bool, error) {
 	}
 }
 
-func (s *Server) getRootInstallations(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getRootWorkspaces(w http.ResponseWriter, r *http.Request) {
 	account, _, ok := s.requireRoot(w, r)
 	if !ok {
 		return
@@ -201,7 +201,7 @@ func (s *Server) getRootInstallations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now().UTC()
-	items := make([]rootInstallationResponse, 0, len(targets))
+	items := make([]rootWorkspaceResponse, 0, len(targets))
 	for _, target := range targets {
 		owned := false
 		if target.Available {
@@ -212,9 +212,9 @@ func (s *Server) getRootInstallations(w http.ResponseWriter, r *http.Request) {
 			}
 			owned = access.Role == storage.InstallationRoleOwner
 		}
-		items = append(items, rootInstallationDTO(target, now, owned))
+		items = append(items, rootWorkspaceDTO(target, now, owned))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{panelInstallationsResource: items})
+	writeJSON(w, http.StatusOK, map[string]any{panelWorkspacesResource: items})
 }
 
 func (s *Server) postRootElevation(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +230,7 @@ func (s *Server) postRootElevation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Acknowledged == nil || !*input.Acknowledged {
-		s.writeError(w, http.StatusBadRequest, "acknowledgment_required", "confirm the elevated access warning")
+		s.writeError(w, http.StatusBadRequest, "acknowledgment_required", "confirm the operator visit warning")
 		return
 	}
 	reason, ok := validAccessReason(w, input.Reason)
@@ -332,6 +332,27 @@ func (s *Server) putSecurityNotificationRead(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, securityNotificationDTO(notification))
 }
 
+// putSecurityNotificationsAllRead empties one reader's inbox. It answers the count
+// rather than the rows: the page that calls this already holds the list and refetches
+// it, and sending every notification back to say the same word about each is a page of
+// JSON to report a single fact.
+func (s *Server) putSecurityNotificationsAllRead(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSameOrigin(w, r) {
+		return
+	}
+	account, ok := s.requireViewer(w, r)
+	if !ok {
+		return
+	}
+	cleared, err := s.store.MarkAllSecurityNotificationsRead(r.Context(), account.ID, s.now().UTC())
+	if err != nil {
+		s.writeStorageError(w, err)
+		return
+	}
+	s.events.announce(panelEvent{Type: panelEventResync})
+	writeJSON(w, http.StatusOK, map[string]int{"read": cleared})
+}
+
 func (s *Server) announceElevationExpiry(elevation storage.Elevation) {
 	delay := elevation.ExpiresAt.Sub(s.now().UTC())
 	if delay <= 0 {
@@ -374,11 +395,11 @@ func parseNotificationPage(r *http.Request) (storage.NotificationPageRequest, er
 func (s *Server) writeElevationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
-		s.writeError(w, http.StatusNotFound, "not_found", "elevated installation access was not found")
+		s.writeError(w, http.StatusNotFound, "not_found", "no operator visit to this workspace was found")
 	case errors.Is(err, storage.ErrConflict):
-		s.writeError(w, http.StatusConflict, "conflict", "elevated access is unavailable for this installation")
+		s.writeError(w, http.StatusConflict, "conflict", "this workspace cannot be visited right now")
 	case errors.Is(err, storage.ErrExpired), errors.Is(err, storage.ErrRevoked):
-		s.writeError(w, http.StatusGone, "elevation_expired", "elevated installation access has ended")
+		s.writeError(w, http.StatusGone, "elevation_expired", "the operator visit has ended")
 	default:
 		s.writeInternal(w, err)
 	}

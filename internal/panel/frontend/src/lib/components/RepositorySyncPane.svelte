@@ -1,17 +1,4 @@
 <script lang="ts">
-  /**
-   * What one repository says about the files the organization keeps in step.
-   *
-   * Two answers, and they are one row: whether the sync runs here at all, and
-   * what this repository adjusts about it. A repository knows things the
-   * template cannot - one of them ignores a directory the others do not - and
-   * this is where that is written down.
-   *
-   * Against the repository rather than keyed by name in the installation's own
-   * document, so a rename cannot orphan an adjustment. A file sync that quietly
-   * stopped applying one would write the plain template over exactly the
-   * customization it described.
-   */
   import { patchedAt, rowKeys, storedList, withoutAt } from '#lib/form-lists.js';
   import { formatRelative } from '#lib/format.js';
   import { asArrayStrategy } from '#lib/merge.js';
@@ -205,7 +192,7 @@
    * path, so a row naming only a file is refused rather than ignored.
    *
    * What is left to the server is what the pane cannot know: whether the file
-   * is one the installation actually synchronizes.
+   * is one the workspace actually synchronizes.
    */
   const incomplete = $derived.by(() => {
     for (const [at, draft] of drafts.entries()) {
@@ -665,6 +652,21 @@
   }
 </script>
 
+<!--
+@component
+What one repository says about the files the organization keeps in step.
+
+Two answers, and they are one row: whether the sync runs here at all, and
+what this repository adjusts about it. A repository knows things the
+template cannot - one of them ignores a directory the others do not - and
+this is where that is written down.
+
+Against the repository rather than keyed by name in the workspace's own
+document, so a rename cannot orphan an adjustment. A file sync that quietly
+stopped applying one would write the plain template over exactly the
+customization it described.
+-->
+
 <section class="sync-pane card group-card">
   <div class="group-head">
     <h3 class="group-name">File sync</h3>
@@ -702,12 +704,12 @@
       <span class="setting-say">
         <span class="setting-name">File sync</span>
         <span class="setting-why"
-          >Whether the organization's files are written in this repository at all</span
+          >Whether the workspace's shared files are written in this repository at all</span
         >
       </span>
       {#if wanted === null}
         <span class="policy-value">
-          <span class="setting-unmanaged">Follows the installation</span>
+          <span class="setting-unmanaged">From the workspace</span>
         </span>
         <button
           class="setting-clear"
@@ -715,7 +717,7 @@
           {disabled}
           onclick={() => setWanted(true)}
         >
-          <Icon name="plus" size={10} />
+          <Icon name="plus" size="micro" />
         </button>
       {:else}
         <span class="policy-value">
@@ -724,23 +726,23 @@
         </span>
         <button
           class="setting-clear"
-          title="Stop answering - follow the installation"
+          title="Stop answering - take the value from the workspace"
           {disabled}
           onclick={() => setWanted(null)}
         >
-          <Icon name="close" size={10} />
+          <Icon name="close" size="micro" />
         </button>
       {/if}
     </div>
     <div
-      class={['policy-row policy-block', { 'is-unsaved': dirtyDocument }]}
+      class={['policy-row', { 'is-unsaved': dirtyDocument }]}
       data-unsaved={dirtyDocument || undefined}
     >
       <span class="setting-say">
-        <span class="setting-name">Files to leave alone here</span>
+        <span class="setting-name">Ignored in this repository</span>
         <span class="setting-why"
-          >Paths or patterns, where * stands for any run of characters. These narrow what the
-          installation synchronizes; they never widen it</span
+          >Patterns, where * stands for any run of characters. A file named here is never written or
+          removed in this repository</span
         >
       </span>
       <div class="pattern-line">
@@ -992,7 +994,7 @@
 
   {#if !readOnly}
     <button class="add-chip add-entry" type="button" {disabled} onclick={add}>
-      <Icon name="plus" size={12} />
+      <Icon name="plus" size="xs" />
       <span class="t">Adjust a file</span>
     </button>
   {/if}
@@ -1023,144 +1025,23 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .group-note {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    line-height: round(1.5em, 1px);
-    margin: 0 0 var(--space-2);
-    max-width: 72ch;
-  }
-
   .policy-rows {
-    display: grid;
     margin-bottom: var(--space-2);
   }
 
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    /* The air around a drawn hairline is the card's own padding, on both
-       sides; the edge rows shed it where no line follows. */
-    padding: var(--space-5) var(--space-2);
-    position: relative;
-  }
-
+  /* The pane's rows stand on a raised surface, so the unsaved tint mixes into that rather
+     than into whatever is behind it. */
   .policy-row.is-unsaved,
   .entry-card.is-unsaved {
     background: color-mix(in srgb, var(--brand-action-tint) 45%, var(--surface-raised));
     box-shadow: inset 2px 0 var(--brand-action);
   }
 
-  .policy-row:first-child {
-    padding-block-start: var(--space-2);
-  }
-
-  .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  .policy-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  .value-word {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-inline-size: 1.9rem;
-    text-align: end;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .value-word.is-on {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-style: normal;
-    /* Ink-true, so the padding around the hairlines measures to the glyphs
-       rather than to the line box's leading. */
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
-  }
-
-  /* A block row keeps the grid for its say and lays its entries on a
-     full-width second line. The extra breathing room lives INSIDE the row,
-     above the entries - the block padding stays the shared 8px so the air
-     around every hairline is the same on both sides. */
+  /* A block row keeps its sentence on the first line and lays the entries on a full-width
+     second one. `flex-basis: 100%` is what takes that line under the row law - the old
+     `grid-column: 1 / -1` addressed a grid the row no longer is. */
   .pattern-line {
-    grid-column: 1 / -1;
+    flex-basis: 100%;
     margin-block: var(--space-1) 0;
   }
 
@@ -1216,7 +1097,7 @@
   }
 
   .sync-pane-standdown-when {
-    color: var(--dim);
+    color: var(--text-muted);
   }
 
   .sync-pane-row {
@@ -1235,11 +1116,13 @@
   }
 
   /* Narrower than the shared-files form's, because an adjustment names a path
-     the installation already lists rather than one somebody is typing out.
+     the workspace already lists rather than one somebody is typing out.
      The boxes beside it share the shape and not the name: `.sync-merge-path`
      is the file this row adjusts, and a selector reaching for that must not
      also find a list rule's path or a substitution. */
   .sync-merge-path,
+  /* Three named fields on one line, and the width a named field reads at is
+     what decides when the line breaks rather than a guess per row. */
   .sync-merge-heading,
   .sync-merge-find,
   .sync-merge-list {
@@ -1247,7 +1130,7 @@
     flex: 1;
     flex-direction: column;
     gap: 0.25rem;
-    min-width: 12rem;
+    min-width: var(--entry-say-min);
   }
 
   /* Wide enough for a count and no wider: it holds a small ordinal, and a box
@@ -1263,7 +1146,7 @@
      into six files. Drawn between rather than around, so the first sits flush
      against the strategy row above it. */
   .sync-merge-section + .sync-merge-section {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
     margin-top: var(--space-3);
     padding-top: var(--space-3);
   }
@@ -1289,27 +1172,6 @@
 
     .group-head {
       flex-wrap: wrap;
-    }
-
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
-    }
-
-    .policy-row .policy-value {
-      flex-wrap: wrap;
-      grid-column: 1 / -1;
-      justify-self: start;
     }
 
     .sync-merge-path,

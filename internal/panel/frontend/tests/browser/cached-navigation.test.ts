@@ -32,10 +32,10 @@ import { settle, startPanel, visit, type Panel } from './harness';
 
 /** The views walked between, as the sidebar spells them. */
 const FIRST = 'Repositories';
-const SECOND = 'Defaults';
+const SECOND = 'Workspace settings';
 
 async function apiCallsOnReturn(page: Page, panel: Panel): Promise<string[]> {
-  await visit(page, `${panel.origin}/i/${panel.account}/repositories`);
+  await visit(page, `${panel.origin}/workspace/${panel.account}/repositories`);
   // Away, so the first view's queries go inactive and its data is only in cache.
   await settle(page, () => page.getByRole('link', { name: SECOND, exact: true }).first().click(), {
     mount: 2_000,
@@ -60,13 +60,23 @@ async function apiCallsOnReturn(page: Page, panel: Panel): Promise<string[]> {
   return asked;
 }
 
-async function queueScheduleCallsOnReturn(page: Page, queueURL: string): Promise<string[]> {
-  await visit(page, queueURL, { ready: '.general-queue-table tbody .data-row' });
+/**
+ * Queue, away to a neighbour, and back - watching what the return costs.
+ *
+ * The neighbour differs by console: Root walks to its Schedules page, and a workspace
+ * has none any more, so it walks to the settings page that took the Timing row over.
+ */
+async function queueCallsOnReturn(
+  page: Page,
+  queueURL: string,
+  away: { link: string; ready: string },
+): Promise<string[]> {
+  await visit(page, queueURL, { ready: '.general-queue .object-row' });
   await settle(
     page,
-    () => page.getByRole('link', { name: 'Schedules', exact: true }).first().click(),
+    () => page.getByRole('link', { name: away.link, exact: true }).first().click(),
     {
-      ready: '.schedule-summary',
+      ready: away.ready,
     },
   );
 
@@ -81,13 +91,13 @@ async function queueScheduleCallsOnReturn(page: Page, queueURL: string): Promise
       page,
       () => page.getByRole('link', { name: 'Queue', exact: true }).first().click(),
       {
-        ready: '.general-queue-table tbody .data-row',
+        ready: '.general-queue .object-row',
       },
     );
     await settle(
       page,
-      () => page.getByRole('link', { name: 'Schedules', exact: true }).first().click(),
-      { ready: '.schedule-summary' },
+      () => page.getByRole('link', { name: away.link, exact: true }).first().click(),
+      { ready: away.ready },
     );
     await page.waitForTimeout(1_000);
   } finally {
@@ -126,10 +136,14 @@ beforeAll(async () => {
       });
     });
     live = await apiCallsOnReturn(page, panel);
-    rootQueueSchedules = await queueScheduleCallsOnReturn(page, `${panel.origin}/root/queue`);
-    targetQueueSchedules = await queueScheduleCallsOnReturn(
+    rootQueueSchedules = await queueCallsOnReturn(page, `${panel.origin}/root/queue`, {
+      link: 'Schedules',
+      ready: '.schedule-summary',
+    });
+    targetQueueSchedules = await queueCallsOnReturn(
       page,
-      `${panel.origin}/i/${panel.account}/queue`,
+      `${panel.origin}/workspace/${panel.account}/queue`,
+      { link: 'Workspace settings', ready: '#ws-newrepos' },
     );
     sockets = await page.evaluate(
       () => (window as unknown as { __panelSockets: number }).__panelSockets,
@@ -162,10 +176,10 @@ describe('coming back to a view already read [Integration]', () => {
     ).toEqual([]);
   });
 
-  it('keeps installation Queue and Schedules in the live cache', () => {
+  it('keeps workspace Queue and its settings page in the live cache', () => {
     expect(
       targetQueueSchedules,
-      `installation navigation asked for:\n${targetQueueSchedules.join('\n')}`,
+      `workspace navigation asked for:\n${targetQueueSchedules.join('\n')}`,
     ).toEqual([]);
   });
 });

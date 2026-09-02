@@ -3,7 +3,9 @@
     | 'admin'
     | 'alert'
     | 'ban'
+    | 'book'
     | 'branch'
+    | 'calendar'
     | 'chevron-down'
     | 'chevron-left'
     | 'chevron-right'
@@ -12,6 +14,7 @@
     | 'circle-dashed'
     | 'circle-slash'
     | 'close'
+    | 'database'
     | 'editor'
     | 'failure'
     | 'file'
@@ -20,6 +23,8 @@
     | 'file-missing'
     | 'file-valid'
     | 'filter'
+    | 'gauge'
+    | 'gear'
     | 'github'
     | 'globe'
     | 'history'
@@ -37,10 +42,12 @@
     | 'organization'
     | 'owner'
     | 'pending'
+    | 'plan'
     | 'plus'
     | 'repositories'
     | 'refresh'
     | 'search'
+    | 'server'
     | 'settings'
     | 'shield'
     | 'shield-slash'
@@ -54,6 +61,7 @@
     | 'sun'
     | 'sun-moon'
     | 'system'
+    | 'tag'
     | 'trash'
     | 'user'
     | 'user-plus'
@@ -75,7 +83,9 @@
     admin: [4, 3],
     alert: 3.5,
     ban: 3.5,
+    book: 4,
     branch: 5,
+    calendar: 4,
     check: 4,
     'chevron-down': 6,
     'chevron-left': 9,
@@ -85,6 +95,7 @@
     'circle-dashed': 3.5,
     'circle-slash': 3.5,
     close: 6,
+    database: 4.5,
     editor: [4, 4.9],
     failure: 3.5,
     // The whole family shares one document outline, `M6 3h8l4 4v14H6z`; the mark inside it is
@@ -95,6 +106,9 @@
     'file-missing': 6,
     'file-valid': 6,
     filter: 3.5,
+    // The dial's arc is drawn the long way round, so it bulges past its own endpoints.
+    gauge: 2.5,
+    gear: 2.8,
     /* Octicons draw to the edge of the box where this set keeps a margin, so the
        mark is nearly full-bleed. Left as it is: another product's logo is
        reproduced or it is not used. */
@@ -115,10 +129,12 @@
     organization: 4,
     owner: 5,
     pending: 3.5,
+    plan: 5,
     plus: 5,
     refresh: [3.34, 3.35],
     repositories: 4,
     search: 4,
+    server: 4,
     settings: 4,
     shield: 5,
     'shield-slash': 3.5,
@@ -132,6 +148,7 @@
     sun: 2.5,
     'sun-moon': 2.5,
     system: 3,
+    tag: [3.5, 2.46],
     trash: 4,
     user: 4.5,
     'user-plus': [2.5, 2],
@@ -139,38 +156,89 @@
     viewer: 2.5,
     warning: 2.8,
   };
+
+  /**
+   * THE ICON SCALE, and the whole of it.
+   *
+   * Six drawn sizes, in px because an icon does not grow with the reader's font size -
+   * the units law puts it on the px side. They are named rather than numbered because a
+   * literal at the call site is a decision taken 204 times: the sheet held eight
+   * different sizes, and 13 and 14 were one tier spelled two ways - a button glyph at
+   * 13 beside a tile glyph at 14.
+   *
+   * A number is still allowed, and only for what is NOT an icon: an avatar, an empty
+   * state's illustration, a mark. Those do not belong to this scale and pretending they
+   * do would mean adding a tier per drawing.
+   */
+  export type IconSize = 'nano' | 'micro' | 'xs' | 'sm' | 'base' | 'md';
 </script>
 
 <script lang="ts">
   const {
     name,
-    size = 20,
+    size = 'base',
     strokeWidth = 1.75,
     class: className,
   }: {
     name: IconName;
-    size?: number;
+    /** A tier of the icon scale, or a number for something that is not an icon. */
+    size?: IconSize | number;
     strokeWidth?: number;
     class?: string;
   } = $props();
 
-  /** The dead space before the ink starts, in rendered pixels, per edge. */
+  /**
+   * The drawn size as a CSS length, so the scale is READ rather than copied.
+   *
+   * A tier resolves to its token; the escape hatch resolves to its own px. The svg is
+   * then sized in CSS instead of through `width`/`height` attributes, which is what
+   * lets the tokens be the single place the six numbers live - an attribute takes a
+   * number and cannot take a `var()`.
+   */
+  const length = $derived(typeof size === 'number' ? `${size}px` : `var(--icon-${size})`);
+
+  /**
+   * The dead space before the ink starts, per edge, as a calc rather than a figure.
+   *
+   * It has to be arithmetic now: the size is a custom property, so its value is not a
+   * number this component ever holds. The bearing is the same expression it always was
+   * - the glyph's dead units, less half the stroke that overhangs them, as a fraction
+   * of the 24-unit grid - just computed where the length is known.
+   */
   const bearing = $derived.by(() => {
     const declared = INK_BEARING[name];
     const [start, end] = Array.isArray(declared) ? declared : [declared, declared];
     const ink = (units: number): string =>
-      `${Math.max(0, ((units - strokeWidth / 2) / 24) * size).toFixed(3)}px`;
+      `max(0px, calc((${units} - ${strokeWidth} / 2) / 24 * ${length}))`;
     return { start: ink(start), end: ink(end) };
   });
 </script>
+
+<!--
+@component
+One drawn set, one stroke, and a closed list of names. Every glyph is built on the same
+24-unit grid at the same 1.75 stroke, which is what stops two icons beside each other
+disagreeing about weight - the thing a mixed icon library cannot promise and the reason
+this is a union type rather than a string.
+
+`size` names a tier of the icon scale - six drawn sizes, in px, because an icon does not
+grow with the reader's font size. It used to be a bare number, on the reasoning that a
+chip, a row, a heading and a rail tile do not agree on a step; what that produced was
+eight sizes across 204 call sites, with 13 and 14 as one tier spelled two ways. A number
+is still accepted and is for what is NOT an icon: an avatar, an illustration, a mark.
+
+It is drawn, never announced. An icon repeats something the words already say, or it
+stands inside a control that carries its own accessible name; either way a screen
+reader reading it too is a repetition rather than a help. A glyph that would be the
+only name for something means the control is missing its label.
+-->
 
 <svg
   class={className}
   data-icon={name}
   style:--icon-ink-start={bearing.start}
   style:--icon-ink-end={bearing.end}
-  width={size}
-  height={size}
+  style:--icon-drawn={length}
   viewBox="0 0 24 24"
   fill="none"
   stroke="currentColor"
@@ -338,6 +406,43 @@
   {:else if name === 'sliders'}
     <path d="M5 21v-6M5 11V3M12 21v-9M12 8V3M19 21v-4M19 13V3" />
     <path d="M2 15h6M9 8h6M16 17h6" />
+  {:else if name === 'gauge'}
+    <!-- Dropped 0.36: the dial's arc is drawn the long way round, so its own
+         extrema - not its endpoints - put the middle at 11.64. -->
+    <path d="m12 14.86 3.6-3.6" />
+    <path d="M4.34 19.56a9.5 9.5 0 1 1 15.32 0" />
+  {:else if name === 'book'}
+    <path d="M4 19.5V5.5A2.5 2.5 0 0 1 6.5 3H20v18H6.5A2.5 2.5 0 0 1 4 19.5Z" />
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+  {:else if name === 'tag'}
+    <!-- Lifted 0.75: the label runs 3.5 to 21.5 as drawn, so its middle sat at
+         12.75 in a box whose middle is 12. Only the two absolute coordinates
+         move; everything after them is relative and follows. -->
+    <path
+      d="M12.6 2.75H5a1.5 1.5 0 0 0-1.5 1.5v7.6c0 .4.16.78.44 1.06l7.9 7.9a1.5 1.5 0 0 0 2.12 0l7.14-7.14a1.5 1.5 0 0 0 0-2.12l-7.9-7.9a1.5 1.5 0 0 0-1.06-.44Z"
+    />
+    <path d="M8.3 7.55h.01" />
+  {:else if name === 'plan'}
+    <!-- Lifted 1.25: three lines and the plus below them ran 6.5 to 20, so the
+         middle sat at 13.25 in a box whose middle is 12. -->
+    <path d="M5 5.25h14M5 10.75h14M5 16.25h7" />
+    <path d="M16.5 13.75v5M14 16.25h5" />
+  {:else if name === 'gear'}
+    <circle cx="12" cy="12" r="3.2" />
+    <path
+      d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M18.5 5.5l-2.1 2.1M7.6 16.4l-2.1 2.1"
+    />
+  {:else if name === 'calendar'}
+    <rect x="4" y="5.5" width="16" height="15" rx="2.5" />
+    <path d="M4 10.5h16M8.5 3.5v4M15.5 3.5v4" />
+  {:else if name === 'server'}
+    <rect x="4" y="4.5" width="16" height="6.5" rx="2" />
+    <rect x="4" y="13" width="16" height="6.5" rx="2" />
+    <path d="M7.5 7.75h.01M7.5 16.25h.01" />
+  {:else if name === 'database'}
+    <ellipse cx="12" cy="5.5" rx="7.5" ry="2.9" />
+    <path d="M4.5 5.5v13c0 1.6 3.36 2.9 7.5 2.9s7.5-1.3 7.5-2.9v-13" />
+    <path d="M4.5 12c0 1.6 3.36 2.9 7.5 2.9s7.5-1.3 7.5-2.9" />
   {:else if name === 'mail'}
     <rect x="3" y="5" width="18" height="14" rx="2" />
     <path d="m3 7.5 9 6 9-6" />
@@ -401,8 +506,13 @@
 
 <style>
   svg {
+    /* Sized here rather than through `width`/`height`, which take a number and cannot
+       take a `var()` - which is why the six sizes used to live at the call sites
+       instead of in the scale. */
+    block-size: var(--icon-drawn);
     display: block;
     flex: none;
+    inline-size: var(--icon-drawn);
     overflow: visible;
   }
 </style>

@@ -27,13 +27,13 @@ afterAll(async () => {
 
 async function openList(): Promise<Page> {
   const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
-  await page.goto(`${panel.origin}/i/${panel.account}/repositories`, {
+  await page.goto(`${panel.origin}/workspace/${panel.account}/repositories`, {
     waitUntil: 'domcontentloaded',
   });
   await page.locator('.repository-row').first().waitFor({ state: 'visible', timeout: 30_000 });
   /* A search stored from another sweep would leave a filtered list, and a row
      index means nothing then. */
-  await page.getByPlaceholder('Search repositories').fill('');
+  await page.getByPlaceholder('Find a repository').fill('');
   await page.locator('.repository-row').nth(1).waitFor({ state: 'visible' });
 
   return page;
@@ -44,17 +44,21 @@ describe('one repository as a page [Integration]', () => {
     const page = await openList();
     try {
       const row = page.locator('.repository-row').first();
-      const name = (await row.locator('.repo-copy strong').textContent())?.trim() ?? '';
+      const name = (await row.locator('.object-name').textContent())?.trim() ?? '';
       expect(name).not.toBe('');
 
-      // The Updated cell: text, in the middle of the row, belonging to no control.
-      await row.locator('td').nth(2).click();
+      /* A real press where the row's sentence is - text belonging to no control.
+         What receives it is the layer the row's address is drawn on, which is the
+         whole point: everything that is not a control opens the repository. */
+      const sentence = await row.locator('.object-sum').boundingBox();
+      if (sentence === null) throw new Error('the row has no sentence to press');
+      await page.mouse.click(sentence.x + 8, sentence.y + sentence.height / 2);
 
       await page
         .getByRole('heading', { name, exact: true })
         .waitFor({ state: 'visible', timeout: 15_000 });
       expect(new URL(page.url()).pathname).toBe(
-        `/i/${panel.account}/repositories/${encodeURIComponent(name)}`,
+        `/workspace/${panel.account}/repositories/${encodeURIComponent(name)}`,
       );
     } finally {
       await page.close();
@@ -66,22 +70,22 @@ describe('one repository as a page [Integration]', () => {
     try {
       const row = page.locator('.repository-row').nth(1);
       const before = new URL(page.url()).pathname;
-      const enabled = row.getByText('Enabled', { exact: true });
-      const disabled = row.getByText('Disabled', { exact: true });
-      const wasEnabled = await row.locator('input[type="radio"]').first().isChecked();
+      /* The track, not the input: the checkbox is visually hidden under it, and
+         the track is what a reader presses. */
+      const track = row.locator('.switch-track');
+      const box = row.locator('input[type="checkbox"]');
+      const wasEnabled = await box.isChecked();
 
-      // The word, which is the label - the press a reader makes, and the one
-      // that used to open the repository as well as move the switch.
-      await (wasEnabled ? disabled : enabled).click();
+      await track.click();
       await page.waitForTimeout(400);
 
       expect(new URL(page.url()).pathname, 'the row opened as well as switched').toBe(before);
-      expect(await row.locator('input[type="radio"]').first().isChecked()).toBe(!wasEnabled);
+      expect(await box.isChecked()).toBe(!wasEnabled);
 
       // Put it back, because the mock keeps this and every other sweep reads it.
-      await (wasEnabled ? enabled : disabled).click();
+      await track.click();
       await page.waitForTimeout(400);
-      expect(await row.locator('input[type="radio"]').first().isChecked()).toBe(wasEnabled);
+      expect(await box.isChecked()).toBe(wasEnabled);
     } finally {
       await page.close();
     }
@@ -91,8 +95,8 @@ describe('one repository as a page [Integration]', () => {
     const page = await openList();
     try {
       const row = page.locator('.repository-row').first();
-      const name = (await row.locator('.repo-copy strong').textContent())?.trim() ?? '';
-      const link = row.locator('a.repo-copy');
+      const name = (await row.locator('.object-name').textContent())?.trim() ?? '';
+      const link = row.locator('a.row-hit');
 
       await link.focus();
       await page.keyboard.press('Enter');
@@ -105,31 +109,52 @@ describe('one repository as a page [Integration]', () => {
     }
   });
 
-  it('carries the open pane in the address, and reads one back cold', async () => {
+  /**
+   * The repository is the whole address, and the whole page is on it.
+   *
+   * It used to be five panes behind a switch, each with an address of its own. The page
+   * is one scroll now, so a reader who lands on it cold gets everything at once - and
+   * the pane addresses answer 404 rather than opening the page and pretending the link
+   * meant what it says.
+   */
+  it('reads a repository back cold, whole', async () => {
     const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
     try {
       // Never having seen the list: the page has to resolve the repository by the
       // name in the address rather than find it in rows it already holds.
-      await page.goto(`${panel.origin}/i/${panel.account}/repositories/data-pipeline/commands`, {
+      await page.goto(`${panel.origin}/workspace/${panel.account}/repositories/data-pipeline`, {
         waitUntil: 'domcontentloaded',
       });
       await page
         .getByRole('heading', { name: 'data-pipeline', exact: true })
         .waitFor({ state: 'visible', timeout: 30_000 });
-      await page.getByRole('heading', { name: 'Commands', exact: true }).waitFor({
-        state: 'visible',
-      });
 
-      /* The pane switch is a radio per option with its label drawn over it, so
-         the radio itself is never what a pointer reaches - press the label, the
-         way a reader does. */
-      await page.locator('.pane-tools').getByText('File', { exact: true }).click();
-      await page.waitForFunction(() => !window.location.pathname.endsWith('/commands'), undefined, {
-        timeout: 5_000,
-      });
-      // The File pane is where the page opens, so its address is the bare
-      // repository - a section is written only when it is not that one.
-      expect(new URL(page.url()).pathname).toBe(`/i/${panel.account}/repositories/data-pipeline`);
+      // Every card, on the one page, with nothing to press to reach them.
+      for (const card of ['Repository control', 'Merging', 'Behavior', 'Commands']) {
+        await page
+          .getByRole('heading', { name: card, exact: true })
+          .first()
+          .waitFor({ state: 'visible' });
+      }
+      expect(await page.locator('.pane-tools').count()).toBe(0);
+      expect(new URL(page.url()).pathname).toBe(
+        `/workspace/${panel.account}/repositories/data-pipeline`,
+      );
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('refuses the pane addresses it used to have', async () => {
+    const page = await panel.browser.newPage();
+    try {
+      // Answered from the wire, which is what a shared link actually hits.
+      const answered = await page.goto(
+        `${panel.origin}/workspace/${panel.account}/repositories/data-pipeline/commands`,
+        { waitUntil: 'domcontentloaded' },
+      );
+
+      expect(answered?.status()).toBe(404);
     } finally {
       await page.close();
     }
@@ -151,14 +176,14 @@ describe('one repository as a page [Integration]', () => {
     const page = await openList();
     try {
       const row = page.locator('.repository-row').first();
-      const name = (await row.locator('.repo-copy strong').textContent())?.trim() ?? '';
-      await row.locator('a.repo-copy').click();
+      const name = (await row.locator('.object-name').textContent())?.trim() ?? '';
+      await row.locator('a.row-hit').click();
       await page.getByRole('heading', { name, exact: true }).waitFor({ state: 'visible' });
 
       await page.locator(selector).first().click();
 
       await page.locator('.repository-row').first().waitFor({ state: 'visible', timeout: 15_000 });
-      expect(new URL(page.url()).pathname).toBe(`/i/${panel.account}/repositories`);
+      expect(new URL(page.url()).pathname).toBe(`/workspace/${panel.account}/repositories`);
     } finally {
       await page.close();
     }

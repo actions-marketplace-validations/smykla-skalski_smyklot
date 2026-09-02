@@ -18,15 +18,20 @@
     type FormattingPolicy,
   } from '../formatting';
   import AppTooltip from './AppTooltip.svelte';
+  import Card from './Card.svelte';
   import Icon from './Icon.svelte';
   import InheritControl from './InheritControl.svelte';
 
+  /* The level a value comes from, named as a place rather than as a document: the
+     dictionary allows "from the workspace" and "from the service", and the four
+     phrases this used to carry - "the application defaults", "workspace defaults",
+     "the deployment configuration" - are the words it retires. */
   const SOURCE_BY_SCOPE = {
-    target: 'the application defaults',
-    repository: 'workspace defaults',
-    runtime: 'the deployment configuration',
-    template: 'the workspace formatting policy',
-    path: 'the repository formatting policy',
+    target: 'the service',
+    repository: 'the workspace',
+    runtime: 'the deployment',
+    template: 'the workspace',
+    path: 'the repository',
   } as const;
 
   const {
@@ -34,6 +39,7 @@
     inherited,
     scope,
     idPrefix,
+    anchor,
     disabled = false,
     dirtyKeys = [],
     onChange,
@@ -43,6 +49,8 @@
     inherited: FormattingPolicy;
     scope: keyof typeof SOURCE_BY_SCOPE;
     idPrefix: string;
+    /** Names the first card, so a page index can link to where the editor starts. */
+    anchor?: string;
     disabled?: boolean;
     dirtyKeys?: readonly FormattingFieldKey[];
     onChange: (next: FormattingPatch, changedKey: FormattingFieldKey) => void;
@@ -149,11 +157,25 @@
   }
 </script>
 
-<div class="formatting-editor" data-valid={valid}>
-  <section class="card group-card" aria-labelledby="formatting-{scope}-{idPrefix}-policy">
-    <div class="group-head">
-      <h3 class="group-name" id="formatting-{scope}-{idPrefix}-policy">Formatting</h3>
-      <span class="group-tally">{overridden} of {FORMATTING_FIELDS.length} overridden</span>
+<!--
+@component
+How a managed file is written: quoting, indentation, line endings, the order of keys.
+Every field shows what it would inherit and what this scope overrides, so a reader can
+always see which of the two they are looking at.
+
+It reports validity out through `onValidity` rather than blocking. A formatting patch
+that cannot be applied is the save composer's business to refuse - this editor's job is
+to say which field is wrong and why, next to the field.
+
+`dirtyKeys` marks what this draft has touched, which is how a reader who has changed
+three things among thirty finds them again.
+-->
+
+<div class="formatting-editor card-stack" data-valid={valid}>
+  <Card id={anchor} labelledby="formatting-{scope}-{idPrefix}-policy">
+    <div class="card-head">
+      <h2 class="card-title" id="formatting-{scope}-{idPrefix}-policy">Formatting</h2>
+      <span class="card-meta">{overridden} of {FORMATTING_FIELDS.length} set here</span>
     </div>
     <p class="group-note">Presentation rules applied after semantic file merges</p>
     <div
@@ -164,28 +186,33 @@
         <span class="setting-name">Preset</span>
         <span class="setting-why">{presetField.description}</span>
       </span>
-      <InheritControl
-        label="Formatting preset"
-        {source}
-        inheritedValue={inherited.preset}
-        inheritedLabel={optionLabel(inherited.preset)}
-        value={draft.preset ?? null}
-        options={presetField.options.map((value) => ({ value, label: optionLabel(value) }))}
-        {disabled}
-        fluid
-        onSelect={(value) => pick(presetField, value)}
-        onRestore={() => clear(presetField)}
-      />
+      <!-- `fluid` fits the segments to the column they are in, and the column is the row
+           law's own half - so the control never sets the page's width. Without it a
+           segment's longest word decided the document at 320px. -->
+      <span class="policy-value">
+        <InheritControl
+          label="Formatting preset"
+          {source}
+          inheritedValue={inherited.preset}
+          inheritedLabel={optionLabel(inherited.preset)}
+          value={draft.preset ?? null}
+          options={presetField.options.map((value) => ({ value, label: optionLabel(value) }))}
+          {disabled}
+          fluid
+          onSelect={(value) => pick(presetField, value)}
+          onRestore={() => clear(presetField)}
+        />
+      </span>
     </div>
-  </section>
+  </Card>
 
   {#each FORMATTING_GROUPS as group (group.key)}
-    <section class="card group-card" aria-labelledby="formatting-{scope}-{idPrefix}-{group.key}">
-      <div class="group-head">
-        <h3 class="group-name" id="formatting-{scope}-{idPrefix}-{group.key}">{group.label}</h3>
-        <span class="group-tally"
+    <Card labelledby="formatting-{scope}-{idPrefix}-{group.key}">
+      <div class="card-head">
+        <h2 class="card-title" id="formatting-{scope}-{idPrefix}-{group.key}">{group.label}</h2>
+        <span class="card-meta"
           >{fieldsIn(group.key).filter((field) => formattingPatchValue(draft, field) !== undefined)
-            .length} of {fieldsIn(group.key).length} overridden</span
+            .length} of {fieldsIn(group.key).length} set here</span
         >
       </div>
       <p class="group-note">{group.description}</p>
@@ -202,22 +229,24 @@
               <span class="setting-why">{field.description}</span>
             </span>
             {#if field.kind === 'enum'}
-              <InheritControl
-                label={fieldLabel(field)}
-                {source}
-                inheritedValue={String(formattingPolicyValue(baseline, field))}
-                inheritedLabel={optionLabel(String(formattingPolicyValue(baseline, field)))}
-                value={formattingPatchValue(draft, field)?.toString() ?? null}
-                options={field.options.map((value) => ({ value, label: optionLabel(value) }))}
-                {disabled}
-                fluid
-                onSelect={(value) => pick(field, value)}
-                onRestore={() => clear(field)}
-              />
+              <span class="policy-value">
+                <InheritControl
+                  label={fieldLabel(field)}
+                  {source}
+                  inheritedValue={String(formattingPolicyValue(baseline, field))}
+                  inheritedLabel={optionLabel(String(formattingPolicyValue(baseline, field)))}
+                  value={formattingPatchValue(draft, field)?.toString() ?? null}
+                  options={field.options.map((value) => ({ value, label: optionLabel(value) }))}
+                  {disabled}
+                  fluid
+                  onSelect={(value) => pick(field, value)}
+                  onRestore={() => clear(field)}
+                />
+              </span>
             {:else}
-              <span class="number-control">
+              <span class="policy-value number-control">
                 {#if formattingPatchValue(draft, field) !== undefined}
-                  <AppTooltip text="Stop overriding - follow {source}">
+                  <AppTooltip text="Stop overriding - take the value from {source}">
                     {#snippet children(attributes)}
                       <button
                         {...attributes}
@@ -227,17 +256,25 @@
                         {disabled}
                         onclick={() => clear(field)}
                       >
-                        <Icon name="link-off" size={14} strokeWidth={2} />
+                        <Icon name="link-off" size="sm" strokeWidth={2} />
                       </button>
                     {/snippet}
                   </AppTooltip>
                 {:else}
-                  <AppTooltip
-                    text="Follows {source} · currently {formattingPolicyValue(baseline, field)}"
-                  >
+                  <!-- NAMED, because it is focusable. A tooltip trigger takes the
+                       keyboard - that is how a tooltip is reached without a pointer - so
+                       this mark is a stop on the tab ring, and an unnamed stop is a stop
+                       that announces nothing when a reader arrives at it. The name is
+                       what the tooltip says, because that is what the mark means. -->
+                  <AppTooltip text="From {source}: {formattingPolicyValue(baseline, field)}">
                     {#snippet children(attributes)}
-                      <span {...attributes} class="link-toggle">
-                        <Icon name="link" size={14} strokeWidth={2} />
+                      <span
+                        {...attributes}
+                        class="link-toggle"
+                        role="note"
+                        aria-label="{fieldLabel(field)} comes from {source}"
+                      >
+                        <Icon name="link" size="sm" strokeWidth={2} />
                       </span>
                     {/snippet}
                   </AppTooltip>
@@ -271,7 +308,7 @@
           </div>
         {/each}
       </div>
-    </section>
+    </Card>
   {/each}
 
   <span class="effective-summary" aria-live="polite">
@@ -280,18 +317,6 @@
 </div>
 
 <style>
-  .formatting-editor {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
   .group-head {
     align-items: end;
     display: flex;
@@ -306,66 +331,15 @@
     margin: 0;
   }
 
-  .group-note,
+  /* `.group-note` is the sheet's - it is a card's note wherever it appears. */
   .group-tally,
-  .setting-why,
   .effective-summary {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
   }
 
-  .group-note {
-    margin: 0 0 var(--space-3);
-  }
-
   .group-tally {
     white-space: nowrap;
-  }
-
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-3) var(--space-4);
-    grid-template-columns: minmax(14rem, 1fr) auto;
-    min-block-size: 48px;
-    padding: var(--space-4) var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .policy-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-    min-width: 0;
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
   }
 
   .number-control {
@@ -373,7 +347,6 @@
     display: grid;
     gap: var(--space-2);
     grid-template-columns: var(--inherit-marker-size) 6rem;
-    justify-self: end;
   }
 
   .number-input {
@@ -423,17 +396,6 @@
     justify-self: end;
   }
 
-  @media (max-width: 900px) {
-    .policy-row {
-      align-items: start;
-      grid-template-columns: 1fr;
-    }
-
-    .number-control {
-      justify-self: start;
-    }
-  }
-
   @media (max-width: 30rem) {
     .card {
       padding: var(--space-3);
@@ -441,10 +403,6 @@
 
     .group-head {
       flex-wrap: wrap;
-    }
-
-    .policy-row {
-      padding-inline: 0;
     }
   }
 </style>

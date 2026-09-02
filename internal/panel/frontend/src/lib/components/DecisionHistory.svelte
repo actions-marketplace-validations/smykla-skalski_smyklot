@@ -1,11 +1,12 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query';
-  import { formatDate, formatTimestamp } from '../format';
+  import { formatDate } from '../format';
   import type { AccessDecision } from '../types';
   import Button from './Button.svelte';
   import Avatar from './Avatar.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
   import Modal from './Modal.svelte';
+  import RelativeTime from './RelativeTime.svelte';
 
   const {
     open,
@@ -78,6 +79,17 @@
   }
 </script>
 
+<!--
+@component
+Every decision taken on one access request, in the order they were taken. The dialog's
+subject is the request, and the record answers the question a bare status cannot: not
+what it is now, but who changed it and why.
+
+The current state is passed in and shown at the head, so the dialog is readable before
+its history arrives - the answer a reader most often wants is the one already on the
+page behind them.
+-->
+
 <Modal
   id="decision-history"
   {open}
@@ -99,9 +111,7 @@
       <dt>Decided</dt>
       <dd>
         {#if decidedAt !== undefined}
-          <time datetime={decidedAt} title={formatTimestamp(decidedAt)}>
-            {formatDate(decidedAt)}
-          </time>
+          <RelativeTime value={decidedAt} label={formatDate(decidedAt)} />
         {:else}
           <span class="dim">Unknown</span>
         {/if}
@@ -139,13 +149,11 @@
               </span>
             </span>
             <Chip tone={decisionTone(decision.action)}>{decisionLabel(decision.action)}</Chip>
-            <time
+            <RelativeTime
               class="decision-date mono band-trim"
-              datetime={decision.created_at}
-              title={formatTimestamp(decision.created_at)}
-            >
-              {formatDate(decision.created_at)}
-            </time>
+              value={decision.created_at}
+              label={formatDate(decision.created_at)}
+            />
           </article>
         {:else}
           <p class="state dim">No earlier decisions in this scope</p>
@@ -161,8 +169,8 @@
 
 <style>
   .current-decision {
-    background: var(--well);
-    border: 1px solid var(--rule);
+    background: var(--surface-inset);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-well);
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -175,7 +183,7 @@
   }
 
   .current-decision > div + div {
-    border-inline-start: 1px solid var(--rule);
+    border-inline-start: 1px solid var(--border-subtle);
   }
 
   /* 1.3, not the inherited 1.5: an uppercase micro key has no descenders to
@@ -187,7 +195,7 @@
     font-size: var(--font-size-micro);
     font-weight: 700;
     letter-spacing: 0.05em;
-    line-height: 1.3;
+    line-height: var(--leading-micro);
     text-transform: uppercase;
   }
 
@@ -201,7 +209,9 @@
     min-width: 0;
   }
 
-  dd time {
+  /* `:global`, because the time is a component's element and carries its scope
+     rather than this one's. */
+  dd :global(time) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -223,7 +233,7 @@
      compact size. */
   .history-section h3 {
     color: var(--text-secondary);
-    font: 650 var(--font-size-compact) / 1 var(--sans);
+    font: 650 var(--font-size-compact) / var(--leading-flat) var(--sans);
     letter-spacing: normal;
     margin-bottom: 0.5rem;
     text-transform: none;
@@ -235,12 +245,12 @@
 
   .current-reason p {
     font-size: var(--font-size-meta);
-    line-height: 1.5;
+    line-height: var(--leading-meta);
     margin: 0.3rem 0 0;
   }
 
   .decision-list {
-    border: 1px solid var(--rule);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-well);
     margin-top: var(--space-2);
     max-height: min(21rem, 42vh);
@@ -256,7 +266,7 @@
   }
 
   article + article {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
   }
 
   /* Both cap-trimmed lines drop their leading, so the block's box equals its
@@ -272,22 +282,22 @@
     display: block;
     font-size: var(--font-size-meta);
     font-weight: 700;
-    line-height: 1;
+    line-height: var(--leading-flat);
     min-width: 0;
   }
 
   .decision-meta {
     color: var(--text-muted);
     display: block;
-    font: 400 var(--font-size-compact) / 1 var(--sans);
+    font: 400 var(--font-size-compact) / var(--leading-flat) var(--sans);
     margin-top: 0.4rem;
   }
 
-  .decision-date {
+  :global(.decision-date) {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
     font-weight: 500;
-    line-height: 1;
+    line-height: var(--leading-flat);
     min-width: 4.5rem;
     white-space: nowrap;
   }
@@ -310,7 +320,7 @@
 
     .current-decision > div + div {
       border-inline-start: 0;
-      border-top: 1px solid var(--rule);
+      border-top: 1px solid var(--border-subtle);
     }
 
     article {
@@ -319,7 +329,7 @@
     }
 
     article :global(.chip),
-    .decision-date {
+    :global(.decision-date) {
       grid-column: 2;
     }
   }

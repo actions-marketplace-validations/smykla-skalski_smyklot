@@ -1,17 +1,4 @@
 <script lang="ts">
-  /**
-   * The panel's front door.
-   *
-   * It stands on the same shell as an invitation and the error pages, because it
-   * is the third page a reader can be on without a session, and the three of them
-   * being one product matters more here than anywhere: this is where someone who
-   * has just installed Smyklot arrives, and where everyone who ever signs out
-   * comes back to.
-   *
-   * The card is small on purpose. There is one thing to do here, and a card sized
-   * for an invitation's four rows of facts would leave a sentence and a button
-   * floating in it.
-   */
   import type { PanelApi } from '../api';
   import type { PanelBuild } from '../base';
   import { describeSessionEnd, type SessionEnded } from '../panel-session';
@@ -34,15 +21,35 @@
   const offersSignIn = $derived(notice === null || notice.offersSignIn);
 </script>
 
+<!--
+@component
+The panel's front door.
+
+It stands on the same shell as an invitation and the error pages, because it
+is the third page a reader can be on without a session, and the three of them
+being one product matters more here than anywhere: this is where someone who
+has just installed Smyklot arrives, and where everyone who ever signs out
+comes back to.
+
+The card is small on purpose. There is one thing to do here, and a card sized
+for an invitation's four rows of facts would leave a sentence and a button
+floating in it.
+-->
+
 <NightPage {title} documentTitle={title} {build} size="compact">
   <div class="sign-in-body">
     {#if notice === null}
-      <!-- Names the place and stops. It used to explain what Smyklot does and then
-           list what the panel is for, which is a paragraph that goes stale the
-           first time a feature is added and that nobody standing at a sign-in
-           screen is reading anyway. -->
-      <p class="sign-in-lead">The Smyklot control panel</p>
-      <p class="sign-in-note">You need to be signed in to open it</p>
+      <!-- THE FRONT DOOR SAYS WHAT THE PRODUCT DOES. This named the place and stopped,
+           on the reasoning that nobody standing at a sign-in screen reads a paragraph -
+           but the people who arrive here are the ones who have just installed Smyklot
+           and the ones who followed a link to it, and for both of them the sentence
+           existed only on the invitation page. One sentence, about what it does rather
+           than what the panel contains, so a feature cannot make it stale. -->
+      <p class="sign-in-lead">Smyklot</p>
+      <p class="sign-in-note">
+        Approves and merges pull requests for your GitHub organization or account, driven by slash
+        commands and the owners file you already keep
+      </p>
     {:else}
       <p class="sign-in-lead">{notice.lead}</p>
       <p class="sign-in-note">{notice.note}</p>
@@ -60,7 +67,9 @@
            GitHub offers public profile read alone, and the token is used for one
            `GET /user` and then dropped. Keep this true if that changes, in
            `newGitHubSignIn` in internal/panel/github.go. -->
-      <p class="sign-in-consent">GitHub is asked for your public profile and nothing else</p>
+      <p class="sign-in-consent">
+        GitHub is asked for your public profile and nothing else, and you come back here afterwards
+      </p>
     {/if}
   </div>
 </NightPage>
@@ -73,7 +82,7 @@
 
   .sign-in-lead {
     color: var(--text-primary);
-    font: 650 1.0625rem / 1.35 var(--sans);
+    font: 650 1.0625rem / var(--leading-body) var(--sans);
     margin: 0;
   }
 
@@ -93,7 +102,7 @@
      accepting costs from the facts it is deciding on. Quiet, because it answers a
      question rather than making one. */
   .sign-in-consent {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
     color: var(--text-muted);
     font-size: var(--font-size-compact);
     margin: var(--space-4) 0 0;

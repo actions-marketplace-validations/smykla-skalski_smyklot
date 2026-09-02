@@ -4,7 +4,6 @@
   import { useDebounce, useInterval } from 'runed';
 
   import { dialogRoute } from '../dialog-route.svelte';
-  import { formatRelative, formatTimestamp } from '../format';
   import type { FilterSection } from '../filter-menu';
   import type {
     Page,
@@ -19,33 +18,30 @@
     RootPanelUser,
     RootPanelUserPageRequest,
     RootPanelUserSort,
-    RootInstallation,
-    InstallationRole,
+    RootWorkspace,
+    WorkspaceRole,
     SystemRole,
     UpdateRootUserInput,
   } from '../types';
   import ActionMenu, { type ActionMenuItem } from './ActionMenu.svelte';
   import Button, { type ButtonTone } from './Button.svelte';
+  import Card from './Card.svelte';
+  import Chip from './Chip.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
-  import DataTable from './DataTable.svelte';
   import Select from './Select.svelte';
   import Callout from './Callout.svelte';
-  import IdentityRow from './IdentityRow.svelte';
   import Skeleton from './Skeleton.svelte';
-  import SortIndicator from './SortIndicator.svelte';
-  import Avatar from './Avatar.svelte';
-  import Chip, { type ChipTone } from './Chip.svelte';
-  import FilterMenu from './FilterMenu.svelte';
   import Icon from './Icon.svelte';
   import InfiniteLoadSentinel from './InfiniteLoadSentinel.svelte';
   import LoginField from './LoginField.svelte';
   import Modal from './Modal.svelte';
+  import Pill, { type PillTone } from './Pill.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import RootInvitations from './RootInvitations.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
   import SearchField from './SearchField.svelte';
-  import TableToolsMenu from './TableToolsMenu.svelte';
-  import TableEmptyState from './TableEmptyState.svelte';
+  import ListToolsMenu, { type ToolsSort } from './ListToolsMenu.svelte';
 
   type AccessSection = 'users' | 'invitations';
   type SortColumn = 'name' | 'role' | 'last_login';
@@ -55,14 +51,16 @@
 
   /** Name the dialogs in the address, and are the `id` each dialog carries. */
   const ACTION_DIALOG = 'root-user-action';
-  const ADD_DIALOG = 'root-add-installation-user';
+  const ADD_DIALOG = 'root-add-workspace-user';
 
+  /* One word for what used to be three - "Root user", "Root invitation" and
+     "system-level access" all meant somebody who may operate the service. */
   const ROLE_FILTERS = [
     {
       options: [
-        { value: 'super_root', label: 'Super Root' },
-        { value: 'root', label: 'Root' },
-        { value: 'none', label: 'Regular account' },
+        { value: 'super_root', label: 'Lead operator' },
+        { value: 'root', label: 'Operator' },
+        { value: 'none', label: 'Everyone else' },
       ],
     },
   ] satisfies readonly FilterSection[];
@@ -77,7 +75,6 @@
   ] satisfies readonly FilterSection[];
 
   const {
-    rootRole,
     section,
     fetchUsers,
     updateUser,
@@ -87,12 +84,11 @@
     revokeInvitation,
     canManageInvitations,
     actorLogin,
-    fetchInstallations,
-    addInstallationUser,
+    fetchWorkspaces,
+    addWorkspaceUser,
     suggestUsers,
-    onOpenInstallationAccess,
+    onOpenWorkspaceAccess,
   }: {
-    rootRole: string;
     section: AccessSection;
     fetchUsers: (request: RootPanelUserPageRequest) => Promise<Page<RootPanelUser>>;
     updateUser: (accountId: string, input: UpdateRootUserInput) => Promise<void>;
@@ -106,11 +102,11 @@
     canManageInvitations: boolean;
     /** The signed-in login, so naming yourself is answered before the press. */
     actorLogin: string;
-    fetchInstallations: () => Promise<RootInstallation[]>;
-    addInstallationUser: (targetId: string, input: AddTargetUserInput) => Promise<PanelUser>;
-    /** Completes a login against the chosen installation's organization. */
+    fetchWorkspaces: () => Promise<RootWorkspace[]>;
+    addWorkspaceUser: (targetId: string, input: AddTargetUserInput) => Promise<PanelUser>;
+    /** Completes a login against the chosen workspace's organization. */
     suggestUsers: (targetId: string, query: string) => Promise<PanelAccount[]>;
-    onOpenInstallationAccess: (account: string) => void;
+    onOpenWorkspaceAccess: (account: string) => void;
   } = $props();
 
   let search = $state('');
@@ -126,9 +122,9 @@
   let inviteTrigger = $state<HTMLButtonElement | null>(null);
   let invitations = $state<RootInvitations | null>(null);
   let addLogin = $state('');
-  let addRole = $state<Exclude<InstallationRole, 'none' | 'owner'>>('viewer');
-  let installationQuery = $state('');
-  let selectedInstallationID = $state('');
+  let addRole = $state<Exclude<WorkspaceRole, 'none' | 'owner'>>('viewer');
+  let workspaceQuery = $state('');
+  let selectedWorkspaceID = $state('');
   let addSaving = $state(false);
   let addProblem = $state<string | null>(null);
   let feedback = $state('');
@@ -183,36 +179,36 @@
         ? 'signal'
         : 'default',
   );
-  const installationsQuery = createQuery(() => ({
-    queryKey: ['root-installations'],
-    queryFn: fetchInstallations,
+  const workspacesQuery = createQuery(() => ({
+    queryKey: ['root-workspaces'],
+    queryFn: fetchWorkspaces,
     enabled: addOpen,
   }));
-  const installations = $derived<RootInstallation[]>(installationsQuery.data ?? []);
-  const installationsLoading = $derived(
-    addOpen && installationsQuery.isFetching && installationsQuery.data === undefined,
+  const workspaces = $derived<RootWorkspace[]>(workspacesQuery.data ?? []);
+  const workspacesLoading = $derived(
+    addOpen && workspacesQuery.isFetching && workspacesQuery.data === undefined,
   );
-  const installationsProblem = $derived(
-    addOpen && installationsQuery.error !== null ? errorMessage(installationsQuery.error) : null,
+  const workspacesProblem = $derived(
+    addOpen && workspacesQuery.error !== null ? errorMessage(workspacesQuery.error) : null,
   );
-  const defaultInstallationID = $derived(
-    installations.find((installation) => installation.available)?.id ?? '',
+  const defaultWorkspaceID = $derived(
+    workspaces.find((workspace) => workspace.available)?.id ?? '',
   );
-  const effectiveInstallationID = $derived(
-    selectedInstallationID === '' ? defaultInstallationID : selectedInstallationID,
+  const effectiveWorkspaceID = $derived(
+    selectedWorkspaceID === '' ? defaultWorkspaceID : selectedWorkspaceID,
   );
 
   function userAction(value: string | undefined): UserAction | null {
     return USER_ACTIONS.find((action) => action === value) ?? null;
   }
-  const selectedInstallation = $derived(
-    installations.find((installation) => installation.id === effectiveInstallationID) ?? null,
+  const selectedWorkspace = $derived(
+    workspaces.find((workspace) => workspace.id === effectiveWorkspaceID) ?? null,
   );
-  const filteredInstallations = $derived.by(() => {
-    const needle = installationQuery.trim().toLocaleLowerCase();
-    if (needle === '') return installations;
-    return installations.filter((installation) =>
-      [installation.account.display_name, installation.account.login].some((value) =>
+  const filteredWorkspaces = $derived.by(() => {
+    const needle = workspaceQuery.trim().toLocaleLowerCase();
+    if (needle === '') return workspaces;
+    return workspaces.filter((workspace) =>
+      [workspace.account.display_name, workspace.account.login].some((value) =>
         value.toLocaleLowerCase().includes(needle),
       ),
     );
@@ -240,6 +236,23 @@
     if (!sort.startsWith(prefix)) return undefined;
     return sort.endsWith('desc') || sort === 'login_newest' ? 'descending' : 'ascending';
   }
+
+  /* The order lives in the tools menu now that the rows are sentences rather than
+     columns: a column heading is where a reader looks for sort, and there are no
+     headings to look at. */
+  const toolSorts = $derived<ToolsSort[]>(
+    (
+      [
+        ['Name', 'name'],
+        ['Service role', 'role'],
+        ['Last signed in', 'last_login'],
+      ] as const
+    ).map(([label, column]) => ({
+      label,
+      direction: sortDirection(column),
+      onToggle: () => toggleSort(column),
+    })),
+  );
 
   function selectRoles(values: string[]): void {
     systemRoles = values.filter((value): value is SystemRole =>
@@ -275,11 +288,6 @@
     return error instanceof Error ? error.message : String(error);
   }
 
-  function loadFromScroll(event: Event): void {
-    const target = event.currentTarget as HTMLElement;
-    if (target.scrollHeight - target.scrollTop - target.clientHeight < 260) loadNext();
-  }
-
   function clearFilters(): void {
     search = '';
     query = '';
@@ -291,8 +299,8 @@
     dialogRoute.open(ADD_DIALOG);
     addLogin = '';
     addRole = 'viewer';
-    installationQuery = '';
-    selectedInstallationID = '';
+    workspaceQuery = '';
+    selectedWorkspaceID = '';
     addProblem = null;
   }
 
@@ -303,11 +311,11 @@
   }
 
   async function submitAddUser(): Promise<void> {
-    const installation = selectedInstallation;
-    if (installation === null || !installation.available) return;
-    if (!installation.owned_by_viewer) {
+    const workspace = selectedWorkspace;
+    if (workspace === null || !workspace.available) return;
+    if (!workspace.owned_by_viewer) {
       if (dialogRoute.isOpen(ADD_DIALOG)) dialogRoute.close();
-      onOpenInstallationAccess(installation.account.login);
+      onOpenWorkspaceAccess(workspace.account.login);
       return;
     }
     const login = addLogin.trim();
@@ -315,8 +323,8 @@
     addSaving = true;
     addProblem = null;
     try {
-      await addInstallationUser(installation.id, { login, role: addRole });
-      feedback = `Added @${login} to ${installation.account.display_name}`;
+      await addWorkspaceUser(workspace.id, { login, role: addRole });
+      feedback = `Added @${login} to ${workspace.account.display_name}`;
       if (dialogRoute.isOpen(ADD_DIALOG)) dialogRoute.close();
       await loadPage(undefined, false);
     } catch (error) {
@@ -326,31 +334,37 @@
     }
   }
 
-  function systemRoleLabel(role: SystemRole): string {
-    if (role === 'super_root') return 'Super Root';
-    if (role === 'root') return 'Root';
-    return 'Account';
+  /**
+   * A standing worth a word, or nothing at all.
+   *
+   * An ordinary account in good standing wears no pill: the column that said
+   * "Account" on every row said nothing, and a page of identical pills teaches a
+   * reader to stop reading them. What is left is what somebody might act on -
+   * who may operate the service, and who cannot get in.
+   */
+  function userStanding(user: RootPanelUser): { tone: PillTone; label: string } | null {
+    if (user.status === 'banned') return { tone: 'danger', label: 'Signed out and blocked' };
+    if (user.status === 'removed') return { tone: 'danger', label: 'Access removed' };
+    if (user.system_role === 'super_root') return { tone: 'warning', label: 'Lead operator' };
+    if (user.system_role === 'root') return { tone: 'warning', label: 'Operator' };
+
+    return null;
   }
 
-  function systemRoleTone(role: SystemRole): ChipTone {
-    if (role === 'super_root') return 'accent';
-    if (role === 'root') return 'signal';
-    return 'neutral';
-  }
+  /** What a person has in the product, said the way they would say it. */
+  function membership(user: RootPanelUser): string {
+    const owned = user.owned_workspaces;
+    const assigned = user.assigned_workspaces;
+    if (owned > 0) {
+      const said = `owns ${owned} ${owned === 1 ? 'workspace' : 'workspaces'}`;
 
-  function statusLabel(status: PanelUserStatus): string {
-    return status.charAt(0).toLocaleUpperCase() + status.slice(1);
-  }
+      return assigned === 0 ? said : `${said}, member of ${assigned} more`;
+    }
+    if (assigned > 0) {
+      return `member of ${assigned} ${assigned === 1 ? 'workspace' : 'workspaces'}`;
+    }
 
-  function statusTone(status: PanelUserStatus): ChipTone {
-    if (status === 'active') return 'clear';
-    if (status === 'banned') return 'stop';
-    return 'neutral';
-  }
-
-  function installationSummary(user: RootPanelUser): string {
-    const relationships = user.owned_installations + user.assigned_installations;
-    return `${relationships} installation${relationships === 1 ? '' : 's'}`;
+    return 'no workspaces yet';
   }
 
   function userActions(user: RootPanelUser): ActionMenuItem[] {
@@ -361,15 +375,15 @@
           ? {
               id: 'demote_root',
               icon: 'shield-slash',
-              label: 'Remove Root role',
-              description: 'Remove application-wide administration',
+              label: 'Stop being an operator',
+              description: 'Take away the console and every workspace it reaches',
               tone: 'danger',
             }
           : {
               id: 'promote_root',
               icon: 'admin',
-              label: 'Make Root',
-              description: 'Grant application-wide administration',
+              label: 'Make an operator',
+              description: 'Give the console and audited access to every workspace',
             },
       );
     }
@@ -421,8 +435,8 @@
 
   function actionTitle(): string {
     const name = actionUser?.account.display_name ?? 'this account';
-    if (pendingAction === 'promote_root') return `Make ${name} a Root?`;
-    if (pendingAction === 'demote_root') return `Remove Root access from ${name}?`;
+    if (pendingAction === 'promote_root') return `Make ${name} an operator?`;
+    if (pendingAction === 'demote_root') return `${name} stops being an operator?`;
     if (pendingAction === 'restore') return `Restore ${name}?`;
     if (pendingAction === 'ban') return `Ban ${name}?`;
     return `Remove ${name}?`;
@@ -430,10 +444,10 @@
 
   function actionDescription(): string {
     if (pendingAction === 'promote_root') {
-      return 'Root can read application-wide data and use audited installation elevation';
+      return 'An operator reads the whole service and may enter any workspace - every visit is announced and audited';
     }
     if (pendingAction === 'demote_root') {
-      return 'Their installation ownership and explicit assignments remain unchanged';
+      return 'What they own and what they were given stay exactly as they are';
     }
     if (pendingAction === 'restore') return 'The account can sign in again with retained access';
     if (pendingAction === 'ban') return 'Every active session is revoked immediately';
@@ -472,13 +486,23 @@
   }
 </script>
 
+<!--
+@component
+Who may use the panel at all, which is the Root console's own question rather than any
+workspace's. Users and invitations are two sections of one page because the answer to
+"why can this person not get in" is in whichever of the two they are not in.
+
+`canManageInvitations` draws the acts rather than disabling them. An operator who may
+read the list but not change it sees the same records without controls that would
+refuse.
+-->
+
 <section class="root-access" aria-labelledby="root-page-heading">
   <RootPageHeader
-    role={rootRole}
     title={section === 'users' ? 'Users' : 'Invitations'}
     subtitle={section === 'users'
-      ? 'Every account known to Smyklot'
-      : 'Pending system-level access'}
+      ? 'People with current, pending, or previous Smyklot access and their workspace memberships'
+      : 'Invitations to operate the service, not a workspace. Every workspace visit is announced and audited'}
   >
     {#if section === 'invitations'}
       {#if canManageInvitations}
@@ -487,13 +511,13 @@
           bind:element={inviteTrigger}
           onclick={() => invitations?.openCreate(inviteTrigger)}
         >
-          {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
-          Invite Root user
+          {#snippet icon()}<Icon name="user-plus" size="sm" strokeWidth={2} />{/snippet}
+          Invite an operator
         </Button>
       {/if}
     {:else}
       <Button tone="signal" bind:element={addTrigger} onclick={openAddUser}>
-        {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
+        {#snippet icon()}<Icon name="user-plus" size="sm" strokeWidth={2} />{/snippet}
         Add user
       </Button>
     {/if}
@@ -510,46 +534,45 @@
       {actorLogin}
     />
   {:else}
-    <div class="access-toolbar">
-      <span class="stable-feedback" aria-live="polite">{feedback}</span>
+    <div class="filter-bar">
       <SearchField
-        label="Search Root users"
-        placeholder="Search users"
+        label="Find a user"
+        placeholder="Find a user"
         value={search}
         onInput={(value) => (search = value)}
       />
-      <!-- Both filters live in column headings, and the heading band is hidden
-           once this table becomes a stack of cards. Without this the page
-           offered a search field and nothing else. -->
-      <TableToolsMenu
-        label="Filter Root users"
-        sorts={[]}
-        filters={[
-          {
-            label: 'System role',
-            hint: 'Filter application-level privileges',
-            sections: ROLE_FILTERS,
-            selected: systemRoles,
-            multiple: true,
-            onChange: selectRoles,
-          },
-          {
-            label: 'Status',
-            hint: 'Filter account lifecycle state',
-            sections: STATUS_FILTERS,
-            selected: statuses,
-            multiple: true,
-            onChange: selectStatuses,
-          },
-        ]}
-      />
+      <span class="push-end">
+        <span class="stable-feedback" aria-live="polite">{feedback}</span>
+        <ListToolsMenu
+          label="Filter users"
+          sorts={toolSorts}
+          filters={[
+            {
+              label: 'Service role',
+              hint: 'Filter what a person may do to the service itself',
+              sections: ROLE_FILTERS,
+              selected: systemRoles,
+              multiple: true,
+              onChange: selectRoles,
+            },
+            {
+              label: 'Status',
+              hint: 'Filter account lifecycle state',
+              sections: STATUS_FILTERS,
+              selected: statuses,
+              multiple: true,
+              onChange: selectStatuses,
+            },
+          ]}
+        />
+      </span>
     </div>
 
-    <div class:loading class="user-results table-region" aria-busy={loading}>
+    <div class:loading class="user-results" aria-busy={loading}>
       <!-- A refresh that failed over a loaded table has not made the table wrong. -->
       {#if problem !== null && page !== null}
         <ResultProblem
-          title="Root users could not be loaded"
+          title="The people could not be read"
           {problem}
           busy={loading}
           onRetry={() => void loadPage(undefined, false)}
@@ -559,7 +582,7 @@
 
       {#if problem !== null && page === null}
         <ResultProblem
-          title="Root users could not be loaded"
+          title="The people could not be read"
           {problem}
           busy={loading}
           onRetry={() => void loadPage(undefined, false)}
@@ -567,142 +590,66 @@
       {:else if loading && page === null}
         <Skeleton bars={false} --skeleton-min-height="10rem" />
       {:else}
-        <DataTable
-          class="table-scroll"
-          pinned
-          stacked
-          caption="Application accounts"
-          regionLabel="Root users table"
-          rows={users}
-          rowKey={(user) => String(user.account.id)}
-          columnCount={6}
-          onBodyScroll={loadFromScroll}
-        >
-          {#snippet head()}
-            <tr>
-              <th scope="col" aria-sort={sortDirection('name')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('name')}
-                  >
-                    <span class="table-heading-label">User</span><SortIndicator />
-                  </button>
-                </div>
-              </th>
-              <th scope="col" aria-sort={sortDirection('role')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('role')}
-                  >
-                    <span class="table-heading-label">System role</span><SortIndicator />
-                  </button>
-                  <FilterMenu
-                    label="System role"
-                    summary={systemRoles.length === 0
-                      ? 'All system roles'
-                      : `${systemRoles.length} selected`}
-                    hint="Filter application-level privileges"
-                    sections={ROLE_FILTERS}
-                    selected={systemRoles}
-                    multiple
-                    align="end"
-                    onChange={selectRoles}
-                  />
-                </div>
-              </th>
-              <th scope="col">
-                <div class="table-heading">
-                  <span class="table-heading-label">Status</span>
-                  <FilterMenu
-                    label="Status"
-                    summary={statuses.length === 0 ? 'All statuses' : `${statuses.length} selected`}
-                    hint="Filter account lifecycle state"
-                    sections={STATUS_FILTERS}
-                    selected={statuses}
-                    multiple
-                    align="end"
-                    onChange={selectStatuses}
-                  />
-                </div>
-              </th>
-              <th scope="col">
-                <div class="table-heading">
-                  <span class="table-heading-label">Installations</span>
-                </div>
-              </th>
-              <th scope="col" aria-sort={sortDirection('last_login')}>
-                <div class="table-heading">
-                  <button
-                    class="table-sort-button"
-                    type="button"
-                    onclick={() => toggleSort('last_login')}
-                  >
-                    <span class="table-heading-label">Last login</span><SortIndicator />
-                  </button>
-                </div>
-              </th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
-            </tr>
-          {/snippet}
-          {#snippet cells(user)}
-            <td data-label="User">
-              <IdentityRow>
-                {#snippet mark()}<Avatar account={user.account} size={32} />{/snippet}
-                {#snippet name()}<strong>{user.account.display_name}</strong>{/snippet}
-                {#snippet handle()}<span class="mono">@{user.account.login}</span>{/snippet}
-              </IdentityRow>
-            </td>
-            <td data-label="System role">
-              <Chip tone={systemRoleTone(user.system_role)}
-                >{systemRoleLabel(user.system_role)}</Chip
-              >
-            </td>
-            <td data-label="Status">
-              <Chip tone={statusTone(user.status)} dot={user.status === 'active'}
-                >{statusLabel(user.status)}</Chip
-              >
-            </td>
-            <td class="band-trim-stack" data-label="Installations">
-              <span class="relationship-count">{installationSummary(user)}</span>
-              <span class="relationship-meta"
-                >{user.owned_installations} owned · {user.assigned_installations} assigned</span
-              >
-            </td>
-            <td data-label="Last login">
-              {#if user.last_login_at !== undefined}
-                <time
-                  class="band-trim"
-                  datetime={user.last_login_at}
-                  title={formatTimestamp(user.last_login_at)}
-                  >{formatRelative(user.last_login_at, now)}</time
+        <Card>
+          {#if users.length === 0}
+            <div class="state-panel">
+              {#if hasFilters}
+                <span
+                  ><strong>Nothing matches.</strong> No account here answers to what is being asked</span
                 >
-              {:else}<span class="dim band-trim">Never</span>{/if}
-            </td>
-            <td class="row-actions" data-label="Actions">
-              {#if userActions(user).length > 0}
-                <ActionMenu
-                  label={`Actions for @${user.account.login}`}
-                  items={userActions(user)}
-                  onSelect={(action, trigger) => chooseUserAction(user, action, trigger)}
-                />
+                <Button onclick={clearFilters}>Clear the filters</Button>
+              {:else}
+                <span
+                  ><strong>Nobody yet.</strong> An account appears here the first time somebody signs
+                  in</span
+                >
               {/if}
-            </td>
-          {/snippet}
-          {#snippet empty()}
-            <TableEmptyState
-              title="No accounts found"
-              description={hasFilters
-                ? 'Try another search or clear the active filters'
-                : 'Accounts appear after their first authenticated session'}
-              actionLabel={hasFilters ? 'Clear filters' : undefined}
-              onAction={hasFilters ? clearFilters : undefined}
-            />
-          {/snippet}
-        </DataTable>
+            </div>
+          {:else}
+            <ul class="object-list">
+              {#each users as user (user.account.id)}
+                {@const standing = userStanding(user)}
+                <li>
+                  <div class="object-row">
+                    <span class="object-main">
+                      <span class="object-name-row">
+                        <span class="object-name">{user.account.display_name}</span>
+                        {#if standing !== null}
+                          <Pill tone={standing.tone}>{standing.label}</Pill>
+                        {/if}
+                      </span>
+                      <!-- The handle, what they have in the product, and when they were
+                           last here: three columns became the sentence they were always
+                           read as. -->
+                      <span class="object-sum"
+                        >@{user.account.login} · {membership(user)} ·
+                        {#if user.last_login_at !== undefined}signed in
+                          <RelativeTime value={user.last_login_at} nowMs={now} />
+                        {:else}has not signed in yet{/if}</span
+                      >
+                    </span>
+                    <span class="object-side">
+                      {#if userActions(user).length > 0}
+                        <ActionMenu
+                          label={`Actions for @${user.account.login}`}
+                          items={userActions(user)}
+                          onSelect={(action, trigger) => chooseUserAction(user, action, trigger)}
+                        />
+                      {/if}
+                    </span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+            <div class="list-foot">
+              <span
+                >Showing 1-{users.length} of {page?.total ?? users.length}{hasFilters
+                  ? ' matching'
+                  : ''}</span
+              >
+            </div>
+          {/if}
+        </Card>
       {/if}
       <InfiniteLoadSentinel
         active={!loading && loadMoreProblem === null && page?.next_cursor != null}
@@ -742,7 +689,7 @@
   {:else}
     <Callout tabindex={-1}>
       {#snippet icon()}
-        <Icon name={pendingAction === 'promote_root' ? 'warning' : 'info'} size={20} />
+        <Icon name={pendingAction === 'promote_root' ? 'warning' : 'info'} size="md" />
       {/snippet}
       <span>Review the account and effect before confirming</span>
     </Callout>
@@ -753,78 +700,78 @@
 <Modal
   id={ADD_DIALOG}
   open={addOpen}
-  title="Add installation user"
-  description="Choose the installation before assigning a Viewer, Editor, or Admin role"
+  title="Add someone to a workspace"
+  description="Choose the workspace before assigning a Viewer, Editor, or Admin role"
   returnFocus={addTrigger}
   onClose={closeAddUser}
 >
   <form
-    id="root-add-installation-user-form"
+    id="root-add-workspace-user-form"
     class="add-user-form"
     onsubmit={(event) => {
       event.preventDefault();
       void submitAddUser();
     }}
   >
-    <!-- Completed against the chosen installation's organization, which is why
+    <!-- Completed against the chosen workspace's organization, which is why
          the field reads the selection rather than owning a roster of its own.
          Before one is chosen there is nothing to complete against, and the field
          is what it always was. -->
     <LoginField
-      id="root-add-installation-login"
+      id="root-add-workspace-login"
       label="GitHub login"
       bind:value={addLogin}
       focusOnOpen
       suggest={(query) =>
-        selectedInstallation === null
+        selectedWorkspace === null
           ? Promise.resolve([])
-          : suggestUsers(selectedInstallation.id, query)}
+          : suggestUsers(selectedWorkspace.id, query)}
     />
 
-    <fieldset class="installation-fieldset">
-      <legend>Installation</legend>
+    <fieldset class="workspace-fieldset">
+      <legend>Workspace</legend>
       <SearchField
-        label="Filter installations"
-        placeholder="Find an installation"
-        value={installationQuery}
-        onInput={(value) => (installationQuery = value)}
+        label="Find a workspace"
+        placeholder="Find a workspace"
+        value={workspaceQuery}
+        onInput={(value) => (workspaceQuery = value)}
       />
-      {#if installationsLoading}
-        <div class="installation-state" role="status">Loading installations…</div>
-      {:else if installationsProblem !== null}
-        <div class="installation-state installation-problem" role="alert">
-          <span>{installationsProblem}</span>
-          <Button tone="quiet" onclick={() => void installationsQuery.refetch()}>Try again</Button>
+      {#if workspacesLoading}
+        <div class="workspace-state" role="status">Reading the workspaces…</div>
+      {:else if workspacesProblem !== null}
+        <div class="workspace-state workspace-problem" role="alert">
+          <span>{workspacesProblem}</span>
+          <Button tone="quiet" onclick={() => void workspacesQuery.refetch()}>Try again</Button>
         </div>
-      {:else if filteredInstallations.length === 0}
-        <div class="installation-state">No installations match this search</div>
+      {:else if filteredWorkspaces.length === 0}
+        <div class="workspace-state">No workspace matches this search</div>
       {:else}
-        <div class="installation-options" role="radiogroup" aria-label="Installation">
-          {#each filteredInstallations as installation (installation.id)}
-            <label class:unavailable={!installation.available}>
+        <div class="workspace-options" role="radiogroup" aria-label="Workspace">
+          {#each filteredWorkspaces as workspace (workspace.id)}
+            <label class:unavailable={!workspace.available}>
               <input
                 type="radio"
-                name="root-installation"
-                value={installation.id}
-                disabled={!installation.available}
-                checked={effectiveInstallationID === installation.id}
-                onchange={() => (selectedInstallationID = installation.id)}
+                name="root-workspace"
+                value={workspace.id}
+                disabled={!workspace.available}
+                checked={effectiveWorkspaceID === workspace.id}
+                onchange={() => (selectedWorkspaceID = workspace.id)}
               />
-              <span class="installation-option-copy">
-                <strong>{installation.account.display_name}</strong>
-                <span class="mono">@{installation.account.login}</span>
+              <span class="workspace-option-copy">
+                <strong>{workspace.account.display_name}</strong>
+                <span class="mono">@{workspace.account.login}</span>
               </span>
               <Chip
-                tone={installation.owned_by_viewer
+                tone={workspace.owned_by_viewer
                   ? 'clear'
-                  : installation.available
+                  : workspace.available
                     ? 'warning'
                     : 'stop'}
               >
-                {installation.owned_by_viewer
+                {workspace.owned_by_viewer
                   ? 'Owned'
-                  : installation.available
-                    ? 'Elevation required'
+                  : workspace.available
+                    ? 'Needs an operator visit'
                     : 'Unavailable'}
               </Chip>
             </label>
@@ -834,7 +781,7 @@
     </fieldset>
 
     <label>
-      <span>Installation role</span>
+      <span>Role in that workspace</span>
       <Select
         bind:value={addRole}
         options={[
@@ -845,11 +792,11 @@
       />
     </label>
 
-    {#if selectedInstallation !== null && !selectedInstallation.owned_by_viewer}
+    {#if selectedWorkspace !== null && !selectedWorkspace.owned_by_viewer}
       <Callout tone="warning">
-        {#snippet icon()}<Icon name="warning" size={18} />{/snippet}
+        {#snippet icon()}<Icon name="warning" size="md" />{/snippet}
         <span>
-          This installation is not yours. Continue to its Access view to acknowledge and start the
+          This workspace is not yours. Continue to its Access view to acknowledge and start the
           audited 15-minute elevation before adding the user.
         </span>
       </Callout>
@@ -862,15 +809,15 @@
     <Button
       tone="signal"
       type="submit"
-      form="root-add-installation-user-form"
+      form="root-add-workspace-user-form"
       disabled={addSaving ||
-        selectedInstallation === null ||
-        !selectedInstallation.available ||
-        (selectedInstallation.owned_by_viewer && addLogin.trim() === '')}
+        selectedWorkspace === null ||
+        !selectedWorkspace.available ||
+        (selectedWorkspace.owned_by_viewer && addLogin.trim() === '')}
     >
       {addSaving
         ? 'Adding…'
-        : selectedInstallation?.owned_by_viewer === false
+        : selectedWorkspace?.owned_by_viewer === false
           ? 'Open audited access'
           : 'Add user'}
     </Button>
@@ -885,17 +832,10 @@
     min-height: 0;
   }
 
-  .access-toolbar {
-    /* One 34px row: the section switch leads, the search fills the rest. The
-       primary action lives in the header slot, same anatomy as the mock. */
-    --control-height: var(--control-height-compact);
-
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    min-height: var(--control-height);
-    padding-bottom: var(--space-3);
+  .filter-bar :global(.search-field) {
+    flex: 1 1 12rem;
+    max-inline-size: 20rem;
+    min-inline-size: 0;
   }
 
   .stable-feedback {
@@ -925,13 +865,13 @@
   }
 
   .add-user-form > label > span,
-  .installation-fieldset legend {
+  .workspace-fieldset legend {
     color: var(--text-secondary);
     font-size: var(--font-size-compact);
     font-weight: 650;
   }
 
-  .installation-fieldset {
+  .workspace-fieldset {
     border: 0;
     display: grid;
     gap: var(--space-2);
@@ -940,11 +880,11 @@
     padding: 0;
   }
 
-  .installation-fieldset legend {
+  .workspace-fieldset legend {
     margin-bottom: var(--space-2);
   }
 
-  .installation-options {
+  .workspace-options {
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-control);
     display: grid;
@@ -952,9 +892,9 @@
     overflow-y: auto;
   }
 
-  .installation-options > label {
+  .workspace-options > label {
     align-items: center;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--border-subtle);
     cursor: pointer;
     display: grid;
     gap: var(--space-3);
@@ -963,184 +903,50 @@
     padding: var(--space-2) var(--space-3);
   }
 
-  .installation-options > label:last-child {
+  .workspace-options > label:last-child {
     border-bottom: 0;
   }
 
-  .installation-options > label:hover:not(.unavailable) {
+  .workspace-options > label:hover:not(.unavailable) {
     background: var(--interactive-hover);
   }
 
-  .installation-options > label:has(input:checked) {
+  .workspace-options > label:has(input:checked) {
     background: var(--brand-action-tint);
   }
 
-  .installation-options > label.unavailable {
+  .workspace-options > label.unavailable {
     cursor: not-allowed;
     opacity: 0.64;
   }
 
-  .installation-option-copy {
+  .workspace-option-copy {
     display: grid;
     min-width: 0;
   }
 
-  .installation-option-copy strong,
-  .installation-option-copy span {
+  .workspace-option-copy strong,
+  .workspace-option-copy span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .installation-option-copy span,
-  .installation-state {
+  .workspace-option-copy span,
+  .workspace-state {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
   }
 
-  .installation-state {
+  .workspace-state {
     border: 1px dashed var(--border-subtle);
     border-radius: var(--radius-control);
     padding: var(--space-4);
     text-align: center;
   }
 
-  /* Layout, keyline and corner come from `.table-region` in `app.css`. */
   .user-results {
     min-height: 8rem;
-  }
-
-  /* Surface, keyline, corner and lift come from `.table-card`; the scroll shell,
-     the cell padding and the separator from `DataTable` and `.data-table`. What
-     is left is this table's own settings for them.
-
-     `--cell-pad-block` is still named once, because the row height below is
-     derived from it and a padding changed in one place and not the other would
-     silently un-state the row height. */
-  :global(.table-scroll) {
-    --cell-pad-block: 0.625rem;
-    --table-cell-pad-block: var(--cell-pad-block);
-    --table-empty-height: 10rem;
-    --table-cell-pad-inline: 0.75rem;
-    --table-heading-height: 2.5rem;
-    --table-layout: fixed;
-    --table-min-width: 46rem;
-
-    flex: 1;
-    max-width: 100%;
-    min-height: 0;
-  }
-
-  /* Stated, not inherited from whatever the tallest cell happens to hold.
-     It used to come out at 61px because the row menu is 40px tall, and at 60.9px
-     on the viewer's own row - which has no menu, since nobody may act on
-     themselves - where two lines of untrimmed leading happened to measure the
-     same. Trimming those lines to their band, which is what centres them, took
-     that row to 54px and left one short row in the middle of the table. A row's
-     height is a decision: the tallest control it has to hold, plus its own
-     padding and rule. */
-  /* Stated, not inherited from whatever the tallest cell happens to hold. It used
-     to come out at 61px because the row menu is 40px tall, and at 60.9px on the
-     viewer's own row - which has no menu, since nobody may act on themselves -
-     where two lines of untrimmed leading happened to measure the same. Trimming
-     those lines to their band took that row to 54px and left one short row in the
-     middle of the table. A row's height is a decision: the tallest control it has
-     to hold, plus its own padding and rule. */
-  :global(.table-scroll tbody tr) {
-    height: calc(var(--control-height) + 2 * var(--cell-pad-block) + 1px);
-  }
-
-  /* The shared phone layout turns every cell into a labelled block. Its row has
-     to grow with that stack instead of keeping the single-line desktop height. */
-  @media (max-width: 64rem) {
-    :global(.table-scroll tbody tr) {
-      height: auto;
-    }
-  }
-
-  /* The first column's wider inset, on both halves of the table so the band and
-     the rows below it start on the same edge. */
-  :global(.table-scroll td:first-child) {
-    padding-left: var(--space-4);
-  }
-
-  :global(.table-scroll thead th:first-child) {
-    --heading-pad-start: var(--space-4);
-  }
-
-  th:first-child,
-  td:first-child {
-    width: 28%;
-  }
-
-  th:nth-child(2),
-  td:nth-child(2) {
-    width: 16%;
-  }
-
-  th:nth-child(3),
-  td:nth-child(3) {
-    width: 13%;
-  }
-
-  th:nth-child(4),
-  td:nth-child(4) {
-    width: 24%;
-  }
-
-  th:nth-child(5),
-  td:nth-child(5) {
-    text-align: right;
-    width: 16%;
-  }
-
-  /* An end-aligned column: the words meet the same edge the values below them do,
-     and the arrow leads rather than trails, which is what keeps it off that edge.
-     Every design system states this rule the same way - a heading follows its
-     column's alignment, and the sort mark moves to the other side to let it. */
-  th:nth-child(5) .table-sort-button {
-    flex-direction: row-reverse;
-    justify-content: flex-start;
-  }
-
-  th:last-child,
-  td:last-child {
-    text-align: center;
-    width: 3rem;
-  }
-
-  /* The heading's row, its button and its arrow are shared - see `.table-heading`,
-     `.table-sort-button` and `.sort-indicator` in `app.css`. What was here was a
-     second copy of the button's reset, a fourth copy of the arrow's rules written
-     against a raw `<svg>`, and a `:global(.header-filter)` addressed to a class
-     the popover stopped rendering. */
-
-  .relationship-meta,
-  time {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    line-height: 1.25;
-  }
-
-  .relationship-count,
-  .relationship-meta {
-    display: block;
-  }
-
-  .relationship-count {
-    font-size: var(--font-size-body);
-  }
-
-  .relationship-meta {
-    margin-top: 0.15rem;
-  }
-
-  time {
-    white-space: nowrap;
-  }
-
-  .row-actions {
-    padding-inline: var(--space-1);
   }
 
   .reason-field {
@@ -1161,7 +967,7 @@
     background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--radius-control);
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     padding: var(--space-3);
     resize: vertical;
@@ -1171,20 +977,5 @@
     color: var(--danger);
     font-size: var(--font-size-meta);
     margin: var(--space-3) 0 0;
-  }
-
-  /* Only where the column headings are not: they carry the same two filters while
-     the table is a table. */
-  .access-toolbar :global(.tools-trigger) {
-    display: none;
-  }
-
-  @media (max-width: 64rem) {
-    .access-toolbar :global(.tools-trigger) {
-      display: inline-flex;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
   }
 </style>

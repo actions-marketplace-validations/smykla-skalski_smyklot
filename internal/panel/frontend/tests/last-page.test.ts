@@ -31,19 +31,19 @@ function storedWith(side: PanelSide, value: string): Storage {
 }
 
 describe('the page each side was left on [Unit]', () => {
-  it('reads back the workspace page it was given, pane and all', () => {
+  it('reads back the workspace page it was given, repository and all', () => {
     const storage = memoryStorage();
     writeLastPage(
       'workspace',
-      '/i/[account]/repositories/[repository]/[[section=repositorySection]]',
-      { account: 'acme', repository: 'api-gateway', section: 'commands' },
+      '/workspace/[account]/repositories/[repository]',
+      { account: 'acme', repository: 'api-gateway' },
       storage,
     );
 
     expect(readLastWorkspacePage(storage)).toEqual({
       account: 'acme',
       view: 'repositories',
-      repository: { name: 'api-gateway', section: 'commands' },
+      repository: { name: 'api-gateway' },
     });
   });
 
@@ -56,24 +56,24 @@ describe('the page each side was left on [Unit]', () => {
 
   it('keeps the two sides apart', () => {
     const storage = memoryStorage();
-    writeLastPage('console', '/root/installations', {}, storage);
+    writeLastPage('console', '/root/workspaces', {}, storage);
     writeLastPage(
       'workspace',
-      '/i/[account]/[view=panelView]',
-      { account: 'acme', view: 'defaults' },
+      '/workspace/[account]/[view=panelView]',
+      { account: 'acme', view: 'settings' },
       storage,
     );
 
-    expect(readLastConsolePage(storage)).toEqual({ rootView: 'installations' });
-    expect(readLastWorkspacePage(storage)).toEqual({ account: 'acme', view: 'defaults' });
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'workspaces' });
+    expect(readLastWorkspacePage(storage)).toEqual({ account: 'acme', view: 'settings' });
   });
 
   it('drops pages remembered under removed route vocabulary', () => {
     const storage = memoryStorage();
     writeLastPage(
       'workspace',
-      '/i/[account]/[view=panelView]',
-      { account: 'acme', view: 'settings' },
+      '/workspace/[account]/[view=panelView]',
+      { account: 'acme', view: 'defaults' },
       storage,
     );
 
@@ -88,8 +88,10 @@ describe('the page each side was left on [Unit]', () => {
     writeLastPage('console', '/root/runtime/service', {}, storage);
     expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-service' });
 
+    /* A page remembered before the database joined Service health reads back as
+       the page it now lands on, rather than as a leaf that no longer exists. */
     writeLastPage('console', '/root/runtime/database', {}, storage);
-    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-database' });
+    expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-service' });
 
     writeLastPage('console', '/root/runtime/settings', {}, storage);
     expect(readLastConsolePage(storage)).toEqual({ rootView: 'runtime-settings' });
@@ -99,8 +101,8 @@ describe('the page each side was left on [Unit]', () => {
     const storage = memoryStorage();
     writeLastPage(
       'console',
-      '/i/[account]/[view=panelView]',
-      { account: 'acme', view: 'defaults' },
+      '/workspace/[account]/[view=panelView]',
+      { account: 'acme', view: 'settings' },
       storage,
     );
 
@@ -109,17 +111,23 @@ describe('the page each side was left on [Unit]', () => {
 
   it.each([
     ['nothing stored', memoryStorage()],
-    ['a value that is not JSON', storedWith('workspace', '/i/acme/settings')],
-    ['a value that is not an object', storedWith('workspace', '"/i/acme/settings"')],
+    ['a value that is not JSON', storedWith('workspace', '/workspace/acme/settings')],
+    ['a value that is not an object', storedWith('workspace', '"/workspace/acme/settings"')],
     [
       'a route id this build does not have',
-      storedWith('workspace', '{"id":"/i/[account]/billing","params":{"account":"acme"}}'),
+      storedWith('workspace', '{"id":"/workspace/[account]/billing","params":{"account":"acme"}}'),
     ],
     [
       'parameters that are not a record of strings',
-      storedWith('workspace', '{"id":"/i/[account]/[view=panelView]","params":{"account":7}}'),
+      storedWith(
+        'workspace',
+        '{"id":"/workspace/[account]/[view=panelView]","params":{"account":7}}',
+      ),
     ],
-    ['no parameters at all', storedWith('workspace', '{"id":"/i/[account]/[view=panelView]"}')],
+    [
+      'no parameters at all',
+      storedWith('workspace', '{"id":"/workspace/[account]/[view=panelView]"}'),
+    ],
   ])('reads %s as nothing remembered', (_case, storage) => {
     expect(readLastWorkspacePage(storage)).toBeNull();
   });
@@ -127,7 +135,7 @@ describe('the page each side was left on [Unit]', () => {
   it('reads nothing and writes nothing when the tab has no storage', () => {
     expect(readLastWorkspacePage(null)).toBeNull();
     expect(readLastConsolePage(null)).toBeNull();
-    expect(() => writeLastPage('console', '/root/installations', {}, null)).not.toThrow();
+    expect(() => writeLastPage('console', '/root/workspaces', {}, null)).not.toThrow();
   });
 
   it('costs nothing but the memory when the store refuses the write', () => {
@@ -136,6 +144,6 @@ describe('the page each side was left on [Unit]', () => {
       throw new DOMException('QuotaExceededError');
     };
 
-    expect(() => writeLastPage('console', '/root/installations', {}, storage)).not.toThrow();
+    expect(() => writeLastPage('console', '/root/workspaces', {}, storage)).not.toThrow();
   });
 });

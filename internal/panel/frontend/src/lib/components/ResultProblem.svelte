@@ -1,6 +1,5 @@
 <script lang="ts">
   import Button from './Button.svelte';
-  import Icon from './Icon.svelte';
 
   const {
     title,
@@ -23,6 +22,21 @@
   } = $props();
 </script>
 
+<!--
+@component
+A request that failed, and the retry. Distinct from `EmptyState`, which is a
+collection that succeeded and holds nothing: an empty list is not an error and drawing
+it as one teaches a reader to distrust the page.
+
+`overContent` is the whole design. A refresh that fails over a table that is already
+loaded has not made that table wrong, so the failure becomes a line ABOVE the rows
+rather than a screen in place of them - the reader keeps what they were reading, and
+the rows already fetched stay exactly where they are.
+
+`busy` is the retry reporting on itself, so a second press cannot be sent while the
+first is still in flight.
+-->
+
 {#snippet retry()}
   <Button onclick={onRetry} disabled={busy}>
     {busy ? 'Trying again…' : 'Try again'}
@@ -39,14 +53,10 @@
   </div>
 {:else}
   <!-- The same shape the empty state has, because it stands in the same place and
-       answers the same question. Only the mark's tone and glyph differ: this one
-       is a thing that went wrong rather than a thing that is not there. -->
-  <div class="table-notice" role="alert">
-    <span class="table-notice-mark alarmed" aria-hidden="true"
-      ><Icon name="warning" size={22} /></span
-    >
-    <strong>{title}</strong>
-    <span>{problem}</span>
+       answers the same question. `is-error` is the whole difference: a thing that
+       went wrong rather than a thing that is not there. -->
+  <div class="state-panel is-error" role="alert">
+    <span><strong>{title}.</strong> {problem}</span>
     {@render retry()}
   </div>
 {/if}
@@ -56,9 +66,9 @@
      its place. */
   .result-notice {
     align-items: center;
-    background: var(--stop-tint);
+    background: var(--danger-tint);
     border-radius: var(--r-ctl);
-    color: var(--stop);
+    color: var(--danger);
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-2) var(--space-3);

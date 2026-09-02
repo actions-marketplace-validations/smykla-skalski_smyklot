@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ import (
 // needs struct tags, so it marshalled under its Go field names, and the panel read
 // `enabled` and `disabled` off an object that spelled them `Enabled` and `Disabled`.
 // Adding two undefined numbers is what wrote "of NaN enabled" across the Root
-// console's installations table.
+// console's workspaces table.
 //
 // Nothing caught it. The types compile either way, the Go tests asserted on the
 // struct rather than the JSON, and the development fixture spells these fields the
@@ -135,7 +134,7 @@ func seedPanelWireNameRows(t *testing.T, harness *panelHarness) {
 	if _, err := harness.store.CreateQueueItem(t.Context(), workqueue.Item{
 		ID: "wire-name-queue", Kind: workqueue.KindPathRefresh,
 		Lane: workqueue.LaneMaintenance, TargetID: &targetID,
-		Title: "Refresh repository paths", State: workqueue.StateReady,
+		Title: "Refresh which paths are watched", State: workqueue.StateReady,
 		Priority: workqueue.PriorityNormal, WindowMode: workqueue.WindowRespect,
 		ProfileID: &profileID, NotBefore: harness.now,
 		EligibleAt: harness.now, CreatedAt: harness.now, UpdatedAt: harness.now,
@@ -183,7 +182,7 @@ func panelWireNameProbePaths() []string {
 		"/panel/api/v1/targets/" + target + "/schedule-requests",
 		"/panel/api/v1/root/overview",
 		"/panel/api/v1/root/pending-ci/7",
-		"/panel/api/v1/root/installations",
+		"/panel/api/v1/root/workspaces",
 		"/panel/api/v1/root/access/users",
 		"/panel/api/v1/root/access/invitations",
 		"/panel/api/v1/root/history/audit",
@@ -196,27 +195,34 @@ func panelWireNameProbePaths() []string {
 		"/panel/api/v1/root/schedule-profiles",
 		"/panel/api/v1/root/job-policies",
 		"/panel/api/v1/root/schedule-requests",
-		"/panel/api/v1/root/installations/" + target + "/elevation",
-		"/panel/api/v1/root/installations/" + target + "/settings",
-		"/panel/api/v1/root/installations/" + target + "/settings/checkpoints/baseline",
-		"/panel/api/v1/root/installations/" + target + "/settings/checkpoints/1",
-		"/panel/api/v1/root/installations/" + target + "/repositories",
-		"/panel/api/v1/root/installations/" + target + "/repositories/" + repository,
-		"/panel/api/v1/root/installations/" + target + "/users",
-		"/panel/api/v1/root/installations/" + target + "/users/" + account + "/decisions",
-		"/panel/api/v1/root/installations/" + target + "/user-suggestions",
-		"/panel/api/v1/root/installations/" + target + "/invitations",
-		"/panel/api/v1/root/installations/" + target + "/audit",
-		"/panel/api/v1/root/installations/" + target + "/failures",
+		"/panel/api/v1/root/workspaces/" + target + "/elevation",
+		"/panel/api/v1/root/workspaces/" + target + "/settings",
+		"/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/baseline",
+		"/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/1",
+		"/panel/api/v1/root/workspaces/" + target + "/repositories",
+		"/panel/api/v1/root/workspaces/" + target + "/repositories/" + repository,
+		"/panel/api/v1/root/workspaces/" + target + "/users",
+		"/panel/api/v1/root/workspaces/" + target + "/users/" + account + "/decisions",
+		"/panel/api/v1/root/workspaces/" + target + "/user-suggestions",
+		"/panel/api/v1/root/workspaces/" + target + "/invitations",
+		"/panel/api/v1/root/workspaces/" + target + "/audit",
+		"/panel/api/v1/root/workspaces/" + target + "/failures",
 	}
 }
 
 // The event stream is not JSON and cannot be read by a request that expects a
 // body to end, so it is named here rather than left to look like an oversight.
-var notJSONRoutes = map[string]bool{"/api/v1/events": true}
+// The two readable routes that answer with something other than JSON: the event
+// stream, and the audit export, whose field names are its CSV header and are
+// checked where that header is.
+var notJSONRoutes = map[string]bool{
+	"/api/v1/events":                     true,
+	"/api/v1/root/history/audit.csv":     true,
+	"/api/v1/targets/{target}/audit.csv": true,
+}
 
 // The wildcards the readable routes use that the authorization matrix has no
-// reason to name, since it only walks the installation-scoped ones. A section
+// reason to name, since it only walks the workspace-scoped ones. A section
 // wildcard stands for one of its sections; the probe list above asks for both.
 var readableRoutePlaceholders = map[string]string{
 	"{token}":   "abcdefghijklmnopqrstuvwxyzABCDEFGH_01234567",
@@ -255,10 +261,7 @@ func assertWireNames(t *testing.T, where string, value any) {
 // reason: the new endpoint works, its own specs pass, and nobody asks what its
 // fields are called.
 func TestPanelWireNameProbesCoverEveryReadableRoute(t *testing.T) {
-	source, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatalf("read server.go: %v", err)
-	}
+	source := panelSources(t)
 	pattern := regexp.MustCompile(`"GET "\+base\+"(/api/v1/[^"]*)"`)
 
 	probed := map[string]bool{}
@@ -266,7 +269,7 @@ func TestPanelWireNameProbesCoverEveryReadableRoute(t *testing.T) {
 		probed[path] = true
 	}
 
-	for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
+	for _, match := range pattern.FindAllStringSubmatch(source, -1) {
 		if notJSONRoutes[match[1]] {
 			continue
 		}

@@ -20,7 +20,7 @@ describe('configured file formatting in the development panel', () => {
     page.on('pageerror', (error) => crashes.push(error.message));
 
     try {
-      await visit(page, `${panel.origin}/i/${panel.account}/sync/files/renovate.json`, {
+      await visit(page, `${panel.origin}/workspace/${panel.account}/sync/files/renovate.json`, {
         ready: '.format-status',
       });
 
@@ -120,12 +120,27 @@ describe('configured file formatting in the development panel', () => {
         ];
         const quoteLabels = [...quoteStyle.querySelectorAll('label')];
 
+        const selectedIndex = quoteLabels.indexOf(selected);
+
         return {
           arraysWidth: width('Arrays'),
-          firstFillCorners: segmentCorners(getComputedStyle(quoteLabels[0]!, '::before')),
+          /* Each fill, with where it stands relative to the thumb, so the law can be
+             asserted for every segment rather than for three named ones. */
+          fills: quoteLabels.map((label, index) => {
+            const style = getComputedStyle(label, '::before');
+            return {
+              corners: segmentCorners(style),
+              first: index === 0,
+              /* A logical inset, so this reads the same under RTL. */
+              insets: [style.insetInlineStart, style.insetInlineEnd],
+              last: index === quoteLabels.length - 1,
+              selected: index === selectedIndex,
+              /* Which side the thumb is on, if it is beside this segment at all. */
+              thumbSide:
+                index === selectedIndex - 1 ? 'end' : index === selectedIndex + 1 ? 'start' : null,
+            };
+          }),
           keyOrderWidth: width('Key Order'),
-          lastFillCorners: segmentCorners(getComputedStyle(quoteLabels.at(-1)!, '::before')),
-          middleFillCorners: segmentCorners(getComputedStyle(selected, '::before')),
           quoteSegmentSpread: Math.max(...quoteSegments) - Math.min(...quoteSegments),
           thumbCorners: segmentCorners(getComputedStyle(thumb)),
           thumbLeftDelta: Math.abs(thumbBox.left - selectedBox.left),
@@ -137,20 +152,49 @@ describe('configured file formatting in the development panel', () => {
       expect(geometry.quoteSegmentSpread).toBeGreaterThan(1);
       expect(geometry.thumbLeftDelta).toBeLessThanOrEqual(0.05);
       expect(geometry.thumbWidthDelta).toBeLessThanOrEqual(0.05);
-      expect(geometry.middleFillCorners).toEqual(['0px', '0px', '0px', '0px']);
-      expect(geometry.thumbCorners).toEqual(['0px', '0px', '0px', '0px']);
-      expect(geometry.firstFillCorners[0]).not.toBe('0px');
-      expect(geometry.firstFillCorners.slice(1)).toEqual([
-        '0px',
-        '0px',
-        geometry.firstFillCorners[0],
-      ]);
-      expect(geometry.lastFillCorners.slice(0, 3)).toEqual([
-        '0px',
-        geometry.lastFillCorners[2],
-        geometry.lastFillCorners[2],
-      ]);
-      expect(geometry.lastFillCorners[3]).toBe('0px');
+      /* The thumb floats, so it is rounded on all four. It used to square the corners
+         facing a neighbour and round only the pair facing the track's end, which is
+         right for something that reaches that end and wrong everywhere else: at any
+         option but the first or last it was square on both sides, and on a two-option
+         control it sat mid-track with one squared edge. Read off the thumb rather than
+         written down, so the number stays the stylesheet's to pick. */
+      const [radius] = geometry.thumbCorners;
+      expect(radius).not.toBe('0px');
+      expect(geometry.thumbCorners).toEqual([radius, radius, radius, radius]);
+
+      /* A fill squares the side facing a neighbour that DRAWS - the selected option,
+         which wears the thumb - and runs on underneath it by that same radius, because
+         the thumb is rounded and its curve leaves a wedge of bare track belonging to
+         neither box. Everywhere else it keeps all four corners and bleeds nowhere: a
+         segment whose neighbour draws nothing has nothing to be flush against, and a
+         bleed under an ordinary neighbour would be a hover reaching into a segment
+         nobody is pointing at.
+
+         The selected option's own fill is excluded from both. It lies under the thumb
+         and is invisible until the thumb itself is hovered, at which point a bleed is
+         six pixels of hover reaching out past the thumb onto the option beside it.
+
+         Corners read in logical order: start-start, start-end, end-end, end-start. */
+      for (const [index, fill] of geometry.fills.entries()) {
+        const facing = fill.selected ? null : fill.thumbSide;
+        expect(
+          fill.corners,
+          `segment ${index} corners (thumb ${facing ?? 'not adjacent'})`,
+        ).toEqual([
+          facing === 'start' ? '0px' : radius,
+          facing === 'end' ? '0px' : radius,
+          facing === 'end' ? '0px' : radius,
+          facing === 'start' ? '0px' : radius,
+        ]);
+        expect(fill.insets, `segment ${index} bleed`).toEqual([
+          facing === 'start' ? `-${radius}` : '0px',
+          facing === 'end' ? `-${radius}` : '0px',
+        ]);
+      }
+      expect(
+        geometry.fills.some((fill) => fill.thumbSide !== null),
+        'no segment was adjacent to the thumb, so the bleed rule went unchecked',
+      ).toBe(true);
       expect(geometry.wrapped).toEqual([]);
       expect(crashes).toEqual([]);
     } finally {

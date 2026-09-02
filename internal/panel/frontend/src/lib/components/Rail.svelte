@@ -1,38 +1,18 @@
-<script module lang="ts">
-  /**
-   * The identity hue: hashed once from the login and rendered as `data-h`.
-   * The stylesheet does everything else - tint, line, ink and the selected
-   * aurora all derive from this one number in OKLCH.
-   */
-  export function workspaceHue(login: string): number {
-    let hash = 5381;
-    for (let i = 0; i < login.length; i += 1) {
-      hash = (hash * 33) ^ login.charCodeAt(i);
-    }
-    return (hash >>> 0) % 360;
-  }
-
-  /** "Smykla Skalski" -> "SS", "bartsmykla" -> "B", "Oak & Pine" -> "OP". */
-  export function workspaceInitials(name: string): string {
-    const words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 0);
-    if (words.length === 0) return '?';
-    return words
-      .slice(0, 2)
-      .map((word) => word[0]!.toUpperCase())
-      .join('');
-  }
-</script>
-
 <script lang="ts">
-  import haloUrl from '../../assets/smyklot-halo.svg';
+  /* The BRAND cut of the halo, which is the one the rail wears: a solid teal ring and
+     the interior painted. The other cut leaves the interior transparent and draws the
+     rainbow ring, and it is built for one page - the invitation's night sky reads
+     through the emblem, so the mark there is a window rather than a badge. At 34px on a
+     sidebar ground the window showed the sidebar, and the rainbow ring read as noise. */
+  import haloUrl from '../../assets/smyklot-halo-brand.svg';
 
   import type { PanelTarget, PanelViewer } from '../types';
   import type { ThemeDisplay } from '../preferences';
+  import { workspaceHue, workspaceInitials } from '../workspace-mark.js';
+  import AccountMenu from './AccountMenu.svelte';
   import Avatar from './Avatar.svelte';
-  import ClippedLabel from './ClippedLabel.svelte';
   import Icon from './Icon.svelte';
-  import Popover from './Popover.svelte';
-  import ThemeSwitch from './ThemeSwitch.svelte';
+  import WorkspaceMenu from './WorkspaceMenu.svelte';
 
   const {
     viewer,
@@ -53,8 +33,6 @@
     theme,
     onSelectTheme,
     onSignOut,
-    pagesOpen = false,
-    onTogglePages,
   }: {
     viewer: PanelViewer | null;
     targets: readonly PanelTarget[];
@@ -76,9 +54,6 @@
     theme: ThemeDisplay;
     onSelectTheme: (theme: ThemeDisplay) => void;
     onSignOut: () => void | Promise<void>;
-    /** Narrow shells only: whether the pages drawer is open. */
-    pagesOpen?: boolean;
-    onTogglePages?: () => void;
   } = $props();
 
   /* Workspaces are the one rail section that grows without bound. The rail
@@ -147,19 +122,6 @@
   );
 
   let moreOpen = $state(false);
-  let query = $state('');
-  const foldMatches = $derived.by(() => {
-    const needle = query.trim().toLowerCase();
-    if (needle === '') return folded;
-    return folded.filter((target) => {
-      const name = target.account.display_name || target.account.login;
-      return (
-        name.toLowerCase().includes(needle) ||
-        target.account.login.toLowerCase().includes(needle) ||
-        workspaceInitials(name).toLowerCase().includes(needle)
-      );
-    });
-  });
 
   function nameOf(target: PanelTarget): string {
     return target.account.display_name || target.account.login;
@@ -215,21 +177,22 @@
   );
 </script>
 
+<!--
+@component
+The workspace switcher, and the way into the Root console. It is the outermost
+navigation the panel has: everything else moves within a workspace, and this is what
+changes which one you are in.
+
+A dot marks a workspace with an unsaved draft, which is how a reader who has left a
+settings page open somewhere else finds their way back to it - the same fact the draft
+notice carries, said where the workspace is chosen.
+
+The Root entry is drawn only for a viewer who has one, and drawing it disabled instead
+would be telling everybody else about a console they cannot open.
+-->
+
 <nav class="rail" bind:this={railEl} aria-label="Consoles">
   <img class="rail-halo" src={haloUrl} alt="Smyklot" width="34" height="34" decoding="async" />
-
-  {#if onTogglePages !== undefined}
-    <button
-      class="rail-tile rail-pages"
-      type="button"
-      data-tip="Pages"
-      aria-expanded={pagesOpen}
-      aria-label="Pages"
-      onclick={onTogglePages}
-    >
-      <Icon name={pagesOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={18} />
-    </button>
-  {/if}
 
   {#each shown as target (target.id)}
     <a
@@ -261,17 +224,13 @@
 
   {#if folded.length > 0}
     <span class="rail-more-wrap">
-      <Popover
+      <WorkspaceMenu
         bind:open={moreOpen}
-        side="right"
-        align="start"
-        offset={8}
-        role="menu"
+        targets={folded}
+        {targetHref}
+        {onSelectTarget}
+        {dirtyTargetIds}
         label="More workspaces"
-        skin="sidebar"
-        itemSelector=".menu-item"
-        focusSelector=".menu-search input"
-        onclose={() => (query = '')}
       >
         {#snippet trigger(attributes)}
           <button
@@ -289,48 +248,7 @@
             {/if}
           </button>
         {/snippet}
-        <div class="console-menu" role="none">
-          <div class="menu-search">
-            <Icon name="search" size={12} />
-            <input
-              type="search"
-              placeholder="Find a workspace"
-              aria-label="Find a workspace"
-              bind:value={query}
-            />
-          </div>
-          <div class="menu-scroll" role="none">
-            {#each foldMatches as target (target.id)}
-              <a
-                class="menu-item"
-                class:has-dirty={targetIsDirty(target)}
-                role="menuitem"
-                href={targetHref(target)}
-                aria-label={dirtyTip(nameOf(target), targetIsDirty(target))}
-                onclick={(event) => {
-                  moreOpen = false;
-                  selectFromClick(event, target);
-                }}
-              >
-                {#if target.account.avatar_url !== null}
-                  <Avatar account={target.account} size={20} shape="workspace" />
-                {:else}
-                  <span class="ws-mini" data-h={workspaceHue(target.account.login)}>
-                    <span class="t">{workspaceInitials(nameOf(target))}</span>
-                  </span>
-                {/if}
-                <ClippedLabel class="mi-label" text={nameOf(target)} />
-                {#if targetIsDirty(target)}
-                  <span class="rail-dirty menu-dirty" aria-hidden="true">*</span>
-                {/if}
-              </a>
-            {/each}
-          </div>
-          {#if foldMatches.length === 0}
-            <div class="menu-hint">No workspace matches</div>
-          {/if}
-        </div>
-      </Popover>
+      </WorkspaceMenu>
     </span>
   {/if}
 
@@ -347,7 +265,7 @@
       aria-current={rootMode ? 'true' : undefined}
       onclick={enterRootFromClick}
     >
-      <Icon name="shield" size={18} />
+      <Icon name="shield" size="md" />
       {#if rootDirty}
         <span class="rail-dirty" aria-hidden="true">*</span>
       {/if}
@@ -365,22 +283,14 @@
     aria-current={inboxActive ? 'true' : undefined}
     onclick={selectInboxFromClick}
   >
-    <Icon name="notifications" size={18} />
+    <Icon name="notifications" size="md" />
     {#if unreadCount > 0}
       <span class="rail-badge" aria-hidden="true"><span class="t">{unreadLabel}</span></span>
     {/if}
   </a>
 
   {#if viewer !== null}
-    <Popover
-      side="right"
-      align="end"
-      offset={8}
-      role="menu"
-      label="Account"
-      skin="sidebar"
-      itemSelector=".menu-item"
-    >
+    <AccountMenu {viewer} {theme} {onSelectTheme} {onSignOut} name="rail-theme">
       {#snippet trigger(attributes)}
         <button
           {...attributes}
@@ -396,17 +306,7 @@
           {/if}
         </button>
       {/snippet}
-      <div class="console-menu account-menu" role="none">
-        <div class="menu-eyebrow">{viewerName} - @{viewer.account.login}</div>
-        <div class="menu-theme-row">
-          <ThemeSwitch name="rail-theme" {theme} surface="sidebar" onSelect={onSelectTheme} />
-        </div>
-        <div class="menu-sep" role="none"></div>
-        <button class="menu-item is-danger" role="menuitem" onclick={() => void onSignOut()}>
-          <span class="mi-label">Sign out</span>
-        </button>
-      </div>
-    </Popover>
+    </AccountMenu>
   {/if}
 </nav>
 
@@ -419,14 +319,28 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    /* The mock's two numbers, and they are a pair: 8px between tiles and 12px of pad
+       above the first one. At 10 and 14 the mark sat 2px lower than the mock's and every
+       tile below it drifted a further 2px, so by the account menu at the foot the rail
+       was a different rail. */
+    gap: var(--space-2);
     height: 100dvh;
     inline-size: 60px;
     overflow: visible;
-    padding-block: 14px;
+    padding-block: var(--space-3);
     position: sticky;
     top: 0;
     z-index: var(--layer-rail);
+  }
+
+  /* THE RAIL LEAVES ON A PHONE. Said here rather than only in `app.css`, because a
+     scoped `.rail` carries the component's hash and outranks the shared one at the
+     same class count - so the sheet asked for this and the component went on drawing
+     itself beside a 320px page. The top bar does all three of its jobs there. */
+  @media (max-width: 47.9375rem) {
+    .rail {
+      display: none;
+    }
   }
 
   .rail > :global(:not(.rail-gap)) {
@@ -473,26 +387,27 @@
     color: var(--sidebar-text);
   }
 
+  /* The ground is this tile's own; the sink, the scale and the crease come from the
+     shell press law in `app.css`, which this tile now takes whole. */
   .rail-tile:active {
     background: var(--sidebar-item-pressed);
-    box-shadow: var(--pressed-inset);
-    translate: 0 1px;
   }
 
+  /* The solid selection pair, like the nav thumb: the old near-white fill under this
+     inverse ink left the console shield white on white in the light workspace. */
   .rail-tile.is-active {
-    background: var(--sidebar-thumb);
-    border-color: var(--sidebar-border);
+    background: var(--sidebar-active-bg);
+    border-color: transparent;
     box-shadow: var(--sidebar-thumb-shadow);
     color: var(--sidebar-item-active-text);
   }
 
-  .rail-tile.is-active:hover {
-    translate: 0 -1px;
-  }
-
+  /* Both, as the nav thumb takes both: the selection's own throw settles to its pressed
+     value and the crease of a held surface is laid inside it. Stating only the throw
+     replaced the crease the shell law gives every other tile, so the one tile a reader
+     presses most was the one that did not read as going in. */
   .rail-tile.is-active:active {
-    box-shadow: var(--sidebar-thumb-shadow-pressed);
-    translate: 0 1px;
+    box-shadow: var(--sidebar-pressed-inset), var(--sidebar-thumb-shadow-pressed);
   }
 
   /* ---------- Workspace identity paint ----------
@@ -563,13 +478,11 @@
     background: var(--ws-ground);
     border-color: light-dark(oklch(42% 0.14 var(--ws-h)), oklch(64% 0.12 var(--ws-h)));
     color: #fff;
-    translate: none;
   }
 
   .rail-ws.is-active:active {
     --ws-ground: oklch(43% 0.14 var(--ws-h));
-    box-shadow: var(--pressed-inset);
-    translate: 0 1px;
+    box-shadow: var(--sidebar-pressed-inset);
   }
 
   .rail-ws.is-active::before {
@@ -598,7 +511,7 @@
 
   /* Alive only under the pointer - zero cost at idle. */
   .rail-ws.is-active:hover::before {
-    animation: ws-turn 9s linear infinite;
+    animation: ws-turn var(--rhythm-turn) var(--ease-linear) infinite;
   }
 
   @keyframes ws-turn {
@@ -628,10 +541,12 @@
     text-box: trim-both cap alphabetic;
   }
 
-  /* Open, the trigger holds the same ground an active tile does. */
+  /* Open, the trigger holds the same ground an active tile does - the active PAIR,
+     not the fill alone: the ink is inverse, and over a near-white fill "+N" was
+     white on white. */
   .rail-more.menu-open {
-    background: var(--sidebar-thumb);
-    border-color: var(--sidebar-border);
+    background: var(--sidebar-active-bg);
+    border-color: transparent;
     box-shadow: var(--sidebar-thumb-shadow);
     color: var(--sidebar-item-active-text);
   }
@@ -665,7 +580,7 @@
     font-size: 0.625rem;
     font-variant-numeric: tabular-nums;
     justify-content: center;
-    line-height: 1;
+    line-height: var(--leading-flat);
     min-inline-size: 14px;
     padding: 0 4px;
     position: absolute;
@@ -676,45 +591,6 @@
   .rail-badge .t {
     display: block;
     text-box: trim-both cap alphabetic;
-  }
-
-  /* The rail cannot grow when state appears. This keyed mark sits over the
-     existing tile/menu geometry and remains legible without its warning ink. */
-  .rail-dirty {
-    align-items: center;
-    background: var(--sidebar-bg);
-    block-size: 12px;
-    border: 1px solid currentColor;
-    border-radius: 3px;
-    box-sizing: border-box;
-    color: var(--warning);
-    display: inline-flex;
-    font-family: var(--mono);
-    font-size: 0.625rem;
-    font-weight: 800;
-    inline-size: 12px;
-    inset-block-start: -3px;
-    inset-inline-end: -3px;
-    justify-content: center;
-    line-height: 1;
-    position: absolute;
-    text-box: trim-both cap alphabetic;
-    z-index: 3;
-  }
-
-  .menu-item.has-dirty {
-    position: relative;
-  }
-
-  .menu-item.has-dirty :global(.mi-label) {
-    padding-inline-end: 16px;
-  }
-
-  .menu-dirty {
-    background: var(--sidebar-popover-bg);
-    inset-block-start: 50%;
-    inset-inline-end: 8px;
-    translate: 0 -50%;
   }
 
   /* Rail tooltips: the name on hover, popover material. */
@@ -734,7 +610,7 @@
     top: 50%;
     translate: 0 -50%;
     white-space: nowrap;
-    z-index: 60;
+    z-index: var(--layer-flyout);
   }
 
   .rail-tile:hover::after,
@@ -746,21 +622,6 @@
      the tip would. */
   .rail-tile[aria-expanded='true']::after {
     content: none;
-  }
-
-  .rail-pages {
-    display: none;
-  }
-
-  @media (max-width: 64rem) {
-    .rail {
-      position: relative;
-      z-index: var(--layer-rail);
-    }
-
-    .rail-pages {
-      display: inline-flex;
-    }
   }
 
   /* On a touch screen the name-on-hover never fires, so the tile's ::after
@@ -780,160 +641,6 @@
       pointer-events: auto;
       translate: none;
     }
-  }
-
-  /* ---------- The rail's menus: console material ---------- */
-  .console-menu {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    min-inline-size: 13rem;
-    max-inline-size: min(24rem, calc(100vw - 24px));
-    padding: var(--space-1);
-    /* Rows breathe 2px apart, so a hovered row and its chosen neighbour never
-       read as one fused pill. */
-    row-gap: 2px;
-  }
-
-  .console-menu :global(.menu-item),
-  .console-menu .menu-item {
-    align-items: center;
-    background: none;
-    border: 0;
-    border-radius: 6px;
-    block-size: 32px;
-    color: var(--sidebar-menu-text);
-    cursor: pointer;
-    display: flex;
-    font-size: var(--font-size-control);
-    gap: var(--space-2);
-    inline-size: 100%;
-    padding-inline: var(--space-3);
-    text-align: start;
-    text-decoration: none;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
-  }
-
-  .console-menu .menu-item:hover {
-    background: var(--sidebar-menu-hover);
-  }
-
-  .console-menu .menu-item:focus-visible {
-    background: var(--sidebar-menu-hover);
-    outline: none;
-  }
-
-  .console-menu .menu-item:active {
-    background: var(--sidebar-menu-pressed);
-    box-shadow: var(--pressed-inset);
-    translate: 0 1px;
-  }
-
-  .console-menu .menu-item.is-danger {
-    color: var(--sidebar-stop);
-  }
-
-  .console-menu .menu-item.is-danger:hover,
-  .console-menu .menu-item.is-danger:focus-visible {
-    background: var(--sidebar-stop-tint);
-  }
-
-  /* No cap trim here: a menu label is a name with descenders, and the trim
-     cut them off. The flex row centres it on its own. Anchored through the
-     item because the span may be ClippedLabel's markup, outside this
-     component's scope. */
-  .menu-item :global(.mi-label),
-  .mi-label {
-    min-inline-size: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .menu-eyebrow {
-    color: var(--sidebar-menu-muted);
-    font-size: var(--font-size-micro);
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    line-height: 16px;
-    padding: var(--space-2) var(--space-3) var(--space-1);
-    text-transform: uppercase;
-  }
-
-  .menu-sep {
-    background: var(--sidebar-popover-border);
-    block-size: 1px;
-    margin: var(--space-1) calc(var(--space-1) * -1);
-  }
-
-  .menu-theme-row {
-    display: flex;
-    padding: var(--space-1) var(--space-2) var(--space-2);
-  }
-
-  .menu-search {
-    align-items: center;
-    /* Declared 36, and the seam is a drawn line in the gap below, not part of
-       the row's box - a border made the row 37 and the text ride 0.5 high. */
-    block-size: 36px;
-    box-shadow: 0 1px 0 var(--sidebar-popover-border);
-    color: var(--sidebar-menu-muted);
-    display: flex;
-    gap: var(--space-2);
-    margin: calc(var(--space-1) * -1) calc(var(--space-1) * -1) var(--space-1);
-    padding: 0 var(--space-3);
-  }
-
-  .menu-search input {
-    background: none;
-    block-size: 100%;
-    border: 0;
-    color: var(--sidebar-menu-text);
-    flex: 1;
-    font-size: var(--font-size-control);
-    outline: none;
-    padding: 0;
-  }
-
-  .menu-search input::placeholder {
-    color: var(--sidebar-menu-muted);
-  }
-
-  .menu-scroll {
-    display: grid;
-    max-block-size: 288px;
-    overflow: auto;
-    overscroll-behavior: contain;
-  }
-
-  .menu-hint {
-    color: var(--sidebar-menu-muted);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    line-height: 16px;
-    padding: var(--space-1) var(--space-3) var(--space-2);
-  }
-
-  /* The workspace initial at menu size: the identity at rest voice, 20px. */
-  .ws-mini {
-    align-items: center;
-    background: var(--ws-tint);
-    border-radius: 6px;
-    block-size: 20px;
-    color: var(--ws-ink);
-    display: inline-flex;
-    flex: none;
-    font-size: 0.5625rem;
-    font-weight: 700;
-    inline-size: 20px;
-    justify-content: center;
-  }
-
-  .ws-mini .t {
-    text-box: trim-both cap alphabetic;
   }
 
   @media (prefers-reduced-motion: reduce) {

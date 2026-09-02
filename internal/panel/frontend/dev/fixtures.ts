@@ -37,7 +37,7 @@ import type {
   RootPanelUser,
   PendingCIRequest,
   QueueItem,
-  InstallationRole,
+  WorkspaceRole,
   TargetUserAccess,
   RepositoryDetail,
   RepositorySummary,
@@ -175,14 +175,25 @@ export interface MockState {
   pendingCI: PendingCIRequest[];
   queue: QueueItem[];
   /**
-   * The requests this process has watched all the way through, and may therefore arm again.
+   * The work this process has watched all the way through, and may therefore arm again.
    *
    * The reconciler recycles what it finishes, so the loop can be watched more than once. What it did
    * not finish is the past: the three seeded outcomes are what the Recent table exists to show, and
    * a past that arms itself again is not a past. Keyed off the trigger instead, one of them matched
    * - `pending-ci-3` merged two hours before the process started - and Recent quietly lost a row.
+   *
+   * Both tables are in here. The two id spaces do not meet, and the rule is the same one.
    */
   queueLoop: Set<string>;
+  /**
+   * What each queue row rests as, so the reconciler can put it back.
+   *
+   * The seeds are the shape worth showing - one row running, one waiting on checks, one
+   * retrying after a rate limit - and the reconciler walks each of them to done. Without
+   * somewhere to read the resting shape from, re-arming would have to guess which
+   * waiting state a finished row came from and what it was blocked on.
+   */
+  queueRest: Map<string, QueueItem>;
   runtime: {
     backgroundWorkPaused: boolean;
     behaviorOverride: ConfigValues | null;
@@ -199,22 +210,22 @@ export interface MockState {
     updatedBy?: PanelAccount;
     startedAt: number;
   };
-  installationSettings: {
+  workspaceSettings: {
     checkpointCounter: number;
     checkpoints: Map<string, SettingsCheckpoint>;
   };
   prefs: { values: Record<string, unknown>; rev: number };
-  /** Label sync, per installation: what is configured and what is in flight. */
+  /** Label sync, per workspace: what is configured and what is in flight. */
   sync: Map<string, SyncConfig>;
   /** What each repository adjusts, keyed by repository and kind together. */
   syncOverrides: Map<string, SyncOverride>;
   syncPlans: Map<string, SyncPlan>;
-  /** The fleet: where every covered repository stands, per installation. */
+  /** The fleet: where every covered repository stands, per workspace. */
   syncStatus: Map<string, SyncStatus>;
 }
 
 /**
- * mockSyncConfig answers what an installation has configured, inventing an
+ * mockSyncConfig answers what a workspace has configured, inventing an
  * empty answer the first time. Never configured is not an error and not the
  * same as configured and switched off, which is what the server says too.
  */
@@ -234,7 +245,7 @@ export function seed(
   const iso = (offsetMs: number): string => new Date(now + offsetMs).toISOString();
   const organization = targetSeed({
     id: '2001',
-    installationId: '3001',
+    workspaceId: '3001',
     login: 'smykla-skalski',
     displayName: 'Smykla Skalski',
     type: 'Organization',
@@ -348,7 +359,7 @@ export function seed(
       ...auditSeed(
         'audit-1',
         'ownership.synced',
-        'refreshed installation ownership',
+        "refreshed the workspace's owner list",
         undefined,
         iso(-12 * 60_000),
       ),
@@ -392,7 +403,7 @@ export function seed(
   ];
   const auditActions = [
     ['repository.config_migration.reset', 'reset migrated repository configuration for'],
-    ['target.access.updated', 'updated installation access'],
+    ['target.access.updated', 'updated who may act in the workspace'],
     ['invitation.created', 'invited a workspace member'],
   ] as const;
   for (let index = 0; index < 34; index += 1) {
@@ -413,7 +424,7 @@ export function seed(
   const failureReasons = [
     'repository configuration is invalid',
     'GitHub request timed out after credentials were refreshed',
-    'installation no longer has access to this repository',
+    'Smyklot no longer has access to this repository',
     'command could not be applied to the pull request state',
   ] as const;
   for (let index = 0; index < 27; index += 1) {
@@ -434,7 +445,7 @@ export function seed(
 
   const personal = targetSeed({
     id: '1001',
-    installationId: '3002',
+    workspaceId: '3002',
     login: 'bart',
     displayName: 'Bart Smykla',
     type: 'User',
@@ -480,6 +491,7 @@ export function seed(
     source: 'suspended',
     capabilities: capabilitiesFor('none'),
   });
+  const queue = queueSeeds(iso);
   const sync = new Map([
     [`${organization.value.id}/labels`, syncLabelsSeed(iso)],
     [`${organization.value.id}/settings`, syncSettingsSeed(iso)],
@@ -493,13 +505,13 @@ export function seed(
     targets: [
       organization,
       personal,
-      /* 32 team orgs + the organization + the personal target = 34 installations,
+      /* 32 team orgs + the organization + the personal target = 34 workspaces,
          which is what the approved overview demo's ownership legend adds up to:
          24 fresh (team-11..32 plus those two) + 8 stale + 1 approval + 1 error. */
       ...Array.from({ length: 32 }, (_, index) =>
         targetSeed({
           id: `mock-organization-${index + 1}`,
-          installationId: String(3010 + index),
+          workspaceId: String(3010 + index),
           login: `team-${String(index + 1).padStart(2, '0')}`,
           displayName: `Engineering Team ${String(index + 1).padStart(2, '0')}`,
           type: 'Organization',
@@ -517,8 +529,9 @@ export function seed(
     elevations: new Map(),
     notifications,
     pendingCI: pendingCISeeds(iso),
-    queue: queueSeeds(iso),
+    queue,
     queueLoop: new Set(),
+    queueRest: new Map(queue.map((item) => [item.id, item])),
     runtime: {
       backgroundWorkPaused: false,
       behaviorOverride: null,
@@ -533,7 +546,7 @@ export function seed(
       audit: [],
       startedAt: now,
     },
-    installationSettings: {
+    workspaceSettings: {
       checkpointCounter: 1,
       checkpoints: new Map(),
     },
@@ -594,10 +607,11 @@ export function seed(
           unreadable: false,
         },
       ],
-      /* The design's three renovate adjusters, on the board's own fleet -
-         pseudo repository ids the mock resolves names for. */
+      /* The design's three renovate adjusters, on the three repositories the
+         plan already changes - real ids, so the file page's adjuster list and
+         the board name the same repositories. */
       [
-        '9101/files',
+        '4002/files',
         {
           kind: 'files',
           enabled: null,
@@ -622,7 +636,7 @@ export function seed(
         },
       ],
       [
-        '9102/files',
+        '4005/files',
         {
           kind: 'files',
           enabled: null,
@@ -645,7 +659,7 @@ export function seed(
         },
       ],
       [
-        '9103/files',
+        '4006/files',
         {
           kind: 'files',
           enabled: null,
@@ -689,39 +703,51 @@ export function seed(
 }
 
 /**
- * The fleet the approved design draws: 25 repositories, three carrying the
- * plan's changes (af 2/2/0/2, afi 0/4/1/0, harness 2/1/0/0 - kind totals
- * labels 4 / settings 7 / rulesets 1 / files 2, fourteen in all), one refusal
- * with its reason on the row, and two repositories with kinds switched off.
+ * The fleet, over the repositories this workspace actually holds.
+ *
+ * IT HAS TO BE THE SAME REPOSITORIES. The sync side of this mock named a
+ * different set of twenty-five - `af`, `afi`, `harness` and so on - and only
+ * `smyklot` was in both, so anything joining a repository to its sync state was
+ * invisible here for twenty-seven of twenty-eight. The repository page's own
+ * sentence says "syncing - 4 changes in the open plan" and could never say it.
+ *
+ * The distribution the design draws is what matters and is kept whole: three
+ * repositories carrying the plan's changes (platform-infra 2/2/0/2, api-gateway
+ * 0/4/1/0, auth-service 2/1/0/0 - kind totals labels 4 / settings 7 /
+ * rulesets 1 / files 2, fourteen in all), one refusal with its reason on the
+ * row, and two repositories with kinds switched off.
  */
 export function syncStatusSeed(iso: (offsetMs: number) => string): SyncStatus {
   type Mark = number | 'off' | 'ref';
   const fleet: [string, Mark, Mark, Mark, Mark][] = [
-    ['.github', 0, 0, 0, 0],
-    ['af', 2, 2, 0, 2],
-    ['afi', 0, 4, 1, 0],
-    ['harness', 2, 1, 0, 0],
-    ['smyklot-legacy', 0, 0, 0, 'ref'],
-    ['dotfiles', 'off', 0, 0, 'off'],
-    ['sai', 0, 0, 0, 0],
-    ['klaudiush', 0, 0, 0, 0],
     ['smyklot', 0, 0, 0, 0],
-    ['orca', 0, 0, 0, 0],
-    ['archive-old', 'off', 'off', 'off', 'off'],
-    ['docs', 0, 0, 0, 0],
-    ['infra', 0, 0, 0, 0],
-    ['charts', 0, 0, 0, 0],
-    ['actions', 0, 0, 0, 0],
-    ['tooling', 0, 0, 0, 0],
-    ['bench', 0, 0, 0, 0],
-    ['probe', 0, 0, 0, 0],
-    ['relay', 0, 0, 0, 0],
-    ['skald', 0, 0, 0, 0],
-    ['forge', 0, 0, 0, 0],
-    ['mirror', 0, 0, 0, 0],
-    ['quill', 0, 0, 0, 0],
-    ['spore', 0, 0, 0, 0],
-    ['weft', 0, 0, 0, 0],
+    ['platform-infra', 2, 2, 0, 2],
+    ['legacy-service', 0, 0, 0, 'ref'],
+    ['migration-demo', 'off', 0, 0, 'off'],
+    ['api-gateway', 0, 4, 1, 0],
+    ['auth-service', 2, 1, 0, 0],
+    ['billing-worker', 0, 0, 0, 0],
+    ['cli-tools', 0, 0, 0, 0],
+    ['customer-portal', 0, 0, 0, 0],
+    ['data-pipeline', 0, 0, 0, 0],
+    ['deployment-config', 'off', 'off', 'off', 'off'],
+    ['design-system', 0, 0, 0, 0],
+    ['docs-site', 0, 0, 0, 0],
+    ['edge-proxy', 0, 0, 0, 0],
+    ['event-consumer', 0, 0, 0, 0],
+    ['feature-flags', 0, 0, 0, 0],
+    ['identity-provider', 0, 0, 0, 0],
+    ['internal-tools', 0, 0, 0, 0],
+    ['mobile-api', 0, 0, 0, 0],
+    ['notification-service', 0, 0, 0, 0],
+    ['observability', 0, 0, 0, 0],
+    ['payments-api', 0, 0, 0, 0],
+    ['release-automation', 0, 0, 0, 0],
+    ['runtime-images', 0, 0, 0, 0],
+    ['search-indexer', 0, 0, 0, 0],
+    ['security-policies', 0, 0, 0, 0],
+    ['support-tools', 0, 0, 0, 0],
+    ['web-frontend', 0, 0, 0, 0],
   ];
   const cell = (mark: Mark): SyncCell => {
     if (mark === 'off') return { state: 'off' };
@@ -738,12 +764,12 @@ export function syncStatusSeed(iso: (offsetMs: number) => string): SyncStatus {
         rulesets: cell(rulesets),
         files: cell(files),
       },
-      ...(repository === 'af' ? { removals: 1 } : {}),
-      ...(repository === 'smyklot-legacy'
+      ...(repository === 'platform-infra' ? { removals: 1 } : {}),
+      ...(repository === 'legacy-service'
         ? {
             reason:
               '.github/workflows/ci.yaml needs the workflows permission - grant it on the ' +
-              "installation's page",
+              "workspace's App page",
           }
         : {}),
     })),
@@ -1003,7 +1029,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
     counts: { create: 8, update: 5, delete: 1 },
     actions: [
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'labels',
         operation: 'create',
         subject: 'dependencies',
@@ -1011,14 +1037,14 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'labels',
         operation: 'create',
         subject: 'good first issue',
         state: 'pending',
       },
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'settings',
         operation: 'update',
         subject: 'squash merging',
@@ -1027,7 +1053,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'settings',
         operation: 'update',
         subject: 'wiki',
@@ -1036,7 +1062,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'files',
         operation: 'create',
         subject: 'renovate.json',
@@ -1045,14 +1071,14 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'af',
+        repository: 'platform-infra',
         kind: 'files',
         operation: 'delete',
         subject: '.github/stale.yml',
         state: 'pending',
       },
       {
-        repository: 'afi',
+        repository: 'api-gateway',
         kind: 'settings',
         operation: 'create',
         subject: 'delete branch on merge',
@@ -1060,7 +1086,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'afi',
+        repository: 'api-gateway',
         kind: 'settings',
         operation: 'create',
         subject: 'auto-merge',
@@ -1068,7 +1094,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'afi',
+        repository: 'api-gateway',
         kind: 'settings',
         operation: 'update',
         subject: 'squash merging',
@@ -1077,7 +1103,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'afi',
+        repository: 'api-gateway',
         kind: 'settings',
         operation: 'update',
         subject: 'wiki',
@@ -1086,7 +1112,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'afi',
+        repository: 'api-gateway',
         kind: 'rulesets',
         operation: 'create',
         subject: 'main-protection',
@@ -1094,7 +1120,7 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'harness',
+        repository: 'auth-service',
         kind: 'labels',
         operation: 'create',
         subject: 'dependencies',
@@ -1102,14 +1128,14 @@ export function syncPlanSeed(iso: (offsetMs: number) => string): SyncPlan {
         state: 'pending',
       },
       {
-        repository: 'harness',
+        repository: 'auth-service',
         kind: 'labels',
         operation: 'create',
         subject: 'good first issue',
         state: 'pending',
       },
       {
-        repository: 'harness',
+        repository: 'auth-service',
         kind: 'settings',
         operation: 'update',
         subject: 'projects',
@@ -1182,7 +1208,7 @@ export function invitationSeeds(
     },
   ];
   const statuses: InvitationStatus[] = ['pending', 'accepted', 'declined', 'revoked', 'expired'];
-  const roles: Array<Exclude<InstallationRole, 'none'>> = ['viewer', 'editor', 'admin'];
+  const roles: Array<Exclude<WorkspaceRole, 'none'>> = ['viewer', 'editor', 'admin'];
   for (let index = 0; index < 25; index += 1) {
     const status = cycled(statuses, index);
     invitations.push({
@@ -1215,13 +1241,13 @@ export function invitationSeeds(
    does not look like production. */
 export function securityNotificationSeeds(
   iso: (offsetMs: number) => string,
-  installation: PanelAccount,
+  workspace: PanelAccount,
   actor: PanelAccount,
 ): SecurityNotification[] {
   return [
     {
       id: 'security-3',
-      installation,
+      workspace,
       actor,
       elevation_id: 'R7mQ2xKfLp0Zc4Vn8sTdWb1yHgJ3aEuN6iOqXr5vBkM',
       audit_event_id: '203',
@@ -1231,7 +1257,7 @@ export function securityNotificationSeeds(
     },
     {
       id: 'security-2',
-      installation,
+      workspace,
       actor,
       elevation_id: 'R7mQ2xKfLp0Zc4Vn8sTdWb1yHgJ3aEuN6iOqXr5vBkM',
       audit_event_id: '202',
@@ -1241,7 +1267,7 @@ export function securityNotificationSeeds(
     },
     {
       id: 'security-1',
-      installation,
+      workspace,
       actor,
       elevation_id: 'hT4wYs9dRfB2nKmXpQ7vLc0jZgA5eU8iRoW1yNbD3xE',
       audit_event_id: '188',
@@ -1254,7 +1280,7 @@ export function securityNotificationSeeds(
 }
 
 /** What a role may do. The one answer, so a scoped user and a seeded one agree. */
-export function capabilitiesFor(role: InstallationRole) {
+export function capabilitiesFor(role: WorkspaceRole) {
   return {
     read: role !== 'none',
     write: role === 'owner' || role === 'admin' || role === 'editor',
@@ -1275,7 +1301,7 @@ export function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
     id: string,
     login: string,
     displayName: string,
-    role: InstallationRole,
+    role: WorkspaceRole,
     offsetMs: number,
   ): PanelUser => ({
     account: account(id, login, displayName),
@@ -1306,7 +1332,7 @@ export function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
     user('1004', 'margaret', 'Margaret Hamilton', 'viewer', -2 * 86_400_000),
     banned,
   ];
-  const roles: InstallationRole[] = ['viewer', 'editor', 'admin', 'none'];
+  const roles: WorkspaceRole[] = ['viewer', 'editor', 'admin', 'none'];
   for (let index = 0; index < 31; index += 1) {
     users.push(
       user(
@@ -1323,7 +1349,7 @@ export function userSeeds(iso: (offsetMs: number) => string): PanelUser[] {
 
 export function targetSeed(input: {
   id: string;
-  installationId: string;
+  workspaceId: string;
   login: string;
   displayName: string;
   type: 'Organization' | 'User';
@@ -1344,7 +1370,7 @@ export function targetSeed(input: {
   return {
     value: {
       id: input.id,
-      installation_id: input.installationId,
+      installation_id: input.workspaceId,
       type: input.type,
       account,
       repository_default_enabled: input.repositoryDefaultEnabled,
@@ -1603,6 +1629,7 @@ export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {
       kind: 'sync_apply',
       lane: 'maintenance',
       repository_id: '4001',
+      repository_name: 'smykla-skalski/smyklot',
       title: 'Apply organization sync plan',
       summary: 'smykla-skalski · 12 changes',
       state: 'running',
@@ -1625,7 +1652,8 @@ export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {
       kind: 'pending_ci',
       lane: 'pending_ci',
       repository_id: '4002',
-      title: 'Merge platform-infra#184 after CI',
+      repository_name: 'smykla-skalski/platform-infra',
+      title: 'Merge after CI',
       summary: 'Waiting for required checks',
       state: 'blocked',
       priority: 'normal',
@@ -1633,8 +1661,12 @@ export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {
       eligible_at: iso(5 * 60_000),
       estimated_start_at: iso(6 * 60_000),
       work_ahead: 1,
-      blocked_reason: 'Required checks are still running',
-      details: { pull_request: 184, head_sha: '2bb2221374c1a9ee4f8b0d3c6a5e9017cc41ab8e' },
+      blocked_reason: 'Waiting on required checks',
+      details: {
+        pull_request: 184,
+        pull_request_title: 'Update rate limits for the edge tier',
+        head_sha: '2bb2221374c1a9ee4f8b0d3c6a5e9017cc41ab8e',
+      },
       created_at: iso(-30 * 60_000),
       updated_at: iso(-3 * 60_000),
       actions: ['run_now', 'next_window', 'schedule_at', 'set_priority', 'cancel'],
@@ -1660,7 +1692,8 @@ export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {
       kind: 'reaction_scan',
       lane: 'maintenance',
       repository_id: '4003',
-      title: 'Discover pull request reactions',
+      repository_name: 'smykla-skalski/legacy-service',
+      title: 'Scan for new commands',
       summary: 'smykla-skalski/agent-platform',
       state: 'retrying',
       priority: 'low',
@@ -1679,7 +1712,7 @@ export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {
       id: 'queue-catalog-complete',
       kind: 'catalog_refresh',
       lane: 'maintenance',
-      title: 'Refresh installation catalog',
+      title: 'Refresh the list of repositories',
       state: 'succeeded',
       priority: 'normal',
       not_before: iso(-90 * 60_000),
@@ -1820,9 +1853,9 @@ export function pendingCISeeds(iso: (offsetMs: number) => string): PendingCIRequ
       cleanup_pending: false,
       revision: 1,
     },
-    /* Three that have finished, so `/root/queue/recent` has its own rows: one of
+    /* Three that have finished, so the queue's Done card has its own rows: one of
        each way a request can end, and one with cleanup still outstanding so the
-       column that reports it has something to report. */
+       line that reports it has something to report. */
     {
       id: 'pending-ci-3',
       repository_full_name: 'smykla-skalski/smyklot',
@@ -1895,7 +1928,7 @@ export function cycled<T>(items: readonly T[], index: number): T {
   return item;
 }
 
-/** What one account may do in one installation, and where that answer came from. */
+/** What one account may do in one workspace, and where that answer came from. */
 export function targetAccess(
   role: TargetUserAccess['role'],
   suspended: boolean,
@@ -1916,7 +1949,7 @@ export function targetAccess(
 }
 
 /**
- * What an installation has configured for one kind of sync, inventing an empty document
+ * What a workspace has configured for one kind of sync, inventing an empty document
  * the first time it is asked so a page has a shape to render before anything is set.
  *
  * `new Date()` and not the seeded `now`: this answers a request rather than seeding a
@@ -1947,7 +1980,7 @@ export function mockSyncConfig(state: MockState, key: string, kind: string): Syn
   return fresh;
 }
 
-/** The two installations the mock's Root actually owns. */
+/** The two workspaces the mock's Root actually owns. */
 export function mockRootOwns(target: MockTarget): boolean {
   return target.value.id === '2001' || target.value.id === '1001';
 }
@@ -1967,11 +2000,11 @@ export function rootPanelUsers(state: MockState): RootPanelUser[] {
     ...(user.banned_at === undefined ? {} : { banned_at: user.banned_at }),
     ...(user.last_login_at === undefined ? {} : { last_login_at: user.last_login_at }),
     revision: user.revision,
-    owned_installations:
+    owned_workspaces:
       user.account.id === VIEWER.id
         ? state.targets.filter((target) => mockRootOwns(target)).length
         : 0,
-    assigned_installations: state.targets.filter((target) =>
+    assigned_workspaces: state.targets.filter((target) =>
       state.targetAccess.get(target.value.id)?.has(user.account.id),
     ).length,
     manageable: user.account.id !== VIEWER.id && user.system_role === 'none',
@@ -1980,19 +2013,8 @@ export function rootPanelUsers(state: MockState): RootPanelUser[] {
 }
 
 /**
- * The board's fleet names for the adjusting repositories the mock's
- * repository table does not hold - the sync fiction and the repository
- * fiction predate each other, and the file pages speak the board's.
- */
-export const PSEUDO_REPO_NAMES: Record<string, string> = {
-  '9101': 'af',
-  '9102': 'afi',
-  '9103': 'harness',
-};
-
-/**
  * The path index the finder matches over: every path any repository in the
- * installation holds, deduped, with how many hold it.
+ * workspace holds, deduped, with how many hold it.
  */
 export const KNOWN_PATHS: Array<{ path: string; repositories: number }> = [
   { path: '.github/workflows/ci.yaml', repositories: 25 },
@@ -2029,7 +2051,7 @@ export const KNOWN_PATHS: Array<{ path: string; repositories: number }> = [
  * What the development deployment resolves for the durations that cascade.
  *
  * Named here rather than typed at each of the six places that need them: the
- * mock has to agree with itself across the runtime settings, an installation
+ * mock has to agree with itself across the runtime settings, a workspace
  * and a repository, or the panel prefills one number and saves against another.
  */
 export const DEV_PATH_INDEX_SECONDS = 3_600;

@@ -100,21 +100,23 @@
   ] as const;
 </script>
 
+<!--
+@component
+The label colour picker: svelte-awesome-color-picker's anatomy - the
+saturation/value area, a hue rail, the hex field - built in this app's
+own material rather than skinned over the library's DOM (considered,
+and traded away: the drag-commit contract, the focus hand-off and the
+pixel geometry all needed shims through its scoped styles). The rail
+runs horizontal because nothing in this app slides vertically. Below,
+every colour the list already carries ("In use", rebuilt fresh each
+open) and GitHub's sixteen presets.
+
+Dragging tracks the pointer raw and applies silently; the release is
+the commit that earns the receipt. Picking a tile is a finished act -
+the caller applies, closes and whispers.
+-->
+
 <script lang="ts">
-  /**
-   * The label colour picker: svelte-awesome-color-picker's anatomy - the
-   * saturation/value area, a hue rail, the hex field - built in this app's
-   * own material rather than skinned over the library's DOM (considered,
-   * and traded away: the drag-commit contract, the focus hand-off and the
-   * pixel geometry all needed shims through its scoped styles). The rail
-   * runs horizontal because nothing in this app slides vertically. Below,
-   * every colour the list already carries ("In use", rebuilt fresh each
-   * open) and GitHub's sixteen presets.
-   *
-   * Dragging tracks the pointer raw and applies silently; the release is
-   * the commit that earns the receipt. Picking a tile is a finished act -
-   * the caller applies, closes and whispers.
-   */
   import { tick, untrack } from 'svelte';
 
   import Icon from './Icon.svelte';
@@ -335,7 +337,7 @@
     </div>
     {#if hexInvalid}
       <span class="field-error"
-        ><Icon name="alert" size={12} /><span class="t">Hex colours look like #0e8a16</span></span
+        ><Icon name="alert" size="xs" /><span class="t">Hex colours look like #0e8a16</span></span
       >
     {/if}
   </div>
@@ -354,7 +356,7 @@
         aria-label={cell}
         onclick={() => onPick(cell)}
       >
-        <Icon name="check" size={14} />
+        <Icon name="check" size="sm" />
       </button>
     {/each}
   </div>
@@ -372,7 +374,7 @@
         aria-label={cell}
         onclick={() => onPick(cell)}
       >
-        <Icon name="check" size={14} />
+        <Icon name="check" size="sm" />
       </button>
     {/each}
   </div>
@@ -392,7 +394,7 @@
     gap: var(--space-2);
     inset-block-start: calc(100% + 4px);
     inset-inline-start: 0;
-    padding: var(--space-2);
+    padding: var(--cp-pad);
     position: absolute;
     width: max-content;
     z-index: var(--layer-popover);
@@ -416,11 +418,13 @@
       linear-gradient(to top, #000000, transparent),
       linear-gradient(to right, #ffffff, var(--cp-hue-color, #ff0000));
     border-radius: 6px;
-    block-size: 150px;
+    block-size: var(--cp-area-height);
     box-shadow: inset 0 0 0 1px rgb(0 0 0 / 7%);
     box-sizing: border-box;
     cursor: crosshair;
-    inline-size: 220px;
+    /* Derived from the grid rather than typed beside it, so the plane and the tiles
+       under it are one width by construction. */
+    inline-size: var(--cp-width);
     position: relative;
     touch-action: none;
   }
@@ -431,11 +435,11 @@
     background: var(--cp-color, #ff0000);
     border: 2px solid #ffffff;
     border-radius: 50%;
-    block-size: 14px;
+    block-size: var(--cp-knob);
     box-shadow:
       0 1px 3px rgb(0 0 0 / 35%),
       0 0 0 1px rgb(0 0 0 / 12%);
-    inline-size: 14px;
+    inline-size: var(--cp-knob);
     inset-block-start: var(--cp-y, 0%);
     inset-inline-start: var(--cp-x, 100%);
     pointer-events: none;
@@ -455,12 +459,12 @@
       #ff0000
     );
     border-radius: 999px;
-    block-size: 12px;
+    block-size: var(--cp-hue-height);
     cursor: pointer;
     margin-block: 2px;
-    /* The 16px knob's radius, so its centre can reach both rail ends without
-       the ring leaving the popover. */
-    margin-inline: 8px;
+    /* The knob's own radius, so its centre reaches both rail ends without the ring
+       leaving the popover - derived, so resizing the knob moves the rail with it. */
+    margin-inline: calc(var(--cp-hue-thumb) / 2);
     position: relative;
     touch-action: none;
   }
@@ -469,11 +473,11 @@
     background: var(--cp-hue-color, #ff0000);
     border: 2px solid #ffffff;
     border-radius: 50%;
-    block-size: 16px;
+    block-size: var(--cp-hue-thumb);
     box-shadow:
       0 1px 3px rgb(0 0 0 / 35%),
       0 0 0 1px rgb(0 0 0 / 12%);
-    inline-size: 16px;
+    inline-size: var(--cp-hue-thumb);
     inset-block-start: 50%;
     inset-inline-start: var(--cp-h, 0%);
     pointer-events: none;
@@ -484,8 +488,8 @@
   /* Keyboard walks the picker the way the pointer does. */
   .cp-area:focus-visible,
   .cp-hue:focus-visible {
-    outline: 2px solid var(--text-muted);
-    outline-offset: 1px;
+    outline: var(--focus-ring-width) solid var(--text-muted);
+    outline-offset: var(--focus-ring-offset);
   }
 
   /* Held, a knob SEATS like every raised thumb: the throw collapses to its
@@ -508,7 +512,7 @@
     font-size: var(--font-size-micro);
     font-weight: 600;
     letter-spacing: 0.07em;
-    line-height: 16px;
+    line-height: var(--leading-tight);
     margin: 0;
     padding: 0 2px;
     text-transform: uppercase;
@@ -520,23 +524,26 @@
     margin-block: var(--space-1);
   }
 
+  /* THE SWATCH GRID IS THE MODULE, and everything else derives from it. It wrote 8, 4
+     and 24 of its own while the tokens naming those decisions sat unread, so the pop
+     came out wider than the tiles it held and the grid sat left in its own column. */
   .color-grid {
     display: grid;
-    gap: 4px;
-    grid-template-columns: repeat(8, 24px);
+    gap: var(--cp-gap);
+    grid-template-columns: repeat(var(--cp-cols), var(--cp-cell));
   }
 
   .color-cell {
     align-items: center;
     background: var(--cell);
-    block-size: 24px;
+    block-size: var(--cp-cell);
     /* The hairline keeps the pale half of the palette a tile on the popover's
        own white rather than a hole in it. */
     border: 1px solid color-mix(in srgb, var(--text-primary) 14%, transparent);
     border-radius: 6px;
     cursor: pointer;
     display: inline-flex;
-    inline-size: 24px;
+    inline-size: var(--cp-cell);
     justify-content: center;
     padding: 0;
     position: relative;
@@ -552,7 +559,7 @@
      the coloured fill (half on hover, full held), the dip and the well's
      inset land the press. */
   .color-cell::before {
-    background: var(--table-row-pressed);
+    background: var(--row-pressed);
     border-radius: inherit;
     content: '';
     inset: 0;
@@ -572,8 +579,8 @@
 
   .color-cell:hover,
   .color-cell:focus-visible {
-    outline: 2px solid var(--control-border);
-    outline-offset: 1px;
+    outline: var(--focus-ring-width) solid var(--control-border);
+    outline-offset: var(--focus-ring-offset);
   }
 
   .color-cell:focus-visible {
@@ -642,8 +649,8 @@
      ringed twice. */
   .text-inline:focus {
     border-color: var(--focus);
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 
   .text-inline.is-invalid {
@@ -662,7 +669,7 @@
     display: inline-flex;
     font-size: var(--font-size-micro);
     gap: 4px;
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-micro);
   }
 
   .field-error :global(svg) {

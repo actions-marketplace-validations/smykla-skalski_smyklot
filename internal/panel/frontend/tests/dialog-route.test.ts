@@ -8,7 +8,7 @@ const routePage = vi.hoisted(() => ({
   url: new URL('https://panel.example/'),
   params: { account: 'acme', view: 'repositories' } as Record<string, string>,
   // The route the address matched. Base-free by definition, which is why the adapter
-  // asks it rather than the pathname whether this is a Root installation.
+  // asks it rather than the pathname whether this is a Root workspace.
   route: { id: null } as { id: string | null },
   state: {} as Record<string, unknown>,
 }));
@@ -26,10 +26,10 @@ describe('SvelteKit dialog route adapter', () => {
     navigation.goto.mockImplementation((_url, options?: { state?: Record<string, unknown> }) => {
       if (options?.state !== undefined) routePage.state = options.state;
     });
-    routePage.url = at('/i/acme/access/users');
+    routePage.url = at('/workspace/acme/access/users');
     routePage.params = { account: 'acme', section: 'users' };
     routePage.route = {
-      id: '/i/[account]/access/[section=accessSection]/[...rest=dialogPath]',
+      id: '/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]',
     };
     routePage.state = {};
   });
@@ -38,7 +38,7 @@ describe('SvelteKit dialog route adapter', () => {
     dialogRoute.open('user-action', { user: 'octocat', action: 'suspend' });
 
     expect(navigation.goto).toHaveBeenCalledWith(
-      `${basePath}/i/acme/access/users/octocat/suspend`,
+      `${basePath}/workspace/acme/access/users/octocat/suspend`,
       {
         shallow: true,
         replace: false,
@@ -104,7 +104,7 @@ describe('SvelteKit dialog route adapter', () => {
    * place in the list went with it.
    */
   it('closes a cold deep link without leaving the route it is on', () => {
-    routePage.url = at('/i/acme/access/users/octocat/suspend');
+    routePage.url = at('/workspace/acme/access/users/octocat/suspend');
     routePage.params = {
       account: 'acme',
       section: 'users',
@@ -113,7 +113,7 @@ describe('SvelteKit dialog route adapter', () => {
 
     dialogRoute.close();
 
-    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/i/acme/access/users`, {
+    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/workspace/acme/access/users`, {
       shallow: true,
       replace: true,
       state: expect.objectContaining({ smyklotDialogClosed: true }),
@@ -124,14 +124,14 @@ describe('SvelteKit dialog route adapter', () => {
   });
 
   it('keeps a pathless dialog in the query across reloads', () => {
-    routePage.url = at('/root/installations/acme/defaults');
-    routePage.params = { account: 'acme', view: 'defaults' };
-    routePage.route = { id: '/root/installations/[account]/[view=rootInstallationView]' };
+    routePage.url = at('/root/workspaces/acme/settings');
+    routePage.params = { account: 'acme', view: 'settings' };
+    routePage.route = { id: '/root/workspaces/[account]/[view=rootWorkspaceView]' };
 
     dialogRoute.open('root-elevation', { reason: 'change settings' });
 
     expect(navigation.goto).toHaveBeenCalledWith(
-      `${basePath}/root/installations/acme/defaults?dialog=root-elevation&reason=change+settings`,
+      `${basePath}/root/workspaces/acme/settings?dialog=root-elevation&reason=change+settings`,
       {
         shallow: true,
         replace: false,
@@ -144,7 +144,7 @@ describe('SvelteKit dialog route adapter', () => {
 
     routePage.state = {};
     routePage.url = at(
-      '/root/installations/acme/defaults?dialog=root-elevation&reason=change+settings',
+      '/root/workspaces/acme/settings?dialog=root-elevation&reason=change+settings',
     );
     expect(dialogRoute.current).toEqual({
       name: 'root-elevation',
@@ -153,12 +153,12 @@ describe('SvelteKit dialog route adapter', () => {
   });
 
   it('removes a cold query dialog from the address when it closes', () => {
-    routePage.url = at('/root/installations/acme/defaults?dialog=root-elevation');
-    routePage.params = { account: 'acme', view: 'defaults' };
+    routePage.url = at('/root/workspaces/acme/settings?dialog=root-elevation');
+    routePage.params = { account: 'acme', view: 'settings' };
 
     dialogRoute.close();
 
-    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/root/installations/acme/defaults`, {
+    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/root/workspaces/acme/settings`, {
       shallow: true,
       replace: true,
       state: expect.objectContaining({ smyklotDialogClosed: true }),

@@ -7,7 +7,8 @@
  * should fail loudly in the catalogue rather than quietly render an empty state that
  * looks deliberate.
  *
- * The one exception is `signInUrl`, which is read synchronously to build an href.
+ * The exceptions are the three that build an address rather than ask for anything:
+ * `signInUrl` and the two audit exports, all read synchronously into an href.
  */
 import { PanelApiError, type PanelApi } from '#lib/api.js';
 
@@ -15,7 +16,7 @@ import {
   AUDIT,
   emptySyncConfig,
   FAILURES,
-  INSTALLATIONS,
+  WORKSPACES,
   INVITATIONS,
   NOTIFICATIONS,
   OVERVIEW,
@@ -41,6 +42,8 @@ export function stubApi(over: Partial<PanelApi> = {}): PanelApi {
   return new Proxy(
     {
       signInUrl: () => 'https://github.com/login/oauth/authorize',
+      rootAuditExportHref: () => '/api/v1/root/history/audit.csv',
+      auditExportHref: (targetId: string) => `/api/v1/targets/${targetId}/audit.csv`,
       ...over,
     } as PanelApi,
     {
@@ -69,7 +72,7 @@ export function stubApi(over: Partial<PanelApi> = {}): PanelApi {
  * `stubApi` is right for a component that takes `api` as a prop: the story hands in
  * exactly what that component reads, and anything else failing loudly is the point.
  * It is wrong for a component that reads `session.api`, because there the story has no
- * say in which methods get called - `InstallationView` alone reaches twenty of them,
+ * say in which methods get called - `WorkspaceView` alone reaches twenty of them,
  * and refusing all twenty draws a shell over nothing.
  *
  * So the reads answer, out of `dev/fixtures.ts` - the same data the dev server serves,
@@ -98,7 +101,7 @@ export function fixtureApi(over: Partial<PanelApi> = {}): PanelApi {
     fetchUserDecisions: async () => [],
     suggestUsers: async () => [],
     fetchRootOverview: async () => OVERVIEW,
-    fetchRootInstallations: async () => INSTALLATIONS,
+    fetchRootWorkspaces: async () => WORKSPACES,
     fetchRootTargetSettings: async () => TARGET,
     fetchRootRepositories: async () => page(REPOSITORIES),
     fetchRootRepository: async () => REPOSITORY_DETAIL,

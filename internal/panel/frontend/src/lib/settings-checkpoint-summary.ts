@@ -5,6 +5,15 @@ import type {
   SyncKind,
 } from './types';
 
+/**
+ * THE ONE PLACE THE OLD WORD STAYS, and it is not vocabulary - it is data.
+ *
+ * These strings are what `internal/storage` wrote into the audit table, row by row, on a
+ * running service. They are keys to history rather than words anybody reads: this
+ * function is the thing that turns them into words. Renaming them would orphan every
+ * audit row already written, which is a migration and not a rename, so the audit keeps
+ * its spelling and the reader still sees "Restored".
+ */
 export function settingsCheckpointActionLabel(action: SettingsCheckpoint['action']): string {
   if (action === 'installation.settings.restored' || action === 'runtime.settings.restored') {
     return 'Restored';
@@ -22,7 +31,7 @@ export function settingsCheckpointItemLabel(item: SettingsCheckpointItem): strin
       : item.sync_kind[0]?.toLocaleUpperCase() + item.sync_kind.slice(1);
   switch (item.kind) {
     case 'target':
-      return 'Installation defaults';
+      return 'Workspace settings';
     case 'repository':
       return item.repository_full_name ?? 'Repository settings';
     case 'sync_config':
@@ -30,7 +39,7 @@ export function settingsCheckpointItemLabel(item: SettingsCheckpointItem): strin
     case 'sync_override':
       return `${item.repository_full_name ?? 'Repository'} · ${syncKind} override`;
     case 'runtime':
-      return 'Runtime settings';
+      return 'Service settings';
   }
 }
 
@@ -68,10 +77,10 @@ function targetSummary(document: Record<string, unknown>): string {
 function repositorySummary(document: Record<string, unknown>): string {
   const enabled =
     document.enabled_override === true
-      ? 'Enabled'
+      ? 'On'
       : document.enabled_override === false
-        ? 'Disabled'
-        : 'Inherits enablement';
+        ? 'Off'
+        : 'From the workspace';
   const repositoryFile =
     document.ignore_repository_file === true ? 'Repository file ignored' : 'Repository file read';
   const patches = countKeys(document.config_patch);
@@ -112,11 +121,7 @@ function syncConfigSummary(
 
 function syncOverrideSummary(document: Record<string, unknown>): string {
   const enabled =
-    document.enabled === true
-      ? 'Enabled'
-      : document.enabled === false
-        ? 'Disabled'
-        : 'Inherits enablement';
+    document.enabled === true ? 'On' : document.enabled === false ? 'Off' : 'From the workspace';
   const fields = countKeys(nestedDocument(document));
   return `${enabled} · ${fields} ${fields === 1 ? 'stored field' : 'stored fields'}`;
 }

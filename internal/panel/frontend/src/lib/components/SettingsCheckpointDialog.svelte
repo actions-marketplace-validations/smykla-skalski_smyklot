@@ -1,7 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
 
-  import { formatDateTime, formatTimestamp } from '#lib/format.js';
+  import { formatDateTime } from '#lib/format.js';
+
+  import RelativeTime from './RelativeTime.svelte';
   import {
     settingsCheckpointActionLabel,
     settingsCheckpointItemLabel,
@@ -227,6 +229,19 @@
   }
 </script>
 
+<!--
+@component
+One saved checkpoint, read before it is restored. Restoring is not the point - seeing
+what would change is, which is why the dialog fetches and shows the settings as they
+stood rather than offering a bare Restore.
+
+`hasUnsavedDrafts` is what makes it careful: restoring over an open draft discards work
+the reader has not saved, so the dialog says so rather than finding out afterwards.
+
+`restoreCheckpoint` is optional, and its absence is how a reader who may look but not
+act sees the same history without the button.
+-->
+
 <Modal
   id="settings-checkpoint-dialog"
   {open}
@@ -246,9 +261,7 @@
           >{settingsCheckpointActionLabel(checkpoint.action)} by {checkpoint.actor
             .display_name}</strong
         >
-        <time datetime={checkpoint.created_at} title={formatTimestamp(checkpoint.created_at)}
-          >{formatDateTime(checkpoint.created_at)}</time
-        >
+        <RelativeTime value={checkpoint.created_at} label={formatDateTime(checkpoint.created_at)} />
       </div>
       <div class="snapshot-count">
         <strong>{changedCount}</strong>
@@ -428,10 +441,10 @@
     white-space: nowrap;
   }
 
-  .snapshot-author time,
+  .snapshot-author :global(time),
   .checkpoint-items legend small,
   .item-title span {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: var(--font-size-compact);
   }
 
@@ -445,11 +458,11 @@
 
   .snapshot-count strong {
     color: var(--diff-chg-ink);
-    font: 700 var(--font-size-title) / 1 var(--mono);
+    font: 700 var(--font-size-title) / var(--leading-flat) var(--mono);
   }
 
   .snapshot-count span {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: var(--font-size-micro);
     white-space: nowrap;
   }
@@ -462,7 +475,7 @@
   }
 
   .restore-state-picker p {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: var(--font-size-compact);
     margin: 0;
   }
@@ -554,7 +567,7 @@
   }
 
   .state-comparison span {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: var(--font-size-micro);
     font-weight: 600;
     letter-spacing: 0.025em;
@@ -577,7 +590,7 @@
   }
 
   .all-matching {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: var(--font-size-compact);
     margin: 0;
     padding: var(--space-4) var(--space-3);
@@ -612,7 +625,7 @@
   .raw-state pre {
     background: var(--surface-inset);
     border-radius: var(--radius-control);
-    font: var(--font-size-compact) / 1.5 var(--mono);
+    font: var(--font-size-compact) / var(--leading-compact) var(--mono);
     margin: var(--space-2) 0 0;
     max-height: 18rem;
     overflow: auto;
@@ -622,8 +635,8 @@
 
   .checkpoint-notice,
   .restore-confirmation {
-    background: var(--accent-tint);
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    background: var(--brand-action-tint);
+    border: 1px solid color-mix(in srgb, var(--brand-action) 30%, transparent);
     border-radius: var(--radius-control);
     color: var(--text-secondary);
     padding: var(--space-3);

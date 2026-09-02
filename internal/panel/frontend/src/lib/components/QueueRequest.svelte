@@ -3,25 +3,23 @@
   import { useInterval } from 'runed';
 
   import type { PanelApi } from '#lib/api.js';
-  import { formatTimestamp } from '#lib/format.js';
   import { cleanupState, outcomeState, queueNext, queueState, sinceLabel } from '#lib/queue.js';
   import type { PendingCIEvent } from '#lib/types.js';
   import Button from './Button.svelte';
   import BackLink from './BackLink.svelte';
   import Chip from './Chip.svelte';
   import Icon, { type IconName } from './Icon.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import ResultProblem from './ResultProblem.svelte';
   import RootPageHeader from './RootPageHeader.svelte';
 
   const {
     api,
-    rootRole,
     requestId,
     queueHref,
     onBack,
   }: {
     api: PanelApi;
-    rootRole: string;
     requestId: string;
     queueHref: string;
     onBack: () => void;
@@ -154,10 +152,20 @@
   }
 </script>
 
+<!--
+@component
+One access request as its own page: who asked, for what, and every decision since.
+
+A page rather than a dialog because it is an address - it can be linked to and sent to
+somebody else, which is what a request under discussion actually needs. The back link
+returns to the queue it came from rather than to browser history, so arriving at the
+page directly still leads somewhere.
+-->
+
 <BackLink href={queueHref} label="Queue" onNavigate={onBack} />
 
 {#if request === null}
-  <RootPageHeader role={rootRole} title="Request" subtitle="Reading the record" />
+  <RootPageHeader title="Request" subtitle="Reading the record" />
   {#if problem !== null}
     <ResultProblem
       title="The request could not be read"
@@ -168,7 +176,6 @@
   {/if}
 {:else}
   <RootPageHeader
-    role={rootRole}
     title={`${request.repository_full_name} #${request.pull_request}`}
     subtitle={`Armed ${sinceLabel(request.requested_at, now)} by @${request.requester}, bound to commit ${request.head_sha.slice(0, 8)}`}
   >
@@ -177,7 +184,7 @@
       rel="noreferrer"
       target="_blank"
     >
-      {#snippet icon()}<Icon name="github" size={16} />{/snippet}
+      {#snippet icon()}<Icon name="github" size="base" />{/snippet}
       Open on GitHub
     </Button>
   </RootPageHeader>
@@ -240,13 +247,13 @@
       {#if armed}
         <div class="card-actions">
           <Button disabled={acting !== null} onclick={() => void act('check')}>
-            {#snippet icon()}<Icon name="refresh" size={14} strokeWidth={2} />{/snippet}
+            {#snippet icon()}<Icon name="refresh" size="sm" strokeWidth={2} />{/snippet}
             {acting === 'check' ? 'Checking…' : 'Check now'}
           </Button>
           <!-- Bordered rather than filled: the one filled danger control in this
                flow is the confirmation, so a page cannot be left holding two. -->
           <Button tone="stop-quiet" disabled={acting !== null} onclick={() => void act('cancel')}>
-            {#snippet icon()}<Icon name="close" size={14} strokeWidth={2} />{/snippet}
+            {#snippet icon()}<Icon name="close" size="sm" strokeWidth={2} />{/snippet}
             {acting === 'cancel' ? 'Cancelling…' : 'Cancel'}
           </Button>
         </div>
@@ -277,9 +284,12 @@
       <div class="fact">
         <dt class="band-trim">Armed</dt>
         <dd>
-          <span class="cap-trim" title={formatTimestamp(request.requested_at)}
-            >{sinceLabel(request.requested_at, now)}</span
-          >
+          <RelativeTime
+            class="cap-trim"
+            value={request.requested_at}
+            nowMs={now}
+            label={sinceLabel(request.requested_at, now)}
+          />
         </dd>
       </div>
       <div class="fact">
@@ -304,7 +314,8 @@
     </dl>
   </section>
 
-  <h3 class="timeline-heading band-trim">Timeline</h3>
+  <!-- h2: the page's own h1 is its title, and this is the first section under it. -->
+  <h2 class="timeline-heading band-trim">Timeline</h2>
   <p class="timeline-lede band-trim">
     Every durable event, newest last, with the delivery that caused it
   </p>
@@ -322,7 +333,7 @@
                of ITS mark. -->
           <span class="rail" aria-hidden="true"></span>
           <span class="mark {mark.tone}" aria-hidden="true">
-            <Icon name={mark.icon} size={14} strokeWidth={2} />
+            <Icon name={mark.icon} size="sm" strokeWidth={2} />
           </span>
           <div class="head">
             <strong class="band-trim">{eventTitle(event)}</strong>
@@ -331,11 +342,11 @@
           <!-- The same size as the title beside it: at 11px the two runs share a
                line but their cap bands no longer share a centre, and the column
                is a real datum rather than a footnote. -->
-          <time
+          <RelativeTime
             class="band-trim"
-            datetime={event.created_at}
-            title={formatTimestamp(event.created_at)}>{clockOf(event.created_at)}</time
-          >
+            value={event.created_at}
+            label={clockOf(event.created_at)}
+          />
           <div class="body">
             <p class="band-trim">{event.summary}</p>
             {#if event.event_key !== undefined || event.delivery_id !== undefined}
@@ -411,12 +422,12 @@
   }
 
   .next-lead.due {
-    color: var(--clear);
+    color: var(--success);
     transition: color var(--duration-normal) var(--ease-out);
   }
 
   .next-lead.idle {
-    color: var(--text-soft);
+    color: var(--text-secondary);
   }
 
   .next-lead.due.imminent {
@@ -424,8 +435,8 @@
   }
 
   .next-lead.due.final {
-    animation: countdown-pulse 700ms var(--ease-out) infinite alternate;
-    color: var(--stop);
+    animation: countdown-pulse var(--rhythm-pulse) var(--ease-inout) infinite alternate;
+    color: var(--danger);
   }
 
   @keyframes countdown-pulse {
@@ -442,7 +453,7 @@
      rule and another 15 below the last value, which is what made the card read
      as two blocks with a hole between them rather than one card. */
   .facts {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     margin: 0;
@@ -465,12 +476,12 @@
   }
 
   .fact + .fact {
-    border-inline-start: 1px solid var(--rule);
+    border-inline-start: 1px solid var(--border-subtle);
   }
 
   .fact dt {
-    color: var(--dim);
-    font: 700 var(--font-size-micro) / 1 var(--sans);
+    color: var(--text-muted);
+    font: 700 var(--font-size-micro) / var(--leading-flat) var(--sans);
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -528,13 +539,13 @@
   }
 
   .timeline-heading {
-    font: 700 var(--font-size-card-title) / 1.3 var(--sans);
+    font: 700 var(--font-size-card-title) / var(--leading-body) var(--sans);
     letter-spacing: -0.02em;
     margin: var(--space-6) 0 var(--space-2);
   }
 
   .timeline-lede {
-    color: var(--text-soft);
+    color: var(--text-secondary);
     font-size: var(--font-size-meta);
     margin: 0 0 var(--space-4);
   }
@@ -585,15 +596,15 @@
   /* The time sits a long way from the event it belongs to, so the entry lights
      up as one band under the pointer. It is a reading aid, not a control. */
   .timeline li:hover {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
-  .timeline li:hover > time {
-    color: var(--text);
+  .timeline li:hover > :global(time) {
+    color: var(--text-primary);
   }
 
   .timeline .rail {
-    background: var(--rule);
+    background: var(--border-subtle);
     grid-area: 1 / 1 / -1 / 2;
     justify-self: center;
     margin-block: calc(var(--tl-mark) / 2) calc(-1 * (2 * var(--tl-inset) + var(--tl-mark) / 2));
@@ -609,11 +620,11 @@
   .timeline .mark {
     align-items: center;
     align-self: center;
-    background: var(--strip);
+    background: var(--surface-base);
     block-size: var(--tl-mark);
     border-radius: 50%;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentcolor 30%, transparent);
-    color: var(--dim);
+    color: var(--text-muted);
     display: flex;
     grid-area: 1 / 1 / 2 / 2;
     inline-size: var(--tl-mark);
@@ -621,13 +632,13 @@
   }
 
   .timeline .mark.pass {
-    background: var(--clear-tint);
-    color: var(--clear);
+    background: var(--success-tint);
+    color: var(--success);
   }
 
   .timeline .mark.fail {
-    background: var(--stop-tint);
-    color: var(--stop);
+    background: var(--danger-tint);
+    color: var(--danger);
   }
 
   .timeline .mark.warn {
@@ -636,8 +647,8 @@
   }
 
   .timeline .mark.act {
-    background: var(--accent-tint);
-    color: var(--accent);
+    background: var(--brand-action-tint);
+    color: var(--brand-action);
   }
 
   .timeline .head {
@@ -652,13 +663,13 @@
   .timeline .head strong {
     font-size: var(--font-size-meta);
     font-weight: 700;
-    line-height: 1;
+    line-height: var(--leading-flat);
   }
 
-  .timeline > li > time {
+  .timeline > li > :global(time) {
     align-self: center;
-    color: var(--dim);
-    font: 400 var(--font-size-meta) / 1 var(--mono);
+    color: var(--text-muted);
+    font: 400 var(--font-size-meta) / var(--leading-flat) var(--mono);
     grid-area: 1 / 3 / 2 / 4;
   }
 
@@ -671,7 +682,7 @@
   }
 
   .timeline .body p {
-    color: var(--text-soft);
+    color: var(--text-secondary);
     font-size: var(--font-size-compact);
     margin: 0;
   }
@@ -689,10 +700,10 @@
      the characters 0.52px above the middle of the chip they sit in - a device
      row at 2x, on every key in the record. */
   .timeline .key {
-    background: var(--well);
+    background: var(--surface-inset);
     border-radius: var(--r-chip);
-    color: var(--text-soft);
-    font: 500 var(--font-size-micro) / 1 var(--mono);
+    color: var(--text-secondary);
+    font: 500 var(--font-size-micro) / var(--leading-flat) var(--mono);
     max-width: 100%;
     overflow: clip;
     overflow-clip-margin: 0.4em;
@@ -702,7 +713,7 @@
   }
 
   .timeline-empty {
-    color: var(--dim);
+    color: var(--text-muted);
     display: block;
     font-size: var(--font-size-meta);
     padding: var(--space-4) var(--space-3);

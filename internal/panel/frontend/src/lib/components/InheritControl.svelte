@@ -31,11 +31,11 @@
   } = $props();
 
   const overridden = $derived(value !== null);
-  const linkedTip = $derived(
-    `Follows ${source} · currently ${inheritedLabel} · pick a value to override`,
-  );
+  /* A value names its source in words - "from the workspace", "set here" - rather than
+     leaving the reader to finish a dangling "follows". */
+  const linkedTip = $derived(`From ${source}: ${inheritedLabel} · pick a value to override it`);
   const brokenTip = $derived(
-    `Overrides ${source} · press to follow ${sourcePronoun} again · restores ${inheritedLabel}`,
+    `Set here · press to take the value from ${sourcePronoun} again · restores ${inheritedLabel}`,
   );
 
   /**
@@ -58,6 +58,21 @@
   const groupName = $derived(`inherit-${label.replaceAll(/[^a-z0-9]+/giu, '-').toLowerCase()}`);
 </script>
 
+<!--
+@component
+A value that comes from somewhere else until this page overrides it, and the way back.
+The control shows what would apply and where it comes from, so choosing here is visibly
+a departure rather than just a setting.
+
+`onRestore` is the half that matters. An override with no way back is a decision a
+reader cannot undo without knowing what the inherited value used to be - which is
+exactly what they no longer see once they have overridden it.
+
+`sourcePronoun` exists because the sentence naming the source reads either as a thing
+or as a set, and a control that says "it" about several accounts is a control nobody
+trusts.
+-->
+
 <span class:fluid class="linked-control">
   {#if overridden}
     <AppTooltip text={brokenTip}>
@@ -74,15 +89,18 @@
           onfocus={() => (offering = true)}
           onblur={() => (offering = false)}
         >
-          <Icon name="link-off" size={14} strokeWidth={2} />
+          <Icon name="link-off" size="sm" strokeWidth={2} />
         </button>
       {/snippet}
     </AppTooltip>
   {:else}
     <AppTooltip text={linkedTip}>
       {#snippet children(props)}
-        <span {...props} class="link-toggle">
-          <Icon name="link" size={14} strokeWidth={2} />
+        <!-- NAMED, because it is focusable: a tooltip trigger takes the keyboard, so
+             this mark is a stop on the tab ring and an unnamed stop announces nothing
+             when a reader arrives at it. The name is what the tooltip says. -->
+        <span {...props} class="link-toggle" role="note" aria-label={linkedTip}>
+          <Icon name="link" size="sm" strokeWidth={2} />
         </span>
       {/snippet}
     </AppTooltip>
@@ -104,6 +122,8 @@
   .linked-control {
     align-items: center;
     display: inline-flex;
+    /* As wide as the control it wraps - see the note above `.chip` in app.css. */
+    inline-size: fit-content;
     gap: var(--inherit-marker-gap);
   }
 
@@ -140,8 +160,8 @@
   }
 
   .link-toggle.broken:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: -2px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 
   .link-toggle:disabled {

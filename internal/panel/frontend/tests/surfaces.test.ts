@@ -2,8 +2,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { contrast, deltaE, oklch, over } from './color';
-import { palettes, type Palette } from './theme';
+import { contrast, deltaE, oklch, over, stateBand } from './color';
+import { palettes, stylesheets, type Palette } from './theme';
 
 /**
  * The surfaces a table and its controls are built from, in all four palettes.
@@ -14,8 +14,19 @@ import { palettes, type Palette } from './theme';
  * pointer said "this row" in the same voice the table used for "nothing here".
  */
 
-/** One state change on a ground, as the sidebar has drawn it since before any of this. */
-const step = (ground: string): number => (oklch(ground).L > 0.5 ? 2.51 : 5.07);
+/** One state change, per ground. The shared band, not a third copy of the sidebar's pair. */
+const step = (ground: string): [number, number] => stateBand(ground).hover;
+
+/**
+ * A TABLE ROW'S step, which is deliberately quieter than a control's.
+ *
+ * The shared band is the interactive one - what a button, a menu row, a sync tile and a segmented
+ * option all move by. A table row is not one of those: it is the full width of the pane, and the
+ * veil that reads as a state on a 90px control reads as a stripe across the page on a row. So the
+ * row keeps roughly half the step, which is the ratio it has always had, and this says so rather
+ * than leaving one number covering two intentions.
+ */
+const rowStep = (ground: string): [number, number] => (oklch(ground).L > 0.5 ? [2, 3] : [4.5, 5.5]);
 
 /** The chroma a tint may carry before it stops reading as the same material as the surfaces. */
 function chromaCeiling(palette: Palette): number {
@@ -41,26 +52,20 @@ describe.each(palettes.map((palette) => [palette.name, palette] as const))(
     };
 
     it('moves a hovered row by one state change', () => {
-      const hover = grounded('table-row-hover');
+      const hover = grounded('row-hover');
       const moved = deltaE(surface, hover);
-      expect(moved).toBeGreaterThan(step(surface) - 0.5);
-      expect(moved).toBeLessThan(step(surface) + 0.5);
-    });
-
-    it('keeps a hovered row distinct from the filler behind it', () => {
-      // Both were --surface-raised, so the pointer and "no rows here" painted the same colour.
-      expect(deltaE(grounded('table-row-hover'), palette.color('table-filler-bg'))).toBeGreaterThan(
-        1,
-      );
+      const [floor, ceiling] = rowStep(surface);
+      expect(moved).toBeGreaterThanOrEqual(floor);
+      expect(moved).toBeLessThanOrEqual(ceiling);
     });
 
     it('lifts on a dark ground and drops on a light one', () => {
-      const hover = grounded('table-row-hover');
+      const hover = grounded('row-hover');
       const lighter = oklch(hover).L > oklch(surface).L;
       expect(lighter).toBe(oklch(surface).L <= 0.5);
     });
 
-    it.each(['table-header-bg', 'table-footer-bg', 'input-bg', 'control-bg', 'table-filler-bg'])(
+    it.each(['pagination-bg', 'input-bg', 'control-bg'])(
       'keeps %s the same material as the surface it sits on',
       (token) => {
         // Visible as a change of surface, quiet enough not to read as a coloured slab, and inside
@@ -78,9 +83,12 @@ describe.each(palettes.map((palette) => [palette.name, palette] as const))(
       const ground = palette.color('control-bg');
       const one = deltaE(ground, palette.color('control-bg-hover'));
       const two = deltaE(ground, palette.color('control-bg-pressed'));
-      expect(one).toBeGreaterThan(step(ground) - 0.5);
-      expect(one).toBeLessThan(step(ground) + 0.5);
-      expect(two).toBeGreaterThan(one * 1.5);
+      const [floor, ceiling] = step(ground);
+      expect(one).toBeGreaterThanOrEqual(floor);
+      expect(one).toBeLessThanOrEqual(ceiling);
+      const press = stateBand(ground).press;
+      expect(two).toBeGreaterThanOrEqual(press[0]);
+      expect(two).toBeLessThanOrEqual(press[1]);
       // Both move the same way, so hover and press are one gesture at two depths.
       const direction = (state: string): number => Math.sign(oklch(state).L - oklch(ground).L);
       expect(direction(palette.color('control-bg-pressed'))).toBe(
@@ -102,9 +110,7 @@ describe.each(palettes.map((palette) => [palette.name, palette] as const))(
     });
 
     it.each([
-      ['text-secondary', 'table-header-bg'],
-      ['text-muted', 'table-header-bg'],
-      ['text-primary', 'table-row-hover'],
+      ['text-primary', 'row-hover'],
       ['text-primary', 'input-bg'],
       ['text-muted', 'input-bg'],
     ])('keeps %s readable on %s', (ink, ground) => {
@@ -114,7 +120,7 @@ describe.each(palettes.map((palette) => [palette.name, palette] as const))(
 );
 
 describe('the palette', () => {
-  const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  const css = stylesheets;
   const sources = readdirSync(new URL('../src/lib/components', import.meta.url))
     .filter((file) => file.endsWith('.svelte'))
     .map((file) => readFileSync(new URL(`../src/lib/components/${file}`, import.meta.url), 'utf8'))
@@ -180,7 +186,63 @@ describe('the palette', () => {
         ),
       );
 
-    const base = variables('fieldset');
+    /**
+     * What a surface owes, and only that.
+     *
+     * One question, asked of the value rather than the name: does it reach the PAGE's
+     * own ground or ink? Those are the things a different ground replaces, so a token
+     * built on them is wrong the moment the control is put somewhere else, and the
+     * skin owes it.
+     *
+     * Everything else is owed nothing, and for two different reasons. Geometry - a
+     * radius, an inset - is the control's own and identical on every ground; asking
+     * for it per skin is three more places to forget it. And a value the PALETTE
+     * already re-resolves is not the page's: the Root console swaps `--brand-action`
+     * and the whole `--segment-*` family for itself, so a token built only out of
+     * those arrives correct anywhere without the skin saying a word.
+     *
+     * Told apart by what the value REACHES, resolved transitively through the rule's
+     * own variables, rather than by whether it carries a unit. A shadow is ground-
+     * dependent and is written in pixels; a `color-mix` is ground-dependent and is
+     * written in per cent - so "has a unit" called both of them geometry and quietly
+     * stopped asking a skin for either.
+     *
+     * `--seg-text` was the one that went missing: it is read only for the hover ink on
+     * an unchecked option, so three palettes looked fine and the fourth put the light
+     * theme's near-black label on the Root menu's near-black track at 1.09:1.
+     */
+    const declarations = (rule: string): Map<string, string> =>
+      new Map(
+        [...body(rule).matchAll(/^\s*--(?<name>[\w-]+):\s*(?<value>[^;]+);/gmu)].map((match) => [
+          match.groups?.name ?? '',
+          match.groups?.value ?? '',
+        ]),
+      );
+    /** The page's own ground and ink: what a different surface replaces. */
+    const pageGround = /^(?:surface-|text-|shadow-color$|canvas$|border-)/u;
+    const owed = (rule: string): Set<string> => {
+      const own = declarations(rule);
+      const resolve = (value: string, seen = new Set<string>()): string =>
+        value.replace(/var\(--(?<name>[\w-]+)\)/gu, (whole, name: string) => {
+          if (seen.has(name) || !own.has(name)) return whole;
+
+          return resolve(own.get(name) ?? '', new Set(seen).add(name));
+        });
+
+      return new Set(
+        [...own]
+          .filter(([, value]) => {
+            const reaches = [...resolve(value).matchAll(/var\(--(?<name>[\w-]+)\)/gu)].map(
+              (match) => match.groups?.name ?? '',
+            );
+
+            return reaches.some((name) => pageGround.test(name));
+          })
+          .map(([name]) => name),
+      );
+    };
+
+    const base = owed('fieldset');
     const surfaces = [
       ...new Set(
         [...control.matchAll(/^\s{2}(?<rule>fieldset\.on-[\w-]+) \{/gmu)].map(

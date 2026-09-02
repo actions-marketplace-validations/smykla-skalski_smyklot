@@ -383,6 +383,12 @@ func DeclareSpecs(harness Harness) {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(notifications.Unread).To(BeZero())
 
+		// Marking every one read is what the inbox's own control does, and it answers
+		// how many it touched - none, here, because the one there was is already read.
+		cleared, err := store.MarkAllSecurityNotificationsRead(ctx, owner.ID, now.Add(3*time.Minute))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cleared).To(BeZero())
+
 		Expect(store.DeleteExpiredAuth(ctx, now.Add(16*time.Minute))).To(Succeed())
 		_, err = store.GetElevation(ctx, session.TokenHash, target.TargetID, now.Add(16*time.Minute))
 		Expect(errors.Is(err, storage.ErrExpired)).To(BeTrue())
@@ -935,7 +941,7 @@ func DeclareSpecs(harness Harness) {
 			HistoryPageRequest: storage.HistoryPageRequest{
 				Limit: 10,
 				Order: storage.HistoryOldest,
-				Query: "Saved 1 installation settings",
+				Query: "Saved 1 workspace settings",
 			},
 			Scope: storage.AuditAccount,
 		})
@@ -1465,7 +1471,7 @@ func DeclareSpecs(harness Harness) {
 		Expect(errors.Is(err, storage.ErrConflict)).To(BeTrue())
 	})
 
-	It("creates and accepts Root invitations separately from installation access", func() {
+	It("creates and accepts Root invitations separately from workspace access", func() {
 		root, _ := seedInstallation(ctx, store, now)
 		Expect(store.ReconcileSuperRoot(ctx, root.ID, now)).To(Succeed())
 		invitee := root
@@ -2268,6 +2274,19 @@ func DeclareSpecs(harness Harness) {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(older.Items).To(HaveLen(1))
 		Expect(older.Items[0].DeliveryID).To(Equal(first.DeliveryID))
+
+		/* "How many failed lately" is a count, so the filter has to reach the
+		   TOTAL and not just the page - a caller reading one page and counting
+		   its rows answers a different question as soon as there are two. */
+		since := now.Add(2 * time.Minute)
+		lately, err := store.ListFailures(ctx, target.TargetID, storage.FailurePageRequest{
+			HistoryPageRequest: storage.HistoryPageRequest{Limit: 10},
+			Since:              &since,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lately.Total).To(Equal(1))
+		Expect(lately.Items).To(HaveLen(1))
+		Expect(lately.Items[0].DeliveryID).To(Equal(second.DeliveryID))
 
 		Expect(store.PruneDeliveries(ctx, now.Add(2*time.Minute))).To(Succeed())
 		retryable := true

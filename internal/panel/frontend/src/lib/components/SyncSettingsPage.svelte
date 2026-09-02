@@ -137,33 +137,36 @@
   export const SETTINGS_FIELD_TOTAL = SETTINGS_FIELD_KEYS.length;
 </script>
 
+<!--
+@component
+The settings page is the policy: only managed settings render as rows,
+and everything unmanaged is one sentence per group with the names as
+scent, one press from being managed. The x removes the management,
+never "writes the default". "Everything" in the segmented control
+turns the unmanaged names into rows of their own.
+-->
+
 <script lang="ts">
-  /**
-   * The settings page is the policy: only managed settings render as rows,
-   * and everything unmanaged is one sentence per group with the names as
-   * scent, one press from being managed. The x removes the management,
-   * never "writes the default". "Everything" in the segmented control
-   * turns the unmanaged names into rows of their own.
-   */
-  import type { SyncConfig } from '../types';
-  import type { SyncSection } from '../routes';
+  import type { SyncConfig, SyncStatus } from '../types';
 
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import FormError from './FormError.svelte';
   import Icon from './Icon.svelte';
-  import PanePath from './PanePath.svelte';
+  import PageHeader from './PageHeader.svelte';
   import ClippedLabel from './ClippedLabel.svelte';
   import Popover from './Popover.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
   import Switch from './Switch.svelte';
+  import SyncKindFacts, { syncSwitchLabel, syncSwitchWord } from './SyncKindFacts.svelte';
 
   const {
     config,
     savedDocument = {},
     readOnly,
     problem = null,
-    sectionHref,
-    onOpenSection,
+    syncStatus = null,
+    nowMs,
     onToggleEnabled,
     onChangeDocument,
     dirtyEnabled = false,
@@ -173,8 +176,9 @@
     savedDocument?: Record<string, unknown>;
     readOnly: boolean;
     problem?: string | null;
-    sectionHref: (section: SyncSection) => string;
-    onOpenSection: (section: SyncSection) => void;
+    /** The fleet, for how far this kind reaches. */
+    syncStatus?: SyncStatus | null;
+    nowMs: number;
     onToggleEnabled: (enabled: boolean) => void;
     onChangeDocument: (document: Record<string, unknown>) => void;
     dirtyEnabled?: boolean;
@@ -261,28 +265,34 @@
 </script>
 
 <div class="view-frame">
-  <PanePath
-    segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
-    ]}
-  />
-
-  <div class="kind-head" class:is-unsaved={dirtyEnabled} data-unsaved={dirtyEnabled || undefined}>
-    <div class="kind-head-say">
-      <h2 class="card-title">Repository settings</h2>
-      <p class="kind-head-sub">
-        Manage a setting and every repository is held to its value. Anything unmanaged is left
-        exactly as each repository has it
-      </p>
-    </div>
-    <Switch
-      checked={enabled}
-      label="Settings sync"
-      word="Syncing"
-      disabled={frozen}
-      onToggle={onToggleEnabled}
-    />
-  </div>
+  <!-- OPTIONS, not settings. The tree already has a Workspace settings row and a
+       Sync status one, and no two rows in it may share a word a reader navigates by -
+       which is also what this page is: GitHub's own repository options, held in step. -->
+  <PageHeader
+    id="sync-settings-heading"
+    section="Sync"
+    title="Repository options"
+    description="Managed options are enforced everywhere; anything unmanaged is left exactly as each repository has it"
+    statusUnsaved={dirtyEnabled}
+  >
+    {#snippet status()}
+      <SyncKindFacts
+        kind="settings"
+        {enabled}
+        status={syncStatus}
+        updatedBy={config?.updated_by ?? ''}
+        updatedAt={config?.updated_at ?? ''}
+        {nowMs}
+      />
+      <Switch
+        checked={enabled}
+        label={syncSwitchLabel('settings', enabled)}
+        word={syncSwitchWord(enabled)}
+        disabled={frozen}
+        onToggle={onToggleEnabled}
+      />
+    {/snippet}
+  </PageHeader>
 
   {#if problem !== null}
     <FormError message={problem} />
@@ -290,15 +300,15 @@
 
   {#if unreadable}
     <p class="sync-notice" role="alert">
-      This installation's settings are stored in a form this version of Smyklot cannot read, so they
+      This workspace's settings are stored in a form this version of Smyklot cannot read, so they
       are not shown and nothing here can be changed. Nothing has been lost.
     </p>
   {/if}
 
   {#if unavailable !== '' && enabled}
     <p class="sync-notice" role="status">
-      {unavailable}. Nothing here will be planned or changed until an owner grants it on the
-      installation's page on GitHub.
+      {unavailable}. Nothing here will be planned or changed until an owner grants it on the App's
+      installation page on GitHub.
     </p>
   {/if}
 
@@ -306,8 +316,8 @@
     <input
       class="matrix-search"
       type="search"
-      placeholder="Search settings"
-      aria-label="Search settings"
+      placeholder="Search options"
+      aria-label="Search options"
       bind:value={query}
     />
     <SegmentedControl
@@ -315,7 +325,7 @@
       label="Show"
       options={[
         { value: 'managed', label: 'Managed', badge: managedCount },
-        { value: 'everything', label: 'Everything', badge: SETTINGS_FIELD_TOTAL },
+        { value: 'everything', label: 'All', badge: SETTINGS_FIELD_TOTAL },
       ]}
       value={show}
       onSelect={(value) => (show = value as 'managed' | 'everything')}
@@ -324,23 +334,38 @@
 
   {#if visibleGroups.length === 0}
     <!-- The one honest answer to a search that matches nothing: the groups
-         stand down whole, so without this line the page went silently blank. -->
-    <p class="empty-note">No setting matches "{query.trim()}"</p>
+         stand down whole, so without this the page went silently blank. It is a
+         `.state-panel` like every other nothing-to-show, and it carries the way
+         back - it used to be a muted line offering none. -->
+    <div class="state-panel">
+      <span
+        ><strong>Nothing matches</strong> "{query.trim()}" here. Check the spelling, or clear the
+        search to see every setting again</span
+      >
+      <Button onclick={() => (query = '')}>Clear the search</Button>
+    </div>
+  {:else if managedCount === 0 && show === 'managed'}
+    <!-- Nothing is managed, so every group below is a heading over "0 of 6" and
+         nothing else. The page said that four times and never once said what it
+         meant. The groups stay, because their "Manage another setting" line is
+         the way out of this state - the panel names it and points at them. -->
+    <div class="state-panel">
+      <span
+        ><strong>No options are managed here.</strong> Every repository keeps its own GitHub settings
+        until one is managed below, and then every syncing repository is held to it</span
+      >
+      <Button onclick={() => (show = 'everything')}>Show every option</Button>
+    </div>
   {/if}
 
-  <div class="setting-groups">
+  <div class="setting-groups card-stack">
     {#each visibleGroups as group (group.id)}
       {@const rows = groupRows(group)}
       {@const rest = groupRest(group)}
-      <section
-        class="card group-card"
-        class:is-unsaved={groupDirty(group)}
-        data-unsaved={groupDirty(group) || undefined}
-        aria-labelledby="settings-group-{group.id}"
-      >
-        <div class="group-head">
-          <h3 class="group-name" id="settings-group-{group.id}">{group.title}</h3>
-          <span class="group-tally"
+      <Card unsaved={groupDirty(group)} labelledby="settings-group-{group.id}">
+        <div class="card-head">
+          <h2 class="card-title" id="settings-group-{group.id}">{group.title}</h2>
+          <span class="card-meta"
             >{group.fields.length - rest.length} of {group.fields.length} managed</span
           >
         </div>
@@ -364,7 +389,7 @@
                 </span>
                 {#if !managed}
                   <span class="policy-value">
-                    <span class="setting-unmanaged">Follows each repository</span>
+                    <span class="setting-unmanaged">From each repository</span>
                   </span>
                   <button
                     class="setting-clear"
@@ -372,7 +397,7 @@
                     disabled={frozen}
                     onclick={() => manage(field)}
                   >
-                    <Icon name="plus" size={10} />
+                    <Icon name="plus" size="micro" />
                   </button>
                 {:else if field.kind === 'switch'}
                   <span class="policy-value">
@@ -392,7 +417,7 @@
                     disabled={frozen}
                     onclick={() => unmanage(field)}
                   >
-                    <Icon name="close" size={10} />
+                    <Icon name="close" size="micro" />
                   </button>
                 {:else}
                   <span class="policy-value">
@@ -407,7 +432,7 @@
                           {...attributes}
                           class="value-select"
                           type="button"
-                          aria-label={field.label}
+                          aria-label={`${choiceWord(field)} - ${field.label}`}
                           disabled={frozen}
                         >
                           <span class="t">{choiceWord(field)}</span>
@@ -424,7 +449,7 @@
                             <span class="menu-check">
                               {#if stored[field.key] === option.value}<Icon
                                   name="check"
-                                  size={16}
+                                  size="base"
                                 />{/if}
                             </span>
                             <ClippedLabel class="mi-label" text={option.label} />
@@ -439,7 +464,7 @@
                     disabled={frozen}
                     onclick={() => unmanage(field)}
                   >
-                    <Icon name="close" size={10} />
+                    <Icon name="close" size="micro" />
                   </button>
                 {/if}
               </div>
@@ -461,7 +486,7 @@
               <span class="rest-picks">
                 {#each rest as field (field.key)}
                   <button class="add-chip" onclick={() => manage(field)}>
-                    <Icon name="plus" size={12} />
+                    <Icon name="plus" size="xs" />
                     <span class="t">{field.label}</span>
                   </button>
                 {/each}
@@ -474,13 +499,13 @@
                 )}</span
               >
               <Button tone="quiet" disabled={frozen} onclick={() => (picking = group.id)}>
-                {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
-                Manage one
+                {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
+                Manage another setting
               </Button>
             {/if}
           </div>
         {/if}
-      </section>
+      </Card>
     {/each}
   </div>
 </div>
@@ -492,50 +517,6 @@
 />
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
-  .kind-head {
-    align-items: start;
-    display: flex;
-    gap: var(--space-4);
-    justify-content: space-between;
-    margin-bottom: var(--space-4);
-  }
-
-  .kind-head-say {
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  .kind-head-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-  }
-
-  .kind-head :global(.switch) {
-    min-block-size: auto;
-  }
-
-  .kind-head.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-    margin-inline: calc(var(--space-2) * -1);
-    padding: var(--space-2);
-  }
-
-  .card-title {
-    font-size: var(--font-size-card-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 13px;
-    text-box: trim-both cap alphabetic;
-  }
-
   .sync-notice {
     background: var(--surface-inset);
     border-radius: var(--r-ctl);
@@ -546,12 +527,16 @@
 
   /* ---------- The tools row ---------- */
 
+  /* No margin below: this bar is always a child of the frame, whose gap is the
+     distance to what it acts on. A margin here as well made 32px where the
+     drawing has 16 - and stating it and standing it down in `app.css` does not
+     work from here, because a scoped rule TIES with the shared one and wins on
+     source order. */
   .matrix-tools {
     align-items: center;
     display: flex;
     gap: var(--space-3);
     justify-content: space-between;
-    margin-bottom: var(--space-4);
   }
 
   .matrix-search {
@@ -571,190 +556,29 @@
 
   /* ---------- Policy groups: the page is the policy ---------- */
 
-  /* Tall enough to read as a state, not a stray line - the empty-state
-     sweep holds every answer to a 40px floor. */
-  .empty-note {
-    align-content: center;
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    margin: 0 0 var(--space-4);
-    min-block-size: 3rem;
+  /* The no-match answer is a `.state-panel` from the shared sheet now, so the
+     only thing left to say here is where it sits in the page's rhythm. */
+  .view-frame > .state-panel {
+    margin-block-end: var(--space-4);
   }
 
-  .setting-groups {
-    display: grid;
-    gap: var(--space-6);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
-  .group-card.is-unsaved {
+  /* The head, the title and the tally beside it are the sheet's now - `card-head`,
+     `card-title`, `card-meta` - so what is left here is the one thing only this page
+     has: a card holding a change nobody has saved. */
+  .card.is-unsaved {
     border-color: color-mix(in srgb, var(--brand-action) 55%, var(--border-subtle));
   }
 
-  .group-head {
-    align-items: end;
-    display: flex;
-    gap: var(--space-3);
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-  }
-
-  .group-name {
-    font-size: var(--font-size-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 12px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .group-tally {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .group-note {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    margin: 0 0 var(--space-2);
-    max-width: 60ch;
-  }
-
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    /* The halo hangs outside the text column, so row text keeps the card
-       head's left edge. Whole numbers: 48 floor, 8px block padding. */
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    padding: 0.5rem var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved,
   .group-rest.is-unsaved {
     background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
     box-shadow: inset 2px 0 var(--brand-action);
   }
 
-  /* A drawn hairline, not a border: a border on a radiused row curves at
-     its tips and makes sibling rows measure one pixel apart. Every row owns
-     the line under itself, so the unmanaged remainder needs none of its own
-     and a card with no managed rows shows no line at all. */
-  .policy-row::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .policy-row:last-child::after {
-    content: none;
-  }
-
-  /* The last row keeps its line when the unmanaged remainder follows - that
-     line IS the remainder's separator. */
+  /* The unmanaged remainder is a summary line and not a row, so the list still seams into
+     it - that line IS the remainder's separator. */
   .policy-rows:has(+ .group-rest) > .policy-row:last-child::after {
     content: '';
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  /* The value said in a word beside the control, so a scan reads the
-     policy without decoding thumb positions. */
-  .value-word {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-inline-size: 1.9rem;
-    text-align: end;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .value-word.is-on {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-style: normal;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
+    inset-inline: var(--space-2);
   }
 
   /* Value select: a compact control for the 3+-choice settings. The arrow
@@ -774,7 +598,7 @@
     cursor: pointer;
     display: inline-flex;
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 1.5rem 0 var(--space-2);
   }
 
@@ -914,32 +738,6 @@
 
     .matrix-search {
       width: 100%;
-    }
-
-    .card {
-      padding: var(--space-4);
-    }
-
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      min-inline-size: 0;
-    }
-
-    .policy-row .policy-value {
-      grid-column: 1;
-      grid-row: 2;
-      justify-self: start;
-      min-inline-size: 0;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1 / 3;
-      opacity: 1;
     }
 
     .value-select {

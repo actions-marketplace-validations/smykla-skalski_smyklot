@@ -36,6 +36,7 @@
     RootRuntimeSettingsInput,
   } from '../types';
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import ClippedLabel from './ClippedLabel.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
   import FormattingEditor from './FormattingEditor.svelte';
@@ -70,36 +71,27 @@
     }
   > = {
     settings: {
-      ariaLabel: 'Root runtime settings',
-      title: 'Runtime settings',
-      subtitle: 'Runtime behavior and deployment-backed defaults',
-      loading: 'Loading runtime settings…',
-      unavailable: 'Runtime settings are unavailable',
+      ariaLabel: 'Service settings',
+      title: 'Service settings',
+      subtitle: 'Service configuration and the defaults every workspace inherits',
+      loading: 'Reading the settings…',
+      unavailable: 'The settings could not be read',
     },
     service: {
-      ariaLabel: 'Root service and deployment',
-      title: 'Service and deployment',
-      subtitle: 'Running service identity, listeners, endpoints, and credentials',
-      loading: 'Loading service information…',
-      unavailable: 'Service information is unavailable',
-    },
-    database: {
-      ariaLabel: 'Root database',
-      title: 'Database',
-      subtitle: 'Persistence health, capacity, and schema compatibility',
-      loading: 'Loading database status…',
-      unavailable: 'Database status is unavailable',
+      ariaLabel: 'Service health',
+      title: 'Service health',
+      subtitle: 'The running service, its listeners, credentials, and state store',
+      loading: 'Reading the service…',
+      unavailable: 'The service could not describe itself',
     },
   };
 
   const {
     section,
-    rootRole,
     fetchSettings,
     saveSettings,
   }: {
     section: RootRuntimeSection;
-    rootRole: string;
     fetchSettings: () => Promise<RootRuntimeSettings>;
     saveSettings?: (input: RootRuntimeSettingsInput) => Promise<RootRuntimeSettings>;
   } = $props();
@@ -319,6 +311,34 @@
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
+  /* What each credential is FOR, because "OAuth" on its own tells an operator
+     nothing about what breaks when it is missing. */
+  const CREDENTIALS = [
+    {
+      key: 'webhook',
+      name: 'Webhook secret',
+      why: 'Verifies every delivery GitHub sends',
+    },
+    {
+      key: 'app',
+      name: 'GitHub App key',
+      why: 'Signs the tokens every workspace call runs on',
+    },
+    {
+      key: 'oauth',
+      name: 'OAuth app secret',
+      why: 'Signs sign-in sessions. If it is wrong, sign-in fails',
+    },
+  ] as const;
+
+  function waitsSentence(connections: { wait_count: number; wait_ms: number }): string {
+    if (connections.wait_count === 0) {
+      return 'No caller has waited for a free connection since this service started';
+    }
+
+    return `Callers have waited ${connections.wait_count} ${connections.wait_count === 1 ? 'time' : 'times'} since startup, for ${formatElapsed(connections.wait_ms)} in total`;
+  }
+
   function formatUptime(seconds: number): string {
     const days = Math.floor(seconds / UNIT_SECONDS.days);
     const hours = Math.floor((seconds % UNIT_SECONDS.days) / UNIT_SECONDS.hours);
@@ -327,6 +347,17 @@
     return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
   }
 </script>
+
+<!--
+@component
+The service's own runtime settings, which are the only ones in the panel that are not
+about a repository. Sections rather than one long form, because these are unrelated
+knobs that happen to live in the same process.
+
+`saveSettings` is optional and its absence is the read-only view: an operator who may
+see how the service is configured without being able to change it gets the same page
+without the composer.
+-->
 
 {#snippet durationValue(spec: RuntimeDurationSpec, label: string)}
   {@const value = document?.[spec.key]}
@@ -365,7 +396,7 @@
           onclick={() => pickUnit(spec, unit)}
         >
           <span class="menu-check">
-            {#if editor.unit === unit}<Icon name="check" size={16} />{/if}
+            {#if editor.unit === unit}<Icon name="check" size="base" />{/if}
           </span>
           <ClippedLabel class="mi-label" text={UNIT_WORDS[unit]} />
         </button>
@@ -375,11 +406,7 @@
 {/snippet}
 
 <section class="root-settings" aria-label={SECTION_COPY[section].ariaLabel}>
-  <RootPageHeader
-    role={rootRole}
-    title={SECTION_COPY[section].title}
-    subtitle={SECTION_COPY[section].subtitle}
-  >
+  <RootPageHeader title={SECTION_COPY[section].title} subtitle={SECTION_COPY[section].subtitle}>
     {#if section === 'settings'}
       <StatusPill dot={settingsDirty}>Changes wait for Save</StatusPill>
     {/if}
@@ -400,14 +427,16 @@
 
     {#if section === 'settings'}
       {#if saveSettings !== undefined}
-        <section
-          class:paused={current.background_work_paused}
-          class="card emergency-card"
-          aria-labelledby="background-work-control"
+        <Card
+          class={current.background_work_paused ? 'emergency-card paused' : 'emergency-card'}
+          labelledby="background-work-control"
         >
           <div class="emergency-copy">
             <div class="emergency-heading">
-              <h3 class="group-name" id="background-work-control">Automatic background work</h3>
+              <!-- h2, like every card title on this page: these groups are the page's
+                   own sections, so an h3 under the page's h1 announced a level that was
+                   not there and then went back up to h2 for the cards below. -->
+              <h2 class="group-name" id="background-work-control">Automatic background work</h2>
               <StatusPill dot state={current.background_work_paused ? 'warning' : 'healthy'}>
                 {current.background_work_paused ? 'Paused' : 'Running'}
               </StatusPill>
@@ -415,10 +444,10 @@
             <p class="group-note emergency-note">
               {#if current.background_work_paused}
                 Queue items remain durable, but webhook delivery, pending CI, sync, and maintenance
-                will not start new work.
+                will not start new work
               {:else}
-                Every queue lane can start eligible work. Use this control to stop automatic
-                dispatch without taking the panel or webhook intake offline.
+                Every job starts the work that is due. Use this control to stop automatic dispatch
+                without taking the panel or webhook intake offline
               {/if}
             </p>
           </div>
@@ -439,44 +468,20 @@
               Pause automatic work
             </Button>
           {/if}
-        </section>
+        </Card>
       {/if}
 
-      <ConfigEditor
-        patch={runtimeConfigPatch(
-          current.behavior_defaults.deployment,
-          current.behavior_defaults.override,
-        )}
-        inherited={current.behavior_defaults.deployment}
-        scope="runtime"
-        idPrefix="root"
-        disabled={saving}
-        dirtyKeys={dirtyConfigKeys}
-        onChange={updateBehavior}
-      />
-
-      <FormattingEditor
-        patch={runtimeConfigPatch(
-          current.behavior_defaults.deployment,
-          current.behavior_defaults.override,
-        ).formatting ?? {}}
-        inherited={current.behavior_defaults.deployment.formatting}
-        scope="runtime"
-        idPrefix="root"
-        disabled={saving}
-        dirtyKeys={dirtyFormattingKeys}
-        onChange={updateFormatting}
-        onValidity={setFormattingValidity}
-      />
-
-      <section class="card group-card" aria-labelledby="root-runtime">
+      <!-- The service's own settings lead the page, and what workspaces inherit
+           follows: a reader who came to change the log level was reading past ten
+           cards of defaults to find two rows about the process they are running. -->
+      <Card class="group-card" labelledby="root-runtime">
         <div class="group-head">
-          <h3 class="group-name" id="root-runtime">Runtime</h3>
+          <h2 class="group-name" id="root-runtime">Runtime</h2>
           <span class="group-tally">{runtimeOverridden} of 2 overridden</span>
         </div>
         <p class="group-note">
           Applied to the running process without a restart. Background-work cadence and timing are
-          managed in <a href="/root/schedules">Schedules</a>.
+          managed in <a href="/root/schedules">Schedules</a>
         </p>
         <div class="policy-rows">
           <div
@@ -490,7 +495,7 @@
             {#if current.log_level.override === null}
               <span class="policy-value">
                 <span class="setting-unmanaged"
-                  >Follows the deployment - {capitalize(current.log_level.deployment)}</span
+                  >From the deployment: {capitalize(current.log_level.deployment)}</span
                 >
               </span>
               <button
@@ -499,7 +504,7 @@
                 disabled={saving}
                 onclick={() => setLogLevel(current.log_level.deployment)}
               >
-                <Icon name="plus" size={10} />
+                <Icon name="plus" size="micro" />
               </button>
             {:else}
               <span class="policy-value">
@@ -535,7 +540,7 @@
                         <span class="menu-check">
                           {#if current.log_level.override === option.value}<Icon
                               name="check"
-                              size={16}
+                              size="base"
                             />{/if}
                         </span>
                         <ClippedLabel class="mi-label" text={option.label} />
@@ -546,11 +551,11 @@
               </span>
               <button
                 class="setting-clear"
-                title="Stop overriding - follow the deployment configuration"
+                title="Stop overriding - take the value from the deployment"
                 disabled={saving}
                 onclick={() => setLogLevel(null)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
             {/if}
           </div>
@@ -566,9 +571,9 @@
             data-unsaved={controlDirty('runtime.session_ttl_seconds') || undefined}
           >
             <span class="setting-say">
-              <span class="setting-name">Panel sessions</span>
+              <span class="setting-name">Sign-in sessions</span>
               <span class="setting-why"
-                >Reductions shorten active sessions; increases apply to new sessions</span
+                >Shorter limits end active sessions sooner; longer limits affect new sessions</span
               >
               {#if durationProblem(SESSION_SPEC) !== null}
                 <span class="setting-problem">{durationProblem(SESSION_SPEC)}</span>
@@ -577,7 +582,7 @@
             {#if current.session_lifetime.override_seconds === null}
               <span class="policy-value">
                 <span class="setting-unmanaged"
-                  >Follows the deployment - {formatDuration(
+                  >From the deployment: {formatDuration(
                     current.session_lifetime.deployment_seconds,
                     SESSION_SPEC.units,
                   )}</span
@@ -590,7 +595,7 @@
                 onclick={() =>
                   setDuration(SESSION_SPEC, current.session_lifetime.deployment_seconds)}
               >
-                <Icon name="plus" size={10} />
+                <Icon name="plus" size="micro" />
               </button>
             {:else}
               <span class="policy-value">
@@ -598,20 +603,47 @@
               </span>
               <button
                 class="setting-clear"
-                title="Stop overriding - follow the deployment configuration"
+                title="Stop overriding - take the value from the deployment"
                 disabled={saving}
                 onclick={() => setDuration(SESSION_SPEC, null)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
             {/if}
           </div>
         </div>
-      </section>
+      </Card>
+
+      <ConfigEditor
+        patch={runtimeConfigPatch(
+          current.behavior_defaults.deployment,
+          current.behavior_defaults.override,
+        )}
+        inherited={current.behavior_defaults.deployment}
+        scope="runtime"
+        idPrefix="root"
+        disabled={saving}
+        dirtyKeys={dirtyConfigKeys}
+        onChange={updateBehavior}
+      />
+
+      <FormattingEditor
+        patch={runtimeConfigPatch(
+          current.behavior_defaults.deployment,
+          current.behavior_defaults.override,
+        ).formatting ?? {}}
+        inherited={current.behavior_defaults.deployment.formatting}
+        scope="runtime"
+        idPrefix="root"
+        disabled={saving}
+        dirtyKeys={dirtyFormattingKeys}
+        onChange={updateFormatting}
+        onValidity={setFormattingValidity}
+      />
 
       {#if current.updated_at !== undefined}
         <p class="updated-note">
-          Runtime settings last changed <time datetime={current.updated_at}
+          Service settings last changed <time datetime={current.updated_at}
             >{new Date(current.updated_at).toLocaleString()}</time
           >
           {#if current.updated_by !== undefined}
@@ -620,129 +652,141 @@
       {/if}
     {/if}
 
-    {#if section === 'database'}
-      <section class="card group-card" aria-labelledby="root-database">
-        <div class="group-head">
-          <h3 class="group-name" id="root-database">Database</h3>
-          <StatusPill dot state={current.service.database.state}>
-            {current.service.database.state}
-          </StatusPill>
+    {#if section === 'service'}
+      {@const database = current.service.database}
+      <!-- One page and one voice. The service was one card and its database another,
+           each opening with a card title that repeated the page's own, and each
+           laying its facts out as a grid of labels: "WAITS SINCE START 2 · 41 ms"
+           is two numbers and a riddle. Every fact here is a row that says what it
+           means. -->
+      <Card>
+        <div class="setting-rows">
+          <div class="setting-row">
+            <span class="setting-say"><span class="setting-name">Version</span></span>
+            <span class="setting-value">
+              <span class="setting-fact"
+                >{current.service.version || 'development'} · up
+                <span class="nowrap-atom">{formatUptime(current.service.uptime_seconds)}</span
+                ></span
+              >
+            </span>
+          </div>
+          <div class="setting-row">
+            <span class="setting-say">
+              <span class="setting-name">Listeners</span>
+              <span class="setting-why"
+                >The webhook port faces GitHub; the admin port stays inside</span
+              >
+            </span>
+            <span class="setting-value">
+              <span class="setting-fact"
+                ><span class="nowrap-atom">public {current.service.listeners.public}</span> ·
+                <span class="nowrap-atom">admin {current.service.listeners.admin}</span></span
+              >
+            </span>
+          </div>
+          <div class="setting-row">
+            <span class="setting-say">
+              <span class="setting-name">Paths</span>
+              <span class="setting-why">Where this panel and GitHub's deliveries arrive</span>
+            </span>
+            <span class="setting-value">
+              <span class="setting-fact"
+                ><span class="nowrap-atom">panel {current.service.public_paths.panel}</span> ·
+                <span class="nowrap-atom">webhook {current.service.public_paths.webhook}</span
+                ></span
+              >
+            </span>
+          </div>
         </div>
-        <dl class="service-grid">
-          <div>
-            <dt>Engine</dt>
-            <dd>{current.service.database.engine}</dd>
+      </Card>
+
+      <!-- Every credential the panel depends on, with its state: sign-in's behaviour
+           and this page can never tell different stories. -->
+      <Card>
+        <div class="card-head"><h2 class="card-title">Credentials</h2></div>
+        <div class="setting-rows">
+          {#each CREDENTIALS as credential (credential.key)}
+            {@const present = current.service.credential_presence[credential.key]}
+            <div class="setting-row">
+              <span class="setting-say">
+                <span class="setting-name">{credential.name}</span>
+                <span class="setting-why">{credential.why}</span>
+              </span>
+              <span class="setting-value">
+                <span class="mx-mark" class:mx-instep={present} class:mx-refused={!present}>
+                  <span class="t">{present ? 'Configured' : 'Missing'}</span>
+                </span>
+              </span>
+            </div>
+          {/each}
+        </div>
+      </Card>
+
+      <Card>
+        <div class="card-head">
+          <h2 class="card-title">Database</h2>
+          <StatusPill dot state={database.state}>{database.state}</StatusPill>
+        </div>
+        <div class="setting-rows">
+          <div class="setting-row">
+            <span class="setting-say"><span class="setting-name">Engine</span></span>
+            <span class="setting-value">
+              <span class="setting-fact"
+                >{database.engine}{database.version === '' ? '' : ` ${database.version}`} · schema
+                {database.schema_version} ·
+                <span class="nowrap-atom">{formatBytes(database.size_bytes)}</span></span
+              >
+            </span>
           </div>
-          <div>
-            <dt>Server version</dt>
-            <dd>{current.service.database.version || 'unknown'}</dd>
+          <div class="setting-row">
+            <span class="setting-say"><span class="setting-name">Responsiveness</span></span>
+            <span class="setting-value">
+              <span class="setting-fact"
+                >answers in
+                <span class="nowrap-atom">{formatLatency(database.latency_ms)}</span></span
+              >
+            </span>
           </div>
-          <div>
-            <dt>Schema version</dt>
-            <dd>{current.service.database.schema_version}</dd>
+          <div class="setting-row">
+            <span class="setting-say">
+              <span class="setting-name">Connections</span>
+              <!-- The waits are cumulative, unlike the counts beside them: a pool
+                   that reads idle now may still have held the service up an hour
+                   ago, which is the only reason this number is worth keeping. -->
+              <span class="setting-why">{waitsSentence(database.connections)}</span>
+            </span>
+            <span class="setting-value">
+              <span class="setting-fact nowrap-atom"
+                >{database.connections.in_use} of {database.connections.max} open</span
+              >
+            </span>
           </div>
-          <div>
-            <dt>Size</dt>
-            <dd>{formatBytes(current.service.database.size_bytes)}</dd>
-          </div>
-          <div>
-            <dt>Response</dt>
-            <dd>{formatLatency(current.service.database.latency_ms)}</dd>
-          </div>
-          <div class="wide">
-            <dt>Connections</dt>
-            <dd>
-              {current.service.database.connections.in_use} in use · {current.service.database
-                .connections.open} open · {current.service.database.connections.max} maximum
-            </dd>
-          </div>
-          <div>
-            <!-- Cumulative, unlike the counts beside it: a pool that reads idle
-                 now may still have held the service up earlier. -->
-            <dt>Waits since start</dt>
-            <dd>
-              {current.service.database.connections.wait_count} · {formatElapsed(
-                current.service.database.connections.wait_ms,
-              )}
-            </dd>
-          </div>
-          {#if current.service.database.detail !== undefined}
-            <div class="full">
-              <dt>Reported</dt>
-              <dd class="database-detail">{current.service.database.detail}</dd>
+          {#if database.detail !== undefined}
+            <div class="setting-row">
+              <span class="setting-say">
+                <span class="setting-name">Reported</span>
+                <span class="setting-why">{database.detail}</span>
+              </span>
+              <span class="setting-value"></span>
             </div>
           {/if}
-        </dl>
-      </section>
-    {/if}
-
-    {#if section === 'service'}
-      <section class="card group-card" aria-labelledby="root-service">
-        <div class="group-head">
-          <h3 class="group-name" id="root-service">Service and deployment</h3>
         </div>
-        <dl class="service-grid">
-          <div>
-            <dt>Version</dt>
-            <dd>{current.service.version}</dd>
-          </div>
-          <div>
-            <dt>Uptime</dt>
-            <dd>{formatUptime(current.service.uptime_seconds)}</dd>
-          </div>
-          <div>
-            <dt>Public listener</dt>
-            <dd><code>{current.service.listeners.public}</code></dd>
-          </div>
-          <div>
-            <dt>Admin listener</dt>
-            <dd><code>{current.service.listeners.admin}</code></dd>
-          </div>
-          <div>
-            <dt>Panel path</dt>
-            <dd><code>{current.service.public_paths.panel}</code></dd>
-          </div>
-          <div>
-            <dt>Webhook path</dt>
-            <dd><code>{current.service.public_paths.webhook}</code></dd>
-          </div>
-          <div class="full">
-            <dt>GitHub API</dt>
-            <dd><code>{current.service.provider_endpoints.api}</code></dd>
-          </div>
-          <div class="full">
-            <dt>OAuth authorization</dt>
-            <dd><code>{current.service.provider_endpoints.authorize}</code></dd>
-          </div>
-          <div class="full">
-            <dt>OAuth token exchange</dt>
-            <dd><code>{current.service.provider_endpoints.token}</code></dd>
-          </div>
-          <div class="wide">
-            <dt>Credentials present</dt>
-            <dd class="credential-list">
-              <span
-                class="pill"
-                class:pill-success={current.service.credential_presence.webhook}
-                class:pill-muted={!current.service.credential_presence.webhook}
-                ><span class="t">Webhook</span></span
-              >
-              <span
-                class="pill"
-                class:pill-success={current.service.credential_presence.app}
-                class:pill-muted={!current.service.credential_presence.app}
-                ><span class="t">GitHub App</span></span
-              >
-              <span
-                class="pill"
-                class:pill-success={current.service.credential_presence.oauth}
-                class:pill-muted={!current.service.credential_presence.oauth}
-                ><span class="t">OAuth</span></span
-              >
-            </dd>
-          </div>
-        </dl>
-      </section>
+      </Card>
+
+      <Card>
+        <div class="card-head"><h2 class="card-title">Where it talks to GitHub</h2></div>
+        <div class="setting-rows">
+          {#each [{ name: 'API', value: current.service.provider_endpoints.api }, { name: 'Sign-in', value: current.service.provider_endpoints.authorize }, { name: 'Token exchange', value: current.service.provider_endpoints.token }] as endpoint (endpoint.name)}
+            <div class="setting-row">
+              <span class="setting-say"><span class="setting-name">{endpoint.name}</span></span>
+              <span class="setting-value">
+                <span class="setting-fact"><code>{endpoint.value}</code></span>
+              </span>
+            </div>
+          {/each}
+        </div>
+      </Card>
     {/if}
   {/if}
 </section>
@@ -760,8 +804,8 @@
   busy={pauseSaving}
 >
   <p class="confirm-copy">
-    No queue lane will lease new work. Work already running may finish, and incoming webhooks remain
-    stored for later delivery. Root can resume dispatch from this page.
+    No job will take on new work. Work already running may finish, and incoming webhooks remain
+    stored for later delivery. An operator can resume dispatch from this page.
   </p>
 </ConfirmDialog>
 
@@ -769,13 +813,9 @@
   .root-settings {
     display: grid;
     gap: var(--space-4);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
+    /* This stack spaces its children, so the head it holds owes only the rest of
+       its exit - see `--head-exit-gap` in `app.css`. */
+    --head-exit-gap: var(--space-4);
   }
 
   .group-head {
@@ -786,17 +826,10 @@
     margin-bottom: var(--space-2);
   }
 
-  .emergency-card {
-    align-items: center;
-    display: flex;
-    gap: var(--space-5);
-    justify-content: space-between;
-  }
-
-  .emergency-card.paused {
-    background: color-mix(in srgb, var(--warning) 7%, var(--surface-base));
-    border-color: color-mix(in srgb, var(--warning) 42%, var(--border-subtle));
-  }
+  /* `.emergency-card` and its paused tint are in `app.css`. They are worn by `Card`'s own
+     root element, which never carries this component's scope class - so written here they
+     matched nothing, the row never became a row, and the button sat under the sentence
+     with no space between them. */
 
   .emergency-copy {
     display: grid;
@@ -808,11 +841,14 @@
     align-items: center;
     display: flex;
     gap: var(--space-3);
+    /* The line this heading's companions are held to - its own title's cap. */
+    --head-line: 12px;
   }
 
+  /* No measure, like every other card note: the copy column is already bounded by the
+     act beside it, and a cap on top of that broke one sentence across two lines. */
   .emergency-note {
     margin: 0;
-    max-width: 76ch;
   }
 
   .confirm-copy {
@@ -824,6 +860,10 @@
     font-size: var(--font-size-title);
     font-weight: 600;
     margin: 0;
+    /* This heading's own cap, which is not the card title's: the type is a step smaller.
+       Forced to the card's 13px line the box gained 1.1px it could not fill, and since a
+       block box fills from the top the words sat half a pixel above their own centre -
+       which the alignment sweep reads, correctly, as a row that does not centre. */
     min-block-size: 12px;
     text-box: trim-both cap alphabetic;
   }
@@ -849,141 +889,17 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .group-note {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    margin: 0 0 var(--space-2);
-    max-width: 60ch;
-  }
-
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    /* The air around a drawn hairline is the card's own padding, on both
-       sides; the edge rows shed it where no line follows, since the card
-       edge already carries that inset. */
-    padding: var(--space-5) var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
   .policy-row.is-invalid {
     background: color-mix(in srgb, var(--danger) 7%, var(--surface-base));
     box-shadow: inset 2px 0 var(--danger);
   }
 
-  .policy-row:first-child {
-    padding-block-start: var(--space-2);
-  }
-
-  .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  /* Every row owns the drawn hairline under itself; the last one stands
-     down, so the card ends on its own padding. */
-  .policy-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
+  /* A third line in the say stack, on the same rhythm the sentence above it takes from
+     the shared law - `1cap` read in this line's own voice, not the row's. */
   .setting-problem {
     color: var(--danger);
     font-size: var(--font-size-compact);
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  .value-word {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-inline-size: 1.9rem;
-    text-align: end;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-style: normal;
-    /* Ink-true, so the padding around the hairlines measures to the glyphs
-       rather than to the line box's leading. */
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
+    margin-block-start: calc(var(--leading-compact) - 1cap);
   }
 
   .value-select {
@@ -1001,7 +917,7 @@
     cursor: pointer;
     display: inline-flex;
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 1.5rem 0 var(--space-2);
   }
 
@@ -1070,7 +986,7 @@
     color: var(--text-primary);
     font-family: var(--mono);
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 var(--space-2);
     text-align: end;
     width: 5rem;
@@ -1078,7 +994,7 @@
 
   .num-inline:focus-visible {
     border-color: var(--brand-action);
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
   }
 
   .num-inline[aria-invalid='true'] {
@@ -1087,13 +1003,13 @@
 
   .pill {
     align-items: center;
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -1110,62 +1026,6 @@
   .pill-muted {
     background: var(--surface-inset);
     color: var(--text-muted);
-  }
-
-  /* A definition list, not a wall of boxed tiles: every other read-only key/value
-     block in the product (the overview's service card, the ownership legend, the
-     audit record) is a plain dl with an uppercase micro key over a mono value.
-     Boxing each field drew ten competing surfaces inside one plate and left
-     holes wherever a row did not fill its four columns. */
-  .service-grid {
-    display: grid;
-    gap: var(--space-4) var(--space-6);
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    margin: 0;
-  }
-
-  .service-grid > div {
-    min-width: 0;
-  }
-
-  .service-grid .wide {
-    grid-column: span 2;
-  }
-
-  .service-grid .full {
-    grid-column: 1 / -1;
-  }
-
-  /* A driver's own words, which wrap and do not shorten. Everything else in
-     this grid is a value that fits its cell. */
-  .database-detail {
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
-
-  dt {
-    color: var(--text-muted);
-    font: 700 var(--font-size-micro) / 1.3 var(--sans);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  dd {
-    font: 600 var(--font-size-compact) / 1.5 var(--mono);
-    margin: 0.15rem 0 0;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  /* The value is already mono; a nested code element would only re-declare it. */
-  dd code {
-    font: inherit;
-  }
-
-  .credential-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
   }
 
   .updated-note {
@@ -1193,51 +1053,11 @@
     flex-direction: column;
   }
 
-  @media (max-width: 64rem) {
-    .service-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-
-  @media (max-width: 40rem) {
-    .service-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .service-grid .wide {
-      grid-column: auto;
-    }
-  }
-
   /* On a phone the head's three parts cannot share one line - the tally or
      pill drops under the title instead of holding the card wide. */
   @media (max-width: 30rem) {
     .group-head {
       flex-wrap: wrap;
-    }
-
-    /* The say keeps the line and the control moves under it - beside it,
-       the copy was down to a word a line while the control still ran off
-       the screen and took the layout viewport with it. */
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
-    }
-
-    .policy-row .policy-value {
-      flex-wrap: wrap;
-      grid-column: 1 / -1;
-      justify-self: start;
     }
   }
 </style>

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import HistoryPanelHarness from './support/HistoryPanelHarness.svelte';
 import type {
   AuditEntry,
-  InstallationSettingsBatchResponse,
+  WorkspaceSettingsBatchResponse,
   RootRuntimeSettings,
   SettingsCheckpoint,
   SettingsRestoreInput,
@@ -126,7 +126,7 @@ function auditEntries(): AuditEntry[] {
       target_id: 'target-from-entry',
       actor,
       action: 'installation.settings.saved',
-      summary: 'Saved installation settings',
+      summary: 'Saved workspace settings',
       settings_checkpoint_id: genericCheckpoint.id,
       created_at: genericCheckpoint.created_at,
     },
@@ -172,14 +172,16 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
   it('uses generic settings checkpoints as the only inspection path', async () => {
     const { fetchSettingsCheckpoint } = mount();
     const settingsInspect = await screen.findByRole('button', {
-      name: 'Saved installation settings, inspect settings snapshot',
+      name: 'Bart Smykla saved workspace settings, inspect the settings snapshot',
     });
     await fireEvent.click(settingsInspect);
     await screen.findByRole('dialog', { name: 'Settings history' });
     expect(fetchSettingsCheckpoint).toHaveBeenCalledWith('target-from-entry', 'settings-1');
     expect(screen.getByText('You can inspect this snapshot, but cannot restore it')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Restore selected' })).toBeNull();
-    expect(screen.getByText('Reset migrated repository configuration')).toBeTruthy();
+    // The entry with no checkpoint behind it is still a line in the record - it just
+    // opens nothing, so it is read as a sentence rather than found as a control.
+    expect(screen.getByText(/reset migrated repository configuration/u)).toBeTruthy();
   });
 
   it('routes targetless Root history through runtime checkpoint inspection and restore', async () => {
@@ -203,7 +205,6 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
       props: {
         queryClient,
         context: 'root',
-        rootRole: 'Super Root',
         targetId: 'root',
         section: 'audit',
         readOnly: false,
@@ -231,12 +232,12 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
 
     await fireEvent.click(
       await screen.findByRole('button', {
-        name: 'Saved runtime settings, inspect settings snapshot',
+        name: 'Bart Smykla saved runtime settings, inspect the settings snapshot',
       }),
     );
     await screen.findByRole('dialog', { name: 'Settings history' });
     expect(fetchRootSettingsCheckpoint).toHaveBeenCalledWith('runtime-1');
-    expect(screen.getByRole('checkbox', { name: 'Restore Runtime settings' })).toHaveProperty(
+    expect(screen.getByRole('checkbox', { name: 'Restore Service settings' })).toHaveProperty(
       'checked',
       true,
     );
@@ -254,7 +255,7 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
 
   it('restores a target checkpoint from global Root history', async () => {
     const fetchSettingsCheckpoint = vi.fn(async () => genericCheckpoint);
-    const restored = { checkpoint_id: 'restored-1' } satisfies InstallationSettingsBatchResponse;
+    const restored = { checkpoint_id: 'restored-1' } satisfies WorkspaceSettingsBatchResponse;
     const restoreSettingsCheckpoint = vi.fn(
       async (targetId: string, checkpointId: string, input: SettingsRestoreInput) => {
         void targetId;
@@ -285,7 +286,7 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
 
     await fireEvent.click(
       await screen.findByRole('button', {
-        name: 'Saved installation settings, inspect settings snapshot',
+        name: 'Bart Smykla saved workspace settings, inspect the settings snapshot',
       }),
     );
     await screen.findByRole('dialog', { name: 'Settings history' });
@@ -322,7 +323,7 @@ describe('HistoryPanel settings checkpoints [Component]', () => {
 
     await fireEvent.click(
       await screen.findByRole('button', {
-        name: 'Saved installation settings, inspect settings snapshot',
+        name: 'Bart Smykla saved workspace settings, inspect the settings snapshot',
       }),
     );
     expect(

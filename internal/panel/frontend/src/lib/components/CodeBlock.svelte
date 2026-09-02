@@ -1,10 +1,4 @@
 <script lang="ts">
-  /**
-   * A read-only code window: the template a repository is held to, or the
-   * copy it ends up with. Every line numbered, tokenized by the file's own
-   * language, and - where a set of line numbers is handed in - wearing the
-   * managed gutter bar on the lines an adjustment rewrote.
-   */
   import { tokenizeLine, type CodeLang } from '../code-tokens';
 
   const {
@@ -20,6 +14,14 @@
 
   const lines = $derived(text.replace(/\n$/, '').split('\n'));
 </script>
+
+<!--
+@component
+A read-only code window: the template a repository is held to, or the
+copy it ends up with. Every line numbered, tokenized by the file's own
+language, and - where a set of line numbers is handed in - wearing the
+managed gutter bar on the lines an adjustment rewrote.
+-->
 
 <div class="code">
   <pre>{#each lines as line, index (index)}<div
@@ -40,7 +42,11 @@
     font-family: var(--mono);
     font-size: var(--font-size-compact);
     /* Whole per line, or N lines compound the fraction. */
-    line-height: round(1.65em, 1px);
+    /* 20px, the meta tier. Code is set at the compact size and takes the tier above
+       its own, because a line of code is denser than a line of prose and needs the
+       room back - and 20 is a step the scale already has rather than a figure this
+       one surface invented. */
+    line-height: var(--leading-meta);
     overflow-x: auto;
     padding: var(--space-3) 0;
   }

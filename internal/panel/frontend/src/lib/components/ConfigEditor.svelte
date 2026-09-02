@@ -17,15 +17,16 @@
   import { COMMANDS } from '../types';
   import type { ConfigKey, ConfigPatch, ConfigValues } from '../types';
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
   import Switch from './Switch.svelte';
 
   /* The linked-value rows name their inheritance source per scope. */
   const SOURCE_BY_SCOPE = {
-    target: 'the application defaults',
+    target: "Smyklot's defaults",
     repository: 'workspace defaults',
-    runtime: 'the deployment configuration',
+    runtime: 'the deployment',
   } as const;
 
   const {
@@ -33,6 +34,7 @@
     inherited,
     scope,
     idPrefix,
+    anchorPrefix,
     disabled = false,
     section = 'all',
     only,
@@ -43,6 +45,8 @@
     inherited: ConfigValues;
     scope: 'target' | 'repository' | 'runtime';
     idPrefix: string;
+    /** Names the cards so a page index can link to them: `<prefix>-behavior`, `-commands`. */
+    anchorPrefix?: string;
     disabled?: boolean;
     section?: 'all' | 'behavior' | 'commands';
     /** Render only these behavior rows. Used by the repository-file pane, which
@@ -170,21 +174,48 @@
   function cloneValue<T>(value: T): T {
     return JSON.parse(JSON.stringify(value)) as T;
   }
+
+  /**
+   * What the unset settings are, said as scent rather than as a list.
+   *
+   * Every name spelled out ran the row's sentence to three lines and made the remainder
+   * the loudest thing in the card; three names and a count says the same thing in one.
+   */
+  function scent(fields: readonly BooleanField[]): string {
+    const names = fields.map((field) => field.label.toLowerCase());
+    if (names.length <= 4) return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+    const rest = names.length - 3;
+    return `${names.slice(0, 3).join(', ')}, and ${rest} ${rest === 1 ? 'other' : 'others'}`;
+  }
 </script>
 
-{#snippet clearButton(key: ConfigKey, what: string)}
-  <button
-    class="setting-clear"
+<!--
+@component
+The settings a scope overrides, and what each would be if it did not. Every row shows
+the inherited value beside the chosen one, so an override is always visibly a departure
+rather than just a value.
+
+`scope` decides what may be set at all - a repository can narrow what its workspace
+allows and never widen it - and `only` renders a subset for a pane that shows a few
+rows in another context.
+
+The clear button is the way back to inherited, and it is what makes an override
+reversible: without it a reader who overrides a value can never return to following the
+account again.
+-->
+
+{#snippet resetButton(key: ConfigKey)}
+  <!-- A WORD, NOT A GLYPH. The bare x read as "delete this setting" where it means
+       "stop answering here and follow the account again". -->
+  <Button
+    tone="quiet"
     title="Stop overriding - follow {source}"
-    aria-label="Stop overriding {what}"
     disabled={editorDisabled}
-    onclick={() => clearField(key)}
+    onclick={() => clearField(key)}>Reset</Button
   >
-    <Icon name="close" size={10} />
-  </button>
 {/snippet}
 
-<div class="config-editor">
+<div class="config-editor card-stack">
   {#if section === 'all' || section === 'behavior'}
     {#if only !== undefined}
       <!-- The repository-file pane's list: just the rows in effect, no card of
@@ -193,7 +224,7 @@
         {#each overriddenFields as field (field.key)}
           {@const on = fieldEnabled(field, effectiveValue(draft, inherited, field.key))}
           <div
-            class={['policy-row', { 'is-unsaved': dirtyKeySet.has(field.key) }]}
+            class={['policy-row', 'is-managed', { 'is-unsaved': dirtyKeySet.has(field.key) }]}
             data-unsaved={dirtyKeySet.has(field.key) || undefined}
           >
             <span class="setting-say">
@@ -208,96 +239,107 @@
                 disabled={editorDisabled}
                 onToggle={(next) => toggleBoolean(field, next)}
               />
+              {@render resetButton(field.key)}
             </span>
-            {@render clearButton(field.key, field.label)}
           </div>
         {/each}
       </div>
     {:else}
-      <section class="card group-card" aria-labelledby="config-{scope}-{idPrefix}-behavior">
-        <div class="group-head">
-          <h3 class="group-name" id="config-{scope}-{idPrefix}-behavior">Behavior</h3>
-          <span class="group-tally"
-            >{overriddenFields.length} of {shownFields.length} overridden</span
-          >
+      <Card
+        id={anchorPrefix === undefined ? undefined : `${anchorPrefix}-behavior`}
+        labelledby="config-{scope}-{idPrefix}-behavior"
+      >
+        <div class="card-head">
+          <h2 class="card-title" id="config-{scope}-{idPrefix}-behavior">Behavior</h2>
+          <span class="card-meta">{overriddenFields.length} of {shownFields.length} set here</span>
         </div>
-        <p class="group-note">How Smyklot replies and which safeguards apply</p>
-        {#if overriddenFields.length > 0}
-          <div class="policy-rows">
-            {#each overriddenFields as field (field.key)}
-              {@const on = fieldEnabled(field, effectiveValue(draft, inherited, field.key))}
-              <div
-                class={['policy-row', { 'is-unsaved': dirtyKeySet.has(field.key) }]}
-                data-unsaved={dirtyKeySet.has(field.key) || undefined}
-              >
-                <span class="setting-say">
-                  <span class="setting-name">{field.label}</span>
-                  <span class="setting-why">{field.help}</span>
-                </span>
-                <span class="policy-value">
-                  <span class="value-word" class:is-on={on}>{on ? 'On' : 'Off'}</span>
-                  <Switch
-                    checked={on}
-                    label={field.label}
-                    disabled={editorDisabled}
-                    onToggle={(next) => toggleBoolean(field, next)}
-                  />
-                </span>
-                {@render clearButton(field.key, field.label)}
-              </div>
-            {/each}
-          </div>
-        {/if}
-        {#if restFields.length > 0}
-          {@const names = restFields.map((field) => field.label)}
-          <div class="group-rest" class:is-open={picking}>
-            {#if picking}
-              <span class="rest-say"
-                ><span class="rest-count">{restFields.length} follow {source}</span> - pick one to override:</span
-              >
-              <span class="rest-picks">
-                {#each restFields as field (field.key)}
-                  <button class="add-chip" disabled={editorDisabled} onclick={() => manage(field)}>
-                    <Icon name="plus" size={12} />
-                    <span class="t">{field.label}</span>
-                  </button>
-                {/each}
-                <Button tone="quiet" onclick={() => (picking = false)}>Cancel</Button>
+        <div class="policy-rows">
+          {#each overriddenFields as field (field.key)}
+            {@const on = fieldEnabled(field, effectiveValue(draft, inherited, field.key))}
+            <div
+              class={['policy-row', 'is-managed', { 'is-unsaved': dirtyKeySet.has(field.key) }]}
+              data-unsaved={dirtyKeySet.has(field.key) || undefined}
+            >
+              <span class="setting-say">
+                <span class="setting-name">{field.label}</span>
+                <span class="setting-why">{field.help}</span>
               </span>
-            {:else}
-              <span class="rest-say"
-                ><span class="rest-count">{restFields.length} follow {source}</span> - {names.join(
-                  ', ',
-                )}</span
-              >
-              <Button tone="quiet" disabled={editorDisabled} onclick={() => (picking = true)}>
-                {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
-                Override one
-              </Button>
-            {/if}
-          </div>
-        {/if}
-      </section>
+              <span class="policy-value">
+                <span class="value-word" class:is-on={on}>{on ? 'On' : 'Off'}</span>
+                <Switch
+                  checked={on}
+                  label={field.label}
+                  disabled={editorDisabled}
+                  onToggle={(next) => toggleBoolean(field, next)}
+                />
+                {@render resetButton(field.key)}
+              </span>
+            </div>
+          {/each}
+          <!-- THE REMAINDER IS A ROW, not a footer under the list. It is one more thing
+               this card has to say about the same nine settings, and said in a strip of
+               its own it read as a second card's worth of chrome. -->
+          {#if restFields.length > 0}
+            <div class="policy-row" class:is-stacked={picking}>
+              <span class="setting-say">
+                <span class="setting-name"
+                  >{restFields.length}
+                  {overriddenFields.length === 0 ? '' : 'more '}follow {source}</span
+                >
+                <span class="setting-why">{scent(restFields)}</span>
+              </span>
+              {#if picking}
+                <span class="policy-value setting-value-wrap">
+                  {#each restFields as field (field.key)}
+                    <button
+                      class="add-chip"
+                      disabled={editorDisabled}
+                      onclick={() => manage(field)}
+                    >
+                      <Icon name="plus" size="xs" />
+                      <span class="t">{field.label}</span>
+                    </button>
+                  {/each}
+                  <Button tone="quiet" onclick={() => (picking = false)}>Cancel</Button>
+                </span>
+              {:else}
+                <span class="policy-value">
+                  <Button tone="quiet" disabled={editorDisabled} onclick={() => (picking = true)}>
+                    {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
+                    Override another
+                  </Button>
+                </span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </Card>
     {/if}
   {/if}
 
   {#if only === undefined && (section === 'all' || section === 'commands')}
-    <section class="card group-card" aria-labelledby="config-{scope}-{idPrefix}-commands">
-      <div class="group-head">
-        <h3 class="group-name" id="config-{scope}-{idPrefix}-commands">Commands</h3>
-        <span class="group-tally">{commandsOverridden} of 3 overridden</span>
+    <Card
+      id={anchorPrefix === undefined ? undefined : `${anchorPrefix}-commands`}
+      labelledby="config-{scope}-{idPrefix}-commands"
+    >
+      <div class="card-head">
+        <h2 class="card-title" id="config-{scope}-{idPrefix}-commands">Commands</h2>
+        <span class="card-meta">{commandsOverridden} of 3 set here</span>
       </div>
-      <p class="group-note">How commands are invoked and which words trigger them</p>
       <div class="policy-rows">
         <div
-          class={['policy-row', { 'is-unsaved': dirtyKeySet.has('command_prefix') }]}
+          class={[
+            'policy-row',
+            { 'is-managed': Object.hasOwn(draft, 'command_prefix') },
+            { 'is-unsaved': dirtyKeySet.has('command_prefix') },
+          ]}
           data-unsaved={dirtyKeySet.has('command_prefix') || undefined}
         >
           <span class="setting-say">
             <label class="setting-name" for="config-{scope}-{idPrefix}-prefix">Prefix</label>
             <span class="setting-why"
-              >Characters required before a command when prefix invocation is used. Editing the
-              inherited value creates an override</span
+              >What a comment starts with to address Smyklot. Editing the inherited value creates an
+              override</span
             >
           </span>
           <span class="policy-value">
@@ -308,177 +350,161 @@
               {disabled}
               oninput={(event) => typePrefix(event.currentTarget.value)}
             />
+            {#if Object.hasOwn(draft, 'command_prefix')}
+              {@render resetButton('command_prefix')}
+            {/if}
           </span>
-          {#if Object.hasOwn(draft, 'command_prefix')}
-            {@render clearButton('command_prefix', 'the command prefix')}
-          {/if}
         </div>
 
+        <!-- A CHECKLIST, NOT A VALUE AT THE END OF A LINE. The command set is a set to
+             read across, so the row is authored as two lines rather than computed into
+             them at the width where it finally does not fit. -->
         <div
           class={[
             'policy-row',
-            'policy-block',
+            { 'is-managed': Object.hasOwn(draft, 'allowed_commands') },
             { 'is-unsaved': dirtyKeySet.has('allowed_commands') },
           ]}
           data-unsaved={dirtyKeySet.has('allowed_commands') || undefined}
         >
           <span class="setting-say">
-            <span class="setting-name">Allowed commands</span>
+            <span class="setting-name" id="config-{scope}-{idPrefix}-allowed"
+              >Commands it answers</span
+            >
             <span class="setting-why"
-              >The command words Smyklot accepts. At least one must remain on</span
+              >A command turned off here is refused, with a comment saying so. At least one must
+              remain on</span
             >
           </span>
           <span class="policy-value">
-            <span class="value-word is-on">{allowedCount} of {COMMANDS.length}</span>
+            <span
+              class="check-line"
+              role="group"
+              aria-labelledby="config-{scope}-{idPrefix}-allowed"
+            >
+              {#each COMMANDS as command (command)}
+                {@const on = commandIsAllowed(allowedList, command)}
+                <label class="check-item">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={editorDisabled || (on && allowedCount === 1)}
+                    onchange={() => toggleCommand(command)}
+                  />
+                  <span class="check-box"><Icon name="check" size="micro" /></span>
+                  <span class="check-word">{command}</span>
+                </label>
+              {/each}
+            </span>
+            {#if Object.hasOwn(draft, 'allowed_commands')}
+              {@render resetButton('allowed_commands')}
+            {/if}
           </span>
-          {#if Object.hasOwn(draft, 'allowed_commands')}
-            {@render clearButton('allowed_commands', 'allowed commands')}
-          {/if}
-          <div class="chip-line" role="group" aria-label="Allowed commands">
-            {#each COMMANDS as command (command)}
-              {@const on = commandIsAllowed(allowedList, command)}
-              <button
-                class="cmd-chip"
-                class:is-on={on}
-                aria-pressed={on}
-                disabled={editorDisabled || (on && allowedCount === 1)}
-                onclick={() => toggleCommand(command)}
-              >
-                <Icon name={on ? 'check' : 'plus'} size={10} />
-                <span class="t">{command}</span>
-              </button>
-            {/each}
-          </div>
         </div>
 
         <div
           class={[
             'policy-row',
-            'policy-block',
+            { 'is-managed': Object.hasOwn(draft, 'command_aliases') },
             { 'is-unsaved': dirtyKeySet.has('command_aliases') },
           ]}
           data-unsaved={dirtyKeySet.has('command_aliases') || undefined}
         >
           <span class="setting-say">
             <span class="setting-name" id="config-{scope}-{idPrefix}-aliases">Aliases</span>
-            <span class="setting-why">Extra command words mapped to the commands they invoke</span>
+            <span class="setting-why">Extra words mapped to the commands they run</span>
           </span>
-          <span class="policy-value">
-            <span class="value-word" class:is-on={aliasEntries.length > 0}
-              >{aliasEntries.length === 0 ? 'none' : aliasEntries.length}</span
+          <span class="policy-value setting-value-wrap">
+            <span
+              class="chip-line"
+              role="group"
+              aria-labelledby="config-{scope}-{idPrefix}-aliases"
             >
-          </span>
-          {#if Object.hasOwn(draft, 'command_aliases')}
-            {@render clearButton('command_aliases', 'command aliases')}
-          {/if}
-          <div class="chip-line" role="group" aria-labelledby="config-{scope}-{idPrefix}-aliases">
-            {#each aliasEntries as [name, command] (name)}
-              <span class="alias-chip">
-                <span class="t">{name}</span>
-                <span class="alias-arrow" aria-hidden="true">→</span>
-                <Popover
-                  role="listbox"
-                  label="Command {name} invokes"
-                  align="start"
-                  itemSelector=".menu-item"
-                >
-                  {#snippet trigger(attributes)}
-                    <button
-                      {...attributes}
-                      class="alias-target"
-                      type="button"
-                      disabled={editorDisabled}
-                      aria-label="Command {name} invokes"
-                    >
-                      <span class="t">{command}</span>
-                    </button>
-                  {/snippet}
-                  <div class="menu-list">
-                    {#each COMMANDS as candidate (candidate)}
+              {#each aliasEntries as [name, command] (name)}
+                <span class="alias-chip">
+                  <span class="t">{name}</span>
+                  <span class="alias-arrow" aria-hidden="true">→</span>
+                  <Popover
+                    role="listbox"
+                    label="Command {name} invokes"
+                    align="start"
+                    itemSelector=".menu-item"
+                  >
+                    {#snippet trigger(attributes)}
                       <button
-                        class="menu-item"
-                        role="option"
-                        aria-selected={candidate === command}
-                        onclick={() => retargetAlias(name, candidate)}
+                        {...attributes}
+                        class="alias-target"
+                        type="button"
+                        disabled={editorDisabled}
+                        aria-label="{command} - the command {name} invokes"
                       >
-                        <span class="menu-check">
-                          {#if candidate === command}<Icon name="check" size={16} />{/if}
-                        </span>
-                        <span class="mi-label">{candidate}</span>
+                        <span class="t">{command}</span>
                       </button>
-                    {/each}
+                    {/snippet}
+                    <div class="menu-list">
+                      {#each COMMANDS as candidate (candidate)}
+                        <button
+                          class="menu-item"
+                          role="option"
+                          aria-selected={candidate === command}
+                          onclick={() => retargetAlias(name, candidate)}
+                        >
+                          <span class="menu-check">
+                            {#if candidate === command}<Icon name="check" size="base" />{/if}
+                          </span>
+                          <span class="mi-label">{candidate}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </Popover>
+                  <button
+                    aria-label="Remove alias {name}"
+                    disabled={editorDisabled}
+                    onclick={() => removeAlias(name)}
+                  >
+                    <Icon name="close" size="nano" />
+                  </button>
+                </span>
+              {/each}
+              <Popover role="dialog" label="Name the alias" align="start" bind:open={aliasOpen}>
+                {#snippet trigger(attributes)}
+                  <button {...attributes} class="add-chip" disabled={editorDisabled}>
+                    <Icon name="plus" size="xs" />
+                    <span class="t">Add an alias</span>
+                  </button>
+                {/snippet}
+                <div class="name-menu">
+                  <div class="menu-search">
+                    <Icon name="search" size="xs" />
+                    <input
+                      placeholder="ship"
+                      aria-label="Name for the new alias"
+                      spellcheck="false"
+                      bind:value={aliasName}
+                      onkeydown={(event) => {
+                        if (event.key === 'Enter') addAlias();
+                      }}
+                    />
                   </div>
-                </Popover>
-                <button
-                  aria-label="Remove alias {name}"
-                  disabled={editorDisabled}
-                  onclick={() => removeAlias(name)}
-                >
-                  <Icon name="close" size={8} />
-                </button>
-              </span>
-            {/each}
-            <Popover role="dialog" label="Name the alias" align="start" bind:open={aliasOpen}>
-              {#snippet trigger(attributes)}
-                <button {...attributes} class="add-chip" disabled={editorDisabled}>
-                  <Icon name="plus" size={12} />
-                  <span class="t">Add an alias</span>
-                </button>
-              {/snippet}
-              <div class="name-menu">
-                <div class="menu-search">
-                  <Icon name="search" size={12} />
-                  <input
-                    placeholder="ship"
-                    aria-label="Name for the new alias"
-                    spellcheck="false"
-                    bind:value={aliasName}
-                    onkeydown={(event) => {
-                      if (event.key === 'Enter') addAlias();
-                    }}
-                  />
+                  <div class="menu-hint">
+                    {aliasTaken
+                      ? 'That word is taken'
+                      : 'Enter adds it as approve · retarget after'}
+                  </div>
                 </div>
-                <div class="menu-hint">
-                  {aliasTaken ? 'That word is taken' : 'Enter adds it as approve · retarget after'}
-                </div>
-              </div>
-            </Popover>
-          </div>
+              </Popover>
+            </span>
+            {#if Object.hasOwn(draft, 'command_aliases')}
+              {@render resetButton('command_aliases')}
+            {/if}
+          </span>
         </div>
       </div>
-    </section>
+    </Card>
   {/if}
 </div>
 
 <style>
-  .config-editor {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
-  .group-head {
-    align-items: end;
-    display: flex;
-    gap: var(--space-3);
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-  }
-
-  .group-name {
-    font-size: var(--font-size-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 12px;
-    text-box: trim-both cap alphabetic;
-  }
-
   .group-tally {
     color: var(--text-muted);
     font-family: var(--mono);
@@ -486,149 +512,6 @@
     font-variant-numeric: tabular-nums;
     min-block-size: 8px;
     text-box: trim-both cap alphabetic;
-  }
-
-  .group-note {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    margin: 0 0 var(--space-2);
-    max-width: 60ch;
-  }
-
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    /* The halo hangs outside the text column, so row text keeps the card
-       head's left edge. Whole numbers: 48 floor, 8px block padding. */
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    /* The air around a drawn hairline is the card's own padding, on both
-       sides; the edge rows shed it where no line follows, since the card
-       edge already carries that inset. */
-    padding: var(--space-5) var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .policy-row:first-child {
-    padding-block-start: var(--space-2);
-  }
-
-  .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  /* The remainder is a summary line, not a row - its boundary keeps the
-     compact rhythm so the card does not end on a slab of air. */
-  .policy-rows:has(+ .group-rest) > .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  /* A drawn hairline, not a border: a border on a radiused row curves at
-     its tips and makes sibling rows measure one pixel apart. Every row owns
-     the line under itself, so the unmanaged remainder needs none of its own
-     and a card with no overridden rows shows no line at all. */
-  .policy-row::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .policy-row:last-child::after {
-    content: none;
-  }
-
-  .policy-rows:has(+ .group-rest) > .policy-row:last-child::after {
-    content: '';
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  /* The value said in a word beside the control, so a scan reads the
-     policy without decoding thumb positions. */
-  .value-word {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-inline-size: 1.9rem;
-    text-align: end;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .value-word.is-on {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
   }
 
   /* ---------- The command rows' own controls ---------- */
@@ -640,7 +523,7 @@
     color: var(--text-primary);
     font-family: var(--mono);
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0;
     text-align: center;
     width: 4.5rem;
@@ -648,19 +531,18 @@
 
   .prefix-inline:focus-visible {
     border-color: var(--brand-action);
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
   }
 
-  /* A block row keeps the grid for its first line and lays its chips on a
-     full-width second one. The extra breathing room lives INSIDE the row,
-     above the chips - the block padding stays the shared 8px so the air
-     around every hairline is the same on both sides. */
+  /* A block row keeps its sentence and its count on the first line and lays the chips on
+     a full-width second one. `flex-basis: 100%` is what takes that line under the row
+     law - the old `grid-column: 1 / -1` addressed a grid the row no longer is. */
   .chip-line {
     align-items: center;
     display: flex;
+    flex-basis: 100%;
     flex-wrap: wrap;
     gap: var(--space-2);
-    grid-column: 1 / -1;
     margin-block: var(--space-1) 0;
   }
 
@@ -713,7 +595,7 @@
     font-family: var(--mono);
     font-size: var(--font-size-compact);
     gap: 0.35rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 var(--space-2) 0 0.7rem;
   }
 
@@ -726,7 +608,7 @@
     color: var(--text-muted);
     /* Ink-true like its neighbours, so the chip's three parts share one
        centre instead of the arrow riding its line box's leading. */
-    line-height: 1;
+    line-height: var(--leading-flat);
     text-box: trim-both cap alphabetic;
   }
 
@@ -887,7 +769,7 @@
     color: var(--text-muted);
     font-size: var(--font-size-micro);
     font-variant-numeric: tabular-nums;
-    line-height: 16px;
+    line-height: var(--leading-tight);
     padding: var(--space-1) var(--space-3) var(--space-2);
   }
 
@@ -936,30 +818,6 @@
 
     .group-rest {
       flex-wrap: wrap;
-    }
-
-    /* The say keeps the line and the control moves under it - beside it,
-       the copy was down to a word a line while the control still ran off
-       the screen and took the layout viewport with it. */
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
-    }
-
-    .policy-row .policy-value {
-      flex-wrap: wrap;
-      grid-column: 1 / -1;
-      justify-self: start;
     }
   }
 </style>

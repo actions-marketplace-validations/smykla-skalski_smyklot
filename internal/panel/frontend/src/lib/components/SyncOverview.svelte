@@ -18,8 +18,9 @@
 <script lang="ts">
   import { formatRelative, formatUntil } from '../format';
   import type { SyncConfig, SyncPlan, SyncRepositoryStatus, SyncStatus } from '../types';
-  import type { SyncSection } from '../routes';
+  import { SYNC_SECTION_LABELS, type SyncSection } from '../routes';
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import Icon from './Icon.svelte';
   import PageHeader from './PageHeader.svelte';
   import Switch from './Switch.svelte';
@@ -30,6 +31,7 @@
     plan,
     configs,
     nowMs,
+    repositories = null,
     sectionHref,
     onOpenSection,
     onToggleKind,
@@ -41,6 +43,12 @@
     configs: Partial<Record<SyncKind, SyncConfig>>;
     /** The clock, passed in so a story renders the same minute every time. */
     nowMs: number;
+    /**
+     * How many repositories the workspace holds, which is not how many sync.
+     * The freshness line says both - "checked X · N of M repositories sync" -
+     * and reach is the half a count of syncing repositories cannot supply.
+     */
+    repositories?: number | null;
     sectionHref: (section: SyncSection) => string;
     onOpenSection: (section: SyncSection) => void;
     onToggleKind: (kind: SyncKind, enabled: boolean) => void;
@@ -70,6 +78,29 @@
   /* The legend is key AND filter: press a row and the board dims the rest. */
   let filter = $state<TileState | null>(null);
 
+  /* With no rows there are two different silences, and they want different words:
+     the workspace syncs nothing at all, or it syncs and every repository has opted
+     out. The switches below are the way out of the first and not of the second. */
+  const anyKindOn = $derived(SYNC_KINDS.some((kind) => configs[kind]?.enabled === true));
+
+  /* How far sync reaches, said beside the freshness the way the drawing has it.
+     Silent where the total is unknown rather than guessing it from the rows,
+     which would make "2 of 2 sync" true of a workspace holding twenty. */
+  const reachWord = $derived.by(() => {
+    /* Nothing to report a share of: "0 of 0 repositories sync" is the freshness
+       line carrying a fact with no content in it. */
+    if (repositories === null || repositories === 0) return '';
+    const others = repositories - rows.length;
+    const said = `${rows.length} of ${repositories} ${repositories === 1 ? 'repository' : 'repositories'} sync`;
+
+    return others > 0 ? `${said}; the other ${others} answer commands only` : said;
+  });
+
+  /* Carried WITH its separator rather than behind an `{#if}`. Svelte drops the
+     whitespace at a block's edges, so a leading " · " inside one arrives welded
+     to the word before it: "Checked 5 minutes ago· 28 of 28 repositories sync". */
+  const reachSuffix = $derived(reachWord === '' ? '' : ` · ${reachWord}`);
+
   const totalChanges = $derived(rows.reduce((total, row) => total + changesOf(row), 0));
   const changedRepos = $derived(rows.filter((row) => changesOf(row) > 0).length);
   const removals = $derived(rows.reduce((total, row) => total + (row.removals ?? 0), 0));
@@ -90,12 +121,7 @@
     return words;
   }
 
-  const KIND_LABEL: Record<SyncKind, string> = {
-    labels: 'Labels',
-    settings: 'Settings',
-    rulesets: 'Rulesets',
-    files: 'Files',
-  };
+  const KIND_LABEL = SYNC_SECTION_LABELS;
   const KIND_SECTION: Record<SyncKind, SyncSection> = {
     labels: 'labels',
     settings: 'settings',
@@ -158,68 +184,110 @@
   }
 </script>
 
-<section class="view-frame" aria-labelledby="sync-overview-heading">
-  <PageHeader
-    id="sync-overview-heading"
-    eyebrow="Sync"
-    title="Overview"
-    description="Repository alignment and the configuration each Sync kind currently applies"
-  />
+<!--
+@component
+What the organisation expects of its repositories, and how far they are from it. The
+overview is the register the four sync pages are read in - each kind says whether it is
+enabled, what it would change, and nothing more; the detail is on the page for that
+kind.
 
-  <!-- The verdict: the overview's first CONTENT, not a second header. One
-       freshness fact, sharing the verdict's baseline. -->
-  <div class="hero">
-    <h2>
-      {#if rows.length === 0}No repositories to check{:else if outOfStep > 0}<span class="is-drift"
-          >{outOfStep} of {rows.length}</span
-        >
-        are out of step{:else if legendCounts.off === rows.length}All {rows.length} are switched off here{:else if legendCounts.off > 0}{rows.length -
-          legendCounts.off} active in step ·
-        {legendCounts.off} switched off{:else}All {rows.length} are in step{/if}
-    </h2>
-    <span class="hero-meta"
-      >Checked <strong>{formatRelative(status.checked_at, nowMs)}</strong></span
-    >
-  </div>
+Its clock is passed in so a story renders the same minute every time. A page that says
+"4 minutes ago" from the wall clock cannot be photographed.
+
+Enabling a kind here only makes it eligible for planning. Nothing is written until a
+plan is applied, which is why these are switches and not a form.
+-->
+
+<section class="view-frame" aria-labelledby="sync-overview-heading">
+  <PageHeader id="sync-overview-heading" section="Sync" title="Sync status" />
 
   <div class="board">
-    <div class="board-lay">
-      <!-- The fleet: one raised tile per repository, a numeral where changes
-           wait, dashed sockets where sync is off. -->
-      <div class="board-well">
-        {#each rows as row (row.repository)}
-          {@const state = states.get(row.repository) ?? 'settled'}
-          <button
-            type="button"
-            class={`tile is-${state}`}
-            class:is-dim={filter !== null && state !== filter}
-            aria-label={`${row.repository} - ${state}`}
-            data-name={row.repository}
-            onclick={() => onOpenSection(state === 'refused' ? 'files' : 'plan')}
+    <!-- The verdict HEADS the board rather than floating above it: a free-standing
+         statement over a card is a second page title, and the thing it is a verdict
+         about is the board underneath. Its freshness sits directly under it, not
+         parked at the card's far edge. -->
+    <div class="card-head verdict-head">
+      <h2 class="card-title">
+        {#if rows.length === 0}{anyKindOn
+            ? 'No repository syncs yet'
+            : 'Sync is off here'}{:else if outOfStep > 0}<span class="is-drift"
+            >{outOfStep} of {rows.length}</span
           >
-            {#if state === 'change'}<span class="t">{changesOf(row)}</span
-              >{:else if state === 'refused'}<Icon
-                name="failure"
-                size={14}
-              />{:else if state === 'settled'}<Icon name="check" size={12} />{/if}
-          </button>
-        {/each}
-      </div>
-      <div class="legend">
-        {#each [['settled', 'In step', legendCounts.settled], ['change', 'Would change', legendCounts.change], ['refused', 'Refused', legendCounts.refused], ['off', 'Switched off here', legendCounts.off]] as [state, word, count] (state)}
-          <button
-            type="button"
-            class="legend-row"
-            aria-pressed={filter === state}
-            onclick={() => (filter = filter === state ? null : (state as TileState))}
-          >
-            <span class={`legend-swatch is-${state}`}></span>
-            <span class="legend-word">{word}</span>
-            <span class="legend-count">{count}</span>
-          </button>
-        {/each}
-      </div>
+          syncing repositories are out of step{:else if legendCounts.off === rows.length}All
+          {rows.length} are switched off here{:else if legendCounts.off > 0}{rows.length -
+            legendCounts.off} active in step ·
+          {legendCounts.off} switched off{:else}All {rows.length} are in step{/if}
+      </h2>
+      <span class="card-note"
+        >Checked <strong>{formatRelative(status.checked_at, nowMs)}</strong>{reachSuffix}</span
+      >
     </div>
+    {#if rows.length === 0}
+      <!-- A board of nothing is not a board. Drawn anyway it was an empty grey
+           trough over a legend of four zeros, which reads as a fleet that failed
+           to load rather than as a workspace with nothing to check - so the card
+           says what it has instead, the way every other page with nothing does. -->
+      <!-- The head says WHICH state this is; the panel says what follows from it.
+           They said the same fact twice, in two voices, one above the other. -->
+      <div class="state-panel">
+        <span>
+          {#if anyKindOn}
+            <strong>Every repository has turned this off for itself.</strong> The workspace still syncs,
+            so switching one back on in a repository puts it on the board at the next sweep
+          {:else}
+            <strong>Nothing is being kept in step.</strong> Open a kind and switch it on - the next sweep
+            compares every repository against it, and nothing reaches GitHub until a plan is applied
+          {/if}
+        </span>
+        {#if !anyKindOn}
+          <!-- The one next step, named rather than pointed at. The kind cards used
+               to carry the switches and this said "below"; with the cards gone that
+               word pointed at empty canvas, which is the dead end a state panel is
+               not allowed to be. Each kind's own page carries the same switch. -->
+          <a class="btn" href={sectionHref('labels')} onclick={(event) => open(event, 'labels')}>
+            <span class="button-label">Open Labels</span>
+          </a>
+        {/if}
+      </div>
+    {:else}
+      <div class="board-lay">
+        <!-- The fleet: one raised tile per repository, a numeral where changes
+           wait, dashed sockets where sync is off. -->
+        <div class="board-well">
+          {#each rows as row (row.repository)}
+            {@const state = states.get(row.repository) ?? 'settled'}
+            <button
+              type="button"
+              class={`tile is-${state}`}
+              class:is-dim={filter !== null && state !== filter}
+              aria-label={`${row.repository} - ${state}`}
+              data-name={row.repository}
+              onclick={() => onOpenSection(state === 'refused' ? 'files' : 'plan')}
+            >
+              {#if state === 'change'}<span class="t">{changesOf(row)}</span
+                >{:else if state === 'refused'}<Icon
+                  name="failure"
+                  size="sm"
+                />{:else if state === 'settled'}<Icon name="check" size="xs" />{/if}
+            </button>
+          {/each}
+        </div>
+        <div class="legend">
+          {#each [['settled', 'In step', legendCounts.settled], ['change', 'Would change', legendCounts.change], ['refused', 'Refused', legendCounts.refused], ['off', 'Switched off here', legendCounts.off]] as [state, word, count] (state)}
+            <button
+              type="button"
+              class="legend-row"
+              aria-pressed={filter === state}
+              onclick={() => (filter = filter === state ? null : (state as TileState))}
+            >
+              <span class={`legend-swatch is-${state}`}></span>
+              <span class="legend-word">{word}</span>
+              <span class="legend-count">{count}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
     {#if totalChanges > 0}
       <div class="board-foot">
         <div class="board-foot-say">
@@ -240,137 +308,133 @@
     {/if}
   </div>
 
-  <!-- The out-of-step list: every repository the board colours, with its
-       reason on the row. The board shows the shape; this says the words. -->
+  <!-- The out-of-step list: every repository the board colours, with its reason on
+       the row. The board shows the shape; this says the words - in the same row
+       grammar every other list on the panel uses. -->
   {#if attention.length > 0}
-    <div class="attn">
-      {#each attention as row (row.repository)}
-        {@const refused = states.get(row.repository) === 'refused'}
-        <a
-          class="attn-row"
-          href={sectionHref(refused ? 'files' : 'plan')}
-          onclick={(event) => open(event, refused ? 'files' : 'plan')}
+    <Card>
+      <div class="card-head">
+        <h2 class="card-title" id="sync-attention-label">Needs attention</h2>
+      </div>
+      <ul class="object-list" aria-labelledby="sync-attention-label">
+        {#each attention as row (row.repository)}
+          {@const refused = states.get(row.repository) === 'refused'}
+          <li>
+            <a
+              class="object-row"
+              href={sectionHref(refused ? 'files' : 'plan')}
+              onclick={(event) => open(event, refused ? 'files' : 'plan')}
+            >
+              <span class="object-main">
+                <span class="object-name-row">
+                  <span class="object-name"><span class="file-path">{row.repository}</span></span>
+                  {#if refused}
+                    <span class="mx-mark mx-refused" role="img" aria-label="refused"
+                      ><span class="t">refused</span></span
+                    >
+                  {:else}
+                    <span
+                      class="mx-mark mx-pending"
+                      role="img"
+                      aria-label="would change, {changesOf(row)} changes"
+                      ><span class="t">{changesOf(row)} changes</span></span
+                    >
+                  {/if}
+                </span>
+                <span class="object-sum" class:is-refused={refused}
+                  >{refused ? (row.reason ?? '') : attnWhy(row)}</span
+                >
+              </span>
+              <span class="object-side">
+                <span class="gi"><Icon name="chevron-right" size="xs" /></span>
+              </span>
+            </a>
+          </li>
+        {/each}
+      </ul>
+    </Card>
+  {/if}
+
+  <!-- Kind cards: the strip repeats the board's slots in the board's order - so
+       with no slots to repeat there is no card to draw. Four of them saying
+       "0 labels", "0 of 17 managed", "0 rulesets", "0 templates" under a panel
+       that has just said the workspace syncs nothing is the same nothing, four
+       more times, and the drawing has none of them here. The switches move onto
+       each kind's own page, which the tree still reaches. -->
+  {#if rows.length > 0}
+    <div class="kind-grid">
+      {#each SYNC_KINDS as kind (kind)}
+        {@const config = configs[kind]}
+        <div
+          class="kind-card"
+          class:is-off={config?.enabled === false}
+          class:is-unsaved={kindDirty(kind)}
+          data-unsaved={kindDirty(kind) || undefined}
         >
-          <span class="attn-repo">{row.repository}</span>
-          <span class="attn-what">
-            {#if refused}
-              <span class="mx-mark mx-refused"><span class="t">refused</span></span>
-            {:else}
-              <span class="mx-mark mx-pending"><span class="t">{changesOf(row)} changes</span></span
-              >
-            {/if}
+          <!-- The sheet's own head, not a private copy of it: `card-head` carries
+               the fixed head line that puts a title's cap the same distance from
+               every card's top edge whatever stands beside it, and `card-title`
+               carries the tier. Written out here, this head had neither - so its
+               name sat 4px lower than the two cards above it and one tier down. -->
+          <div class="card-head kind-card-head">
+            <a
+              class="card-title kind-name"
+              href={sectionHref(KIND_SECTION[kind])}
+              onclick={(event) => open(event, KIND_SECTION[kind])}>{KIND_LABEL[kind]}</a
+            >
+            <Switch
+              checked={config?.enabled === true}
+              label={`${KIND_LABEL[kind]} sync`}
+              bare
+              disabled={readOnly || config === undefined}
+              onToggle={(next) => onToggleKind(kind, next)}
+            />
+          </div>
+          <span class="kind-sum">{kindSum(kind)}</span>
+          <div class="kind-strip-row">
+            <div class="kind-strip">
+              {#each rows as row (row.repository)}
+                {@const cell = row.cells[kind]}
+                <span
+                  class:is-change={(cell.changes ?? 0) > 0}
+                  class:is-refused={cell.state === 'refused'}
+                  class:is-off={cell.state === 'off'}
+                  title={row.repository}
+                ></span>
+              {/each}
+            </div>
+          </div>
+          <span class="kind-foot">
+            <span class="kind-when">{kindWhen(kind)}</span>
+            <a
+              class="kind-open"
+              href={sectionHref(KIND_SECTION[kind])}
+              aria-label={`Open ${KIND_LABEL[kind].toLowerCase()}`}
+              onclick={(event) => open(event, KIND_SECTION[kind])}
+            >
+              <Icon name="chevron-right" size="micro" />
+            </a>
           </span>
-          <span class="attn-why" class:is-refused={refused}
-            >{refused ? (row.reason ?? '') : attnWhy(row)}</span
-          >
-        </a>
+        </div>
       {/each}
     </div>
   {/if}
-
-  <!-- Kind cards: the strip repeats the board's slots in the board's order. -->
-  <div class="kind-grid">
-    {#each SYNC_KINDS as kind (kind)}
-      {@const config = configs[kind]}
-      <div
-        class="kind-card"
-        class:is-off={config?.enabled === false}
-        class:is-unsaved={kindDirty(kind)}
-        data-unsaved={kindDirty(kind) || undefined}
-      >
-        <div class="kind-card-head">
-          <a
-            class="kind-name"
-            href={sectionHref(KIND_SECTION[kind])}
-            onclick={(event) => open(event, KIND_SECTION[kind])}>{KIND_LABEL[kind]}</a
-          >
-          <Switch
-            checked={config?.enabled === true}
-            label={`${KIND_LABEL[kind]} sync`}
-            bare
-            disabled={readOnly || config === undefined}
-            onToggle={(next) => onToggleKind(kind, next)}
-          />
-        </div>
-        <span class="kind-sum">{kindSum(kind)}</span>
-        <div class="kind-strip-row">
-          <div class="kind-strip">
-            {#each rows as row (row.repository)}
-              {@const cell = row.cells[kind]}
-              <span
-                class:is-change={(cell.changes ?? 0) > 0}
-                class:is-refused={cell.state === 'refused'}
-                class:is-off={cell.state === 'off'}
-                title={row.repository}
-              ></span>
-            {/each}
-          </div>
-        </div>
-        <span class="kind-foot">
-          <span class="kind-when">{kindWhen(kind)}</span>
-          <a
-            class="kind-open"
-            href={sectionHref(KIND_SECTION[kind])}
-            aria-label={`Open ${KIND_LABEL[kind].toLowerCase()}`}
-            onclick={(event) => open(event, KIND_SECTION[kind])}
-          >
-            <Icon name="chevron-right" size={10} />
-          </a>
-        </span>
-      </div>
-    {/each}
-  </div>
 </section>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
+  /* `.verdict-head` and everything it carries are in `app.css`. Three cards wear the
+     class and only this one had these rules, so the other two were laid out by the shared
+     copy alone - and when that copy stopped applying, this one went on looking right and
+     hid it. */
 
-  /* End-aligned: both sides are trimmed to the alphabetic edge, so end IS the
-     shared baseline - and the row stays whole where baseline union drifted. */
-  .hero {
-    align-items: end;
-    display: grid;
-    gap: var(--space-4);
-    grid-template-columns: 1fr auto;
-    margin-block: var(--space-2) var(--space-4);
-  }
-
-  .hero h2 {
-    /* 38px whole - 2.35rem was 37.6, and the trimmed cap box floors to 29
-       so the board below starts on a whole pixel. */
-    font-size: 2.375rem;
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    line-height: round(1.1em, 1px);
-    margin: 0;
-    min-block-size: 29px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .hero h2 .is-drift {
-    color: var(--diff-chg-ink);
-  }
-
-  .hero-meta {
-    color: var(--text-muted);
-    font-size: var(--font-size-micro);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .hero-meta strong {
-    color: var(--text-secondary);
-    font-weight: 600;
-  }
-
+  /* A card in everything but its class - it wears the sheet's own surface
+     tokens, and its padding is the surface padding rather than a number of
+     its own. It held its content 4px closer than every card beside it. */
   .board {
     background: var(--surface-base);
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-strip);
-    padding: var(--space-4);
+    padding: var(--rhythm-surface-pad);
   }
 
   /* start, not the stretch default: stretched, the well grew to the legend
@@ -429,7 +493,7 @@
   }
 
   .tile::before {
-    background: var(--table-row-pressed);
+    background: var(--row-pressed);
     border-radius: inherit;
     content: '';
     inset: 0;
@@ -517,7 +581,7 @@
     background: none;
     border: 0;
     /* A pressable row wears a declared height: 28px whole. */
-    block-size: 28px;
+    block-size: var(--tier-quiet);
     border-radius: var(--r-ctl);
     box-sizing: border-box;
     color: inherit;
@@ -535,7 +599,7 @@
   }
 
   .legend-row::before {
-    background: var(--table-row-pressed);
+    background: var(--row-pressed);
     border-radius: inherit;
     content: '';
     inset: 0;
@@ -546,11 +610,11 @@
   }
 
   .legend-row:hover {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
   .legend-row:active {
-    background: var(--table-row-pressed);
+    background: var(--row-pressed);
     box-shadow: var(--pressed-inset);
     translate: 0 1px;
   }
@@ -641,116 +705,26 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .attn {
-    display: grid;
-    margin-top: var(--space-4);
-  }
-
-  .attn-row {
-    align-items: baseline;
-    border-radius: var(--r-ctl);
-    color: inherit;
-    cursor: pointer;
-    display: grid;
-    gap: var(--space-3);
-    grid-template-columns: 9.5rem auto 1fr;
-    padding: 0.5rem var(--space-3);
-    position: relative;
-    text-decoration: none;
-    transition:
-      background-color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
-      box-shadow var(--duration-press) var(--ease-standard);
-  }
-
-  .attn-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-3);
-    position: absolute;
-  }
-
-  /* The hover pill has rounded corners; a hairline crossing its edge reads
-     as a crack in it. The hovered row hides its own separator and the one
-     its neighbour would draw over it. */
-  .attn-row:hover::after,
-  .attn-row:has(+ .attn-row:hover)::after {
-    background: transparent;
-  }
-
-  .attn-row:hover {
-    background: var(--table-row-hover);
-  }
-
-  .attn-row:active {
-    background: var(--table-row-pressed);
-    box-shadow: var(--pressed-inset);
-    translate: 0 1px;
-  }
-
-  .attn-repo {
-    font-family: var(--mono);
-    font-size: var(--font-size-compact);
-    font-weight: 500;
-  }
-
-  .attn-what {
-    display: flex;
-    gap: var(--space-2);
-  }
-
-  .attn-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-  }
-
-  .attn-why.is-refused {
+  /* A refused row's account steps up one ink - louder than routine metadata,
+     calmer than the mark that already carries the state. */
+  .object-sum.is-refused {
     color: var(--text-secondary);
   }
 
-  .mx-mark {
-    align-items: center;
-    border-radius: var(--r-chip);
-    /* Declared 20px, the chip-small height. */
-    block-size: 20px;
-    box-sizing: border-box;
-    display: inline-flex;
-    gap: 0.25rem;
+  /* A repository name in a row keeps the mono voice the product gives one. */
+  .file-path {
     font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    padding: 0 0.5rem;
-  }
-
-  .mx-mark .t {
-    display: block;
-    /* Ink-true, so the chip's words sit on the chip's own centre. */
-    text-box: trim-both cap alphabetic;
-  }
-
-  .mx-pending {
-    background: var(--cell-pending-bg);
-    border: 1px solid color-mix(in srgb, var(--cell-pending) 38%, transparent);
-    color: var(--cell-pending);
-    font-weight: 500;
-  }
-
-  .mx-refused {
-    background: var(--cell-refused-bg);
-    border: 1px solid color-mix(in srgb, var(--cell-refused) 38%, transparent);
-    color: var(--cell-refused);
     font-weight: 500;
   }
 
   /* Two across by default: four only where each card genuinely gets ~16rem. */
+  /* No margin: the frame's gap is what separates this from the card above it,
+     and a margin on top of it made the one distance on the page that was 40px
+     where every other pair is 16. */
   .kind-grid {
     display: grid;
     gap: var(--space-4);
     grid-template-columns: repeat(2, 1fr);
-    margin-block: var(--space-6);
   }
 
   @media (min-width: 85rem) {
@@ -770,7 +744,7 @@
        a fleet's worth of strip slots sets the track's floor and all four
        cards march past the frame together. */
     min-width: 0;
-    padding: var(--space-4);
+    padding: var(--rhythm-surface-pad);
     position: relative;
     text-decoration: none;
     transition:
@@ -816,19 +790,21 @@
     z-index: 1;
   }
 
+  /* `.card-head` gives the tier, the trim and the head line - the title's cap,
+     which is what puts it the same distance below every card's edge. The margin
+     below belongs to the grid's gap, not to the head. */
+  /* The head keeps the sheet's line - the title's cap - so the name opens the
+     same 20px below the card's edge that the stamp closes above it and the words
+     hold from the sides. The switch centres on that line and overflows it, which
+     is what the line is for: a control is placed by it, never sized by it. */
   .kind-card-head {
-    align-items: center;
-    display: flex;
-    gap: var(--space-2);
     justify-content: space-between;
+    margin-block-end: 0;
   }
 
+  /* `.card-title` gives the tier and the trim; this only says it is a link. */
   .kind-name {
     color: inherit;
-    font-size: var(--font-size-title);
-    font-weight: 600;
-    min-block-size: 12px;
-    text-box: trim-both cap alphabetic;
     text-decoration: none;
   }
 
@@ -836,11 +812,18 @@
     color: var(--brand-action-text);
   }
 
+  /* THE COPY-RHYTHM LAW, on the kind-card family. The distance from the name's box to
+     this one is 8px like every other name-and-sentence pair, and here it is reached by
+     PULLING rather than by setting: the card's own 12px grid gap plus the 4px of slack
+     the head row carries over the trimmed name already spend 16, so the family's
+     declared value is what takes it back to 8. Measured rendered, not declared -
+     re-measure if the head's type or the card's tracks move. */
   .kind-sum {
     align-self: start;
     color: var(--text-secondary);
     font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-meta);
+    margin-block-start: var(--row-copy-gap-kind);
   }
 
   /* One slot per repository, the board's order, the board's material. */
@@ -907,31 +890,54 @@
     min-block-size: auto;
   }
 
+  /* THE GROUND AND THE TARGET COME BACK AS PAINT, NOT AS LAYOUT - the same
+     trade the bare switch makes. Laid out at 24px this was the tallest thing in
+     the foot, so the card's last line of ink floated 28.9px above an edge whose
+     sides were 20: the reader sees the stamp, not the round ground that appears
+     under a pointer. Sized to its glyph, the foot's box IS its ink and the card
+     closes 20px below the words. The pseudo keeps the 24px WCAG 2.5.8 asks for
+     and the ground a hover paints, both centred on the glyph. */
   .kind-open {
     align-items: center;
-    block-size: 24px;
-    border-radius: 50%;
     color: var(--text-muted);
     display: inline-flex;
-    inline-size: 24px;
     justify-content: center;
     padding: 0;
+    position: relative;
+    transition:
+      color var(--duration-fast) var(--ease-standard),
+      translate var(--duration-press) var(--ease-standard);
+  }
+
+  .kind-open::before {
+    block-size: var(--field-target-min);
+    border-radius: 50%;
+    content: '';
+    inline-size: var(--field-target-min);
+    inset-block-start: 50%;
+    inset-inline-start: 50%;
+    position: absolute;
     transition:
       background-color var(--duration-fast) var(--ease-standard),
-      color var(--duration-fast) var(--ease-standard),
-      translate var(--duration-press) var(--ease-standard),
       box-shadow var(--duration-press) var(--ease-standard);
+    translate: -50% -50%;
   }
 
   .kind-open:hover {
-    background: var(--interactive-hover-layer);
     color: var(--text-primary);
   }
 
+  .kind-open:hover::before {
+    background: var(--interactive-hover-layer);
+  }
+
   .kind-open:active {
+    translate: 0 1px;
+  }
+
+  .kind-open:active::before {
     background: var(--interactive-pressed);
     box-shadow: var(--pressed-inset);
-    translate: 0 1px;
   }
 
   .kind-card.is-off .kind-sum,
@@ -957,12 +963,6 @@
     }
 
     .kind-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  @media (max-width: 30rem) {
-    .attn-row {
       grid-template-columns: 1fr;
     }
   }

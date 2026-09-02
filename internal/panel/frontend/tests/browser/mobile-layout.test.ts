@@ -63,45 +63,42 @@ const targets = new Map<string, Target>();
 /** Every addressable page, named as the reader would say it. */
 function routes(account: string): ReadonlyArray<readonly [string, string]> {
   return [
-    ['defaults', `/i/${account}/defaults`],
-    ['repositories', `/i/${account}/repositories`],
-    ['users', `/i/${account}/access/users`],
-    ['invitations', `/i/${account}/access/invitations`],
-    ['audit history', `/i/${account}/history/audit`],
-    ['failure history', `/i/${account}/history/failures`],
-    ['sync overview', `/i/${account}/sync`],
-    ['sync labels', `/i/${account}/sync/labels`],
-    ['sync settings', `/i/${account}/sync/settings`],
-    ['sync rulesets', `/i/${account}/sync/rulesets`],
-    ['a sync ruleset', `/i/${account}/sync/rulesets/main-protection`],
-    ['sync files', `/i/${account}/sync/files`],
-    ['a sync file', `/i/${account}/sync/files/renovate.json`],
-    ['the sync plan', `/i/${account}/sync/plan`],
-    ['a repository', `/i/${account}/repositories/smyklot`],
-    ['a repository’s behavior', `/i/${account}/repositories/smyklot/behavior`],
-    ['a repository’s commands', `/i/${account}/repositories/smyklot/commands`],
-    ['a repository’s sync pane', `/i/${account}/repositories/smyklot/sync`],
+    ['settings', `/workspace/${account}/settings`],
+    ['repositories', `/workspace/${account}/repositories`],
+    ['users', `/workspace/${account}/access/users`],
+    ['invitations', `/workspace/${account}/access/invitations`],
+    ['audit history', `/workspace/${account}/history/audit`],
+    ['failure history', `/workspace/${account}/history/failures`],
+    ['sync overview', `/workspace/${account}/sync`],
+    ['sync labels', `/workspace/${account}/sync/labels`],
+    ['sync settings', `/workspace/${account}/sync/settings`],
+    ['sync rulesets', `/workspace/${account}/sync/rulesets`],
+    ['a sync ruleset', `/workspace/${account}/sync/rulesets/main-protection`],
+    ['sync files', `/workspace/${account}/sync/files`],
+    ['a sync file', `/workspace/${account}/sync/files/renovate.json`],
+    ['the sync plan', `/workspace/${account}/sync/plan`],
+    /* One address, because the page is one scroll: the five pane addresses went with
+       the switch over them, and every card they held is measured on this one. */
+    ['a repository', `/workspace/${account}/repositories/smyklot`],
     ['the inbox', `/inbox`],
     ['the Root overview', `/root`],
     ['the queue', `/root/queue`],
-    ['recent queue outcomes', `/root/queue/recent`],
     /* Armed, so the row of actions this file exists for is on the page. An ended
        request draws no buttons and would measure the easy half of the view. */
     ['a queue request', `/root/queue/request/pending-ci-0`],
-    ['the installation catalog', `/root/installations`],
+    ['the workspace catalog', `/root/workspaces`],
     ['Root access users', `/root/access/users`],
     ['Root access invitations', `/root/access/invitations`],
     ['Root audit history', `/root/history/audit`],
     ['Root failure history', `/root/history/failures`],
-    ['Root service and deployment', `/root/runtime/service`],
-    ['Root database', `/root/runtime/database`],
-    ['Root runtime settings', `/root/runtime/settings`],
-    ['a Root installation', `/root/installations/${account}/defaults`],
-    ['a Root installation’s repositories', `/root/installations/${account}/repositories`],
-    ['a Root installation’s users', `/root/installations/${account}/access/users`],
-    ['a Root installation’s invitations', `/root/installations/${account}/access/invitations`],
-    ['a Root installation’s audit history', `/root/installations/${account}/history/audit`],
-    ['a Root installation’s failure history', `/root/installations/${account}/history/failures`],
+    ['Service health', `/root/runtime/service`],
+    ['Service settings', `/root/runtime/settings`],
+    ['a Root workspace', `/root/workspaces/${account}/settings`],
+    ['a Root workspace’s repositories', `/root/workspaces/${account}/repositories`],
+    ['a Root workspace’s users', `/root/workspaces/${account}/access/users`],
+    ['a Root workspace’s invitations', `/root/workspaces/${account}/access/invitations`],
+    ['a Root workspace’s audit history', `/root/workspaces/${account}/history/audit`],
+    ['a Root workspace’s failure history', `/root/workspaces/${account}/history/failures`],
   ] as const;
 }
 
@@ -253,7 +250,7 @@ async function measure(path: string, width: number): Promise<Measured> {
 
          So the rule is stated as a relation instead of a measurement: where a
          column heading's filter is on the page but hidden, something else on
-         the page has to filter. `TableToolsMenu` is what answers it. */
+         the page has to filter. `ListToolsMenu` is what answers it. */
       const hiddenFilters = [...document.querySelectorAll('.filter-trigger')].filter(
         (control) => !control.checkVisibility(),
       ).length;
@@ -265,7 +262,7 @@ async function measure(path: string, width: number): Promise<Measured> {
         layoutViewport: window.innerWidth,
         heading: document.querySelector('h1, h2')?.textContent?.trim() ?? null,
         contextRow:
-          [...document.querySelectorAll('.page-kicker, .pane-path, .back-link')]
+          [...document.querySelectorAll('.page-eyebrow, .pane-path, .back-link')]
             .find((element) => element.checkVisibility())
             ?.textContent?.replace(/\s+/gu, ' ')
             .trim() ?? null,
@@ -282,11 +279,11 @@ async function measure(path: string, width: number): Promise<Measured> {
 
 /** What the top bar offers a thumb on a phone. */
 const BAR_CONTROLS = [
-  ['the menu button', '.rail-pages'],
-  ['the account menu', '.rail-user'],
+  ['the menu button', '.top-menu'],
+  ['the workspace switch', '.top-ws'],
 ] as const;
 
-/** The size the platforms ask for, and what the overlay is built to give. */
+/** The size the platforms ask for, which these controls are drawn at. */
 const THUMB = 44;
 
 async function measureTarget(selector: string, pressCorner: boolean): Promise<Target> {
@@ -298,23 +295,18 @@ async function measureTarget(selector: string, pressCorner: boolean): Promise<Ta
   });
 
   try {
-    await visit(page, `${panel.origin}/i/${panel.account}/defaults`);
+    await visit(page, `${panel.origin}/workspace/${panel.account}/settings`);
 
     const measurement = await page.evaluate((target: string) => {
       const control = document.querySelector(target);
       if (control === null) throw new Error(`${target} is not on the page`);
 
+      /* The control's own box IS the target here. The rail's tiles were compact
+         squares that grew an invisible overlay to reach the thumb size; the bar
+         that replaced them draws its controls at that size to begin with, so
+         there is no pseudo-element to read and nothing to be wrong about. */
       const own = control.getBoundingClientRect();
-      /* The overlay's box, read from the resolved insets of the pseudo-element
-         that draws it. A negative inset is the expansion. */
-      const overlay = getComputedStyle(control, '::after');
-      const px = (value: string): number => Number.parseFloat(value) || 0;
-      const area = {
-        left: own.left + px(overlay.left),
-        top: own.top + px(overlay.top),
-        right: own.right - px(overlay.right),
-        bottom: own.bottom - px(overlay.bottom),
-      };
+      const area = { left: own.left, top: own.top, right: own.right, bottom: own.bottom };
 
       const CONTROLS =
         'button, a[href], input:not([type=hidden]), select, textarea, [role="button"], [role="tab"], [role="switch"], [role="menuitem"]';
@@ -335,24 +327,24 @@ async function measureTarget(selector: string, pressCorner: boolean): Promise<Ta
         );
       }
 
-      /* The rail's CONTENT edges: its end border is the seam with the page,
-         not surface a control could be centred in. */
-      const rail = document.querySelector('.rail');
-      let bar: { left: number; right: number } | null = null;
-      if (rail !== null) {
-        const rect = rail.getBoundingClientRect();
-        const railStyle = getComputedStyle(rail);
+      /* The bar's CONTENT edges: its end border is the seam with the page, not
+         surface a control could be centred in. */
+      const barEl = document.querySelector('.top-bar');
+      let bar: { top: number; bottom: number } | null = null;
+      if (barEl !== null) {
+        const rect = barEl.getBoundingClientRect();
+        const barStyle = getComputedStyle(barEl);
         bar = {
-          left: rect.left + Number.parseFloat(railStyle.borderLeftWidth),
-          right: rect.right - Number.parseFloat(railStyle.borderRightWidth),
+          top: rect.top + Number.parseFloat(barStyle.borderTopWidth),
+          bottom: rect.bottom - Number.parseFloat(barStyle.borderBottomWidth),
         };
       }
 
       return {
         control: { width: own.width, height: own.height },
-        /* The rail is a column, so a seated control has equal room at its
-           SIDES - the vertical room is the column's own flow. */
-        seat: bar === null ? null : { above: own.left - bar.left, below: bar.right - own.right },
+        /* The bar is a row, so a seated control has equal room ABOVE and below -
+           the horizontal room is the row's own flow. */
+        seat: bar === null ? null : { above: own.top - bar.top, below: bar.bottom - own.bottom },
         area: {
           width: area.right - area.left,
           height: area.bottom - area.top,
@@ -365,9 +357,8 @@ async function measureTarget(selector: string, pressCorner: boolean): Promise<Ta
 
     let cornerOpensDrawer: boolean | null = null;
     if (pressCorner) {
-      /* Pressed where only the overlay is - a couple of pixels inside the far
-         corner, well outside the 28px the reader can see. A real press rather
-         than `.click()`, which fires the handler whether or not anything would
+      /* A couple of pixels inside the target's own corner, and a real press rather
+         than `.click()` - which fires the handler whether or not anything would
          actually have received it. */
       await page.mouse.click(measurement.corner.x, measurement.corner.y);
       await page.waitForTimeout(700);
@@ -450,19 +441,15 @@ describe('every page on a phone', () => {
 });
 
 /**
- * The top bar is the one part of the panel every page is reached through, and on
- * a phone its controls are 28-32px squares because that is the weight the bar
- * wants. They keep it: what grows is an invisible overlay that takes the press,
- * so these are measurements of what a thumb can hit rather than of what is drawn.
+ * The bar is the whole of the shell on a phone: the rail and the sidebar are both
+ * gone below 48rem, so the way into the pages, the name of the page, and the way
+ * across to another workspace are all here. Its controls are drawn at the thumb
+ * size rather than growing an overlay to reach it.
  */
 describe('the top bar on a phone', () => {
   it.each(BAR_CONTROLS.map(([name]) => name))('gives %s a thumb-sized target', (name) => {
     const target = targets.get(name);
     if (target === undefined) throw new Error(`${name} was never measured`);
-
-    // The precondition: the control is still the small square it is meant to be,
-    // so a change that simply made it bigger does not pass as this being fixed.
-    expect(target.control.width, `${name} is no longer a compact control`).toBeLessThan(THUMB);
 
     expect(
       Math.round(Math.min(target.area.width, target.area.height)),
@@ -489,25 +476,20 @@ describe('the top bar on a phone', () => {
     if (target.seat === null) throw new Error('the bar was not found');
 
     /* Equal room above and below, which is the cheapest true statement about a
-       control that is placed rather than one that has fallen into the flow.
-       Growing a hit area must not move anything, and the first attempt at it
-       did: a `position: relative` added for the overlay outranked the
-       `absolute` that puts the menu button in its corner, and the button
-       dropped into the row. Every size and overlap check here still passed. */
+       control that is placed rather than one that has fallen into the flow. */
     expect(
       Math.round(target.seat.above),
-      `${name} sits ${target.seat.above.toFixed(1)}px from the rail's near edge and ` +
-        `${target.seat.below.toFixed(1)}px from its far one`,
+      `${name} sits ${target.seat.above.toFixed(1)}px from the bar's top edge and ` +
+        `${target.seat.below.toFixed(1)}px from its bottom one`,
     ).toBe(Math.round(target.seat.below));
   });
 
-  it('opens the drawer from outside the menu button’s paint', () => {
+  it('opens the drawer from the menu button’s own corner', () => {
     const target = targets.get('the menu button');
     if (target === undefined) throw new Error('the menu button was never measured');
 
-    /* The whole claim, tested where it is made: a point no part of the visible
-       button covers still opens the navigation. Without this the size checks
-       above would pass on an overlay that had `pointer-events: none`. */
+    /* A real press rather than `.click()`, at a point inside the target: the size
+       checks above would pass on a control something else was covering. */
     expect(target.cornerOpensDrawer).toBe(true);
   });
 });

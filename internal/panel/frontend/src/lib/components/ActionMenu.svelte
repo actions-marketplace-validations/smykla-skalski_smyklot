@@ -44,6 +44,21 @@
   }
 </script>
 
+<!--
+@component
+Acts, not navigation. A menu holds things that HAPPEN; a place a reader can go is a
+link on the page, where it can be opened in a new tab and seen before it is pressed. A
+destructive entry sits last and wears the danger ink, so the thing that cannot be taken
+back is never the thing under the pointer by accident.
+
+`onOpenChange` is the prop worth knowing about. The menu lives in a portal, so a list
+that has to hold still while one of its rows is being operated cannot work that out
+from focus or from the pointer - both have left the row by the time the layer opens.
+
+Its width is its longest description, measured rather than assumed: a guess of 224px
+once put it a hundred pixels off the button it belongs to.
+-->
+
 <!-- Hung under the button and aligned to its right edge, which is where a menu
      opened from a trailing control belongs. Its width is its longest description,
      so it is measured rather than assumed - a guess of 224px once put it a
@@ -56,7 +71,7 @@
       aria-label={label}
       title={label}
     >
-      <Icon name="more" size={14} strokeWidth={2} />
+      <Icon name="more" size="sm" strokeWidth={2} />
     </DropdownMenu.Trigger>
   </span>
 
@@ -69,7 +84,7 @@
           textValue={item.label}
           onSelect={() => choose(item)}
         >
-          <span class="action-icon" aria-hidden="true"><Icon name={item.icon} size={16} /></span>
+          <span class="action-icon" aria-hidden="true"><Icon name={item.icon} size="base" /></span>
           <span class="action-copy">
             <strong>{item.label}</strong>
             {#if item.description !== undefined}<span>{item.description}</span>{/if}
@@ -107,7 +122,7 @@
     background: transparent;
     border: 0;
     border-radius: calc(var(--r-ctl) - 2px);
-    color: var(--text);
+    color: var(--text-primary);
     display: grid;
     gap: var(--space-2);
     grid-template-columns: 1rem minmax(0, 1fr);
@@ -139,13 +154,13 @@
   }
 
   :global(.action-copy > span) {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     margin-top: 0.15rem;
   }
 
   :global(.action-item.danger strong),
   :global(.action-item.danger .action-icon) {
-    color: var(--stop);
+    color: var(--danger);
   }
 </style>

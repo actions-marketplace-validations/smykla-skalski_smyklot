@@ -94,6 +94,20 @@
   }
 </script>
 
+<!--
+@component
+A GitHub account, typed and completed against the real thing. It suggests as the
+reader types rather than validating after, because a handle that does not exist is a
+mistake worth catching before the form is sent, not after it is refused.
+
+`refused` is the server's answer to what was typed, kept separate from the suggestion
+list: one is a guess about who they mean and the other is a fact about what happened.
+
+`focusOnOpen` takes focus once, when the dialog holding it opens. It used to set an
+attribute nothing read - not this app, not Bits UI, not a test - so both dialogs that
+ask for it opened unfocused and a reader had to reach for the mouse before typing.
+-->
+
 <div class="form-field login-field">
   <label for={id}>{label}</label>
   <Combobox.Root
@@ -122,7 +136,7 @@
         <Combobox.Viewport class="suggestions" aria-label={label}>
           {#each items as account (account.id)}
             <Combobox.Item class="suggestion-item" value={account.login} label={account.login}>
-              <Avatar {account} size={20} />
+              <Avatar {account} size={18} />
               <span class="suggestion-login">{account.login}</span>
               {#if account.display_name !== '' && account.display_name !== account.login}
                 <span class="suggestion-name">{account.display_name}</span>
@@ -146,7 +160,7 @@
   }
 
   .form-field > label {
-    font: 600 0.75rem / 1 var(--sans);
+    font: 600 0.75rem / var(--leading-flat) var(--sans);
   }
 
   :global(.login-input) {
@@ -154,15 +168,15 @@
   }
 
   .identity-help {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     font-weight: 400;
-    line-height: 1.35;
+    line-height: var(--leading-micro);
     margin-top: -0.05rem;
   }
 
   .identity-help.refused {
-    color: var(--stop);
+    color: var(--danger);
     font-weight: 500;
   }
 
@@ -202,12 +216,12 @@
   }
 
   :global(.suggestion-login) {
-    font: 600 var(--font-size-compact) / 1 var(--sans);
+    font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
   }
 
   :global(.suggestion-name) {
     color: var(--text-secondary);
-    font: var(--font-size-compact) / 1 var(--sans);
+    font: var(--font-size-compact) / var(--leading-flat) var(--sans);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

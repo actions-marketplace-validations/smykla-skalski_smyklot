@@ -2,29 +2,6 @@
   import { plainClick } from '#lib/follow.js';
   import Icon from './Icon.svelte';
 
-  /**
-   * The way back from a page that stands inside a list.
-   *
-   * One of these, because there were three and they agreed on nothing: the
-   * console's was uppercase micro type in the action ink, the queue's was
-   * sentence-case meta type in `--text-soft` with a press, and the repository's
-   * was sentence-case meta type in `--text-secondary` with neither. Three ways
-   * of drawing the same idea on three pages a reader moves between.
-   *
-   * Then a fourth arrived as `Crumb`, for the sync detail pages, and it is the
-   * `quiet` tone below. It is a real difference rather than another accident:
-   * those two pages sit under a tab strip that is already loud, so the way back
-   * is said in the page's own secondary ink instead of competing with it. What
-   * it must NOT be is a second component - it carried the sentence about
-   * keeping the href real for a modified click and none of the guard that makes
-   * that true, so a Cmd-click on a crumb opened nothing.
-   *
-   * A link, never a button: it carries a real address, so it opens in a new tab
-   * on a modified click and reads as somewhere to go. `onNavigate` is only for
-   * the surfaces that want to handle it in the panel; `plainClick` leaves every
-   * other click to the browser.
-   */
-
   const {
     href,
     label,
@@ -51,6 +28,30 @@
   }
 </script>
 
+<!--
+@component
+The way back from a page that stands inside a list.
+
+One of these, because there were three and they agreed on nothing: the
+console's was uppercase micro type in the action ink, the queue's was
+sentence-case meta type in `--text-soft` with a press, and the repository's
+was sentence-case meta type in `--text-secondary` with neither. Three ways
+of drawing the same idea on three pages a reader moves between.
+
+Then a fourth arrived as `Crumb`, for the sync detail pages, and it is the
+`quiet` tone below. It is a real difference rather than another accident:
+those two pages sit under a tab strip that is already loud, so the way back
+is said in the page's own secondary ink instead of competing with it. What
+it must NOT be is a second component - it carried the sentence about
+keeping the href real for a modified click and none of the guard that makes
+that true, so a Cmd-click on a crumb opened nothing.
+
+A link, never a button: it carries a real address, so it opens in a new tab
+on a modified click and reads as somewhere to go. `onNavigate` is only for
+the surfaces that want to handle it in the panel; `plainClick` leaves every
+other click to the browser.
+-->
+
 <a class="back-link" class:is-quiet={tone === 'quiet'} {href} onclick={follow}>
   <Icon name="chevron-left" size={tone === 'quiet' ? 12 : 14} />
   <!-- Trimmed to the cap band, which is what makes the row centre natively: the
@@ -66,7 +67,7 @@
     align-self: start;
     color: var(--brand-action-text);
     display: inline-flex;
-    font: 700 var(--font-size-micro) / 1 var(--sans);
+    font: 700 var(--font-size-micro) / var(--leading-flat) var(--sans);
     gap: var(--space-1);
     letter-spacing: 0.08em;
     margin-bottom: var(--space-3);
@@ -81,7 +82,7 @@
      grows next. */
   .back-link.is-quiet {
     color: var(--text-secondary);
-    font: 400 var(--font-size-meta) / 1 var(--sans);
+    font: 400 var(--font-size-meta) / var(--leading-flat) var(--sans);
     gap: 0.4rem;
     letter-spacing: normal;
     margin-bottom: 0;
@@ -94,14 +95,13 @@
 
   .back-link.is-quiet:focus-visible {
     border-radius: 4px;
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-offset);
   }
 
   /* Leans the way it points, which is the queue's own press and worth keeping:
      the origin is the left edge so the chevron stays put and the word moves. */
   .back-link:active {
-    transform: scale(var(--press-scale-compact));
-    transform-origin: left center;
+    translate: 0 1px;
   }
 </style>

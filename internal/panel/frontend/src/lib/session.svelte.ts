@@ -9,7 +9,7 @@
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { page } from '$app/state';
-import { createContext } from 'svelte';
+import { getContext, setContext } from 'svelte';
 import { MediaQuery } from 'svelte/reactivity';
 
 import type { QueryClient } from '@tanstack/svelte-query';
@@ -24,7 +24,7 @@ import { basePath } from './paths';
  *
  * Decoded first, because this only ever answers for an address the router matched no route
  * for - and the reason it matched none is that the server decided what to serve from the
- * decoded path while the router reads the raw one. `/root%2Finstallations` is the console
+ * decoded path while the router reads the raw one. `/root%2Fworkspaces` is the console
  * to the server and nothing to the router, so it has to be the console here too. Whole
  * segments, so `/rootbeer` is not.
  */
@@ -49,14 +49,14 @@ import {
   panelDocumentTitle,
   rootSection,
   rootSectionRoute,
+  WRITTEN_QUEUE_SECTIONS,
   type HistorySection,
-  type InstallationRoute,
+  type WorkspaceRoute,
   type PanelRoute,
   type PanelView,
   type QueueSection,
   type RepositoryPage,
-  type RepositorySection,
-  type RootInstallationView,
+  type RootWorkspaceView,
   type RootRoute,
   type RootRuntimeSection,
   type RootSection,
@@ -96,18 +96,18 @@ export class PanelSession {
 
   theme = $state<ThemeDisplay>('system');
   sidebarCollapsed = $state(false);
-  private lastScopedView = $state<PanelView>('defaults');
+  private lastScopedView = $state<PanelView>('settings');
   private lastScopedHistorySection = $state<HistorySection>('audit');
   private lastScopedQueueSection = $state<QueueSection>('active');
   /**
    * The whole page each side was last on, which is where crossing to it goes back to.
    *
    * The two fields above answer a different question - what a reader was looking at, so
-   * that another installation opens on the same view - and neither can answer this one.
+   * that another workspace opens on the same view - and neither can answer this one.
    * A repository page is the repositories view, so remembering only the view brought
    * somebody who left one back to the list they had opened it from.
    */
-  private lastWorkspacePage = $state.raw<InstallationRoute | null>(null);
+  private lastWorkspacePage = $state.raw<WorkspaceRoute | null>(null);
   private lastConsolePage = $state.raw<RootRoute | null>(null);
 
   readonly narrowRail = new MediaQuery('(min-width: 48.0625rem) and (max-width: 72rem)');
@@ -139,15 +139,11 @@ export class PanelSession {
     return this.targets.find((t) => t.id === this.selectedId) ?? null;
   }
 
-  get rootRole(): string {
-    return this.viewer?.system_role === 'super_root' ? 'Super Root' : 'Root';
-  }
-
   get signedOut(): boolean {
     return !this.loading && this.viewer === null && this.failure === null;
   }
 
-  get awaitingInstallation(): boolean {
+  get awaitingWorkspace(): boolean {
     return (
       !this.loading &&
       this.viewer !== null &&
@@ -180,7 +176,7 @@ export class PanelSession {
    *
    * The address is still the answer when nothing matched. The server decides what to
    * serve from the decoded path and the router matches on the undecoded one, so the two
-   * disagree about an address holding `%2F`: the server answers `/root%2Finstallations`
+   * disagree about an address holding `%2F`: the server answers `/root%2Fworkspaces`
    * with the console, the router matches no route, and the panel would otherwise wear the
    * wrong chrome on a page the server had already named. All three ask the same way, and
    * `at` compares whole segments so `/rootbeer` is not the console.
@@ -191,6 +187,17 @@ export class PanelSession {
 
   get isInbox(): boolean {
     return page.route.id === '/inbox' || (page.route.id === null && at('/inbox'));
+  }
+
+  /**
+   * A page that belongs to the reader rather than to a workspace or the console.
+   *
+   * Distinct from `isInbox`, which answers about one page. What the shell needs to know
+   * in most places is the wider fact: these addresses carry no account, so nothing may
+   * take a reader off one to resolve a workspace out of the path.
+   */
+  get isPersonal(): boolean {
+    return this.isInbox || page.route.id === '/search' || (page.route.id === null && at('/search'));
   }
 
   get isInvitation(): boolean {
@@ -208,7 +215,7 @@ export class PanelSession {
    * `src/routes` is laid out: a view hosting a dialog is routed with the segments after
    * it, one hosting none is routed without them, and history is routed by name with its
    * section. Reading `params.view` on its own tied these getters to that shape and broke
-   * the moment it changed - the installation's history came back as `settings`, and the
+   * the moment it changed - the workspace's history came back as `settings`, and the
    * console's came back as the Root console's own history page. The id says which shape
    * it is, so `panelRouteAt` can read every one of them correctly.
    *
@@ -239,9 +246,10 @@ export class PanelSession {
     const route = this.parsedRoute;
     if (route === null || 'personal' in route) return 'active';
     if ('rootView' in route) {
-      if (route.rootView === 'queue-approvals') return 'approvals';
-      if (route.rootView === 'queue-history') return 'history';
-      return 'active';
+      const written = WRITTEN_QUEUE_SECTIONS.find(
+        (section) => route.rootView === `queue-${section}`,
+      );
+      return written ?? 'active';
     }
     return route.view === 'queue' ? (route.queue ?? 'active') : 'active';
   }
@@ -257,7 +265,7 @@ export class PanelSession {
     const route = this.parsedRoute;
     if (route === null || 'personal' in route) return null;
     if ('rootView' in route) {
-      return route.rootView === 'installation' ? (route.repository ?? null) : null;
+      return route.rootView === 'workspace' ? (route.repository ?? null) : null;
     }
 
     return route.repository ?? null;
@@ -269,7 +277,7 @@ export class PanelSession {
     // it, so Return would otherwise take them somewhere they had not been. `page.error`
     // covers every load failure rather than the one shape this used to test for.
     if (page.error !== null) return;
-    if (this.isInbox || this.isInvitation) return;
+    if (this.isPersonal || this.isInvitation) return;
     const route = this.parsedRoute;
     if (route === null || 'personal' in route) return;
     // Each side records only its own page, so entering one never overwrites where the
@@ -293,7 +301,7 @@ export class PanelSession {
   /**
    * Read from the path, for the reason `parsedRoute` gives: which parameters
    * exist depends on which route matched, and the console's addresses are now
-   * spread across three of them. Reading `params.section` sent an installation's
+   * spread across three of them. Reading `params.section` sent a workspace's
    * history to the Root console's own history page, because both routes call
    * that parameter `section`.
    */
@@ -319,9 +327,10 @@ export class PanelSession {
     if (this.isRootMode) return panelDocumentTitle(this.currentRootRoute);
 
     const view = this.currentView;
-    const route: InstallationRoute = { account: '', view };
+    const route: WorkspaceRoute = { account: '', view };
     if (view === 'history') route.section = this.currentHistorySection;
     if (view === 'queue') route.queue = this.currentQueueSection;
+    if (view === 'repositories') route.repository = this.currentRepository ?? undefined;
     if (view === 'sync') {
       route.sync = this.currentSyncSection;
       route.syncRuleset = this.currentSyncRuleset ?? undefined;
@@ -329,33 +338,6 @@ export class PanelSession {
     }
 
     return panelDocumentTitle(route);
-  }
-
-  get tableScrollView(): boolean {
-    if (this.isRootMode) {
-      const route = this.currentRootRoute;
-      if (route.rootView === 'installation') {
-        return (
-          ['repositories', 'users', 'invitations', 'history'].includes(route.view) &&
-          (route.view !== 'repositories' || route.repository === undefined)
-        );
-      }
-
-      return (
-        this.rootValue === 'history' ||
-        this.rootValue === 'access' ||
-        route.rootView === 'installations'
-      );
-    }
-
-    return (
-      this.selectedTarget !== null &&
-      ['repositories', 'users', 'invitations', 'history'].includes(this.currentView) &&
-      /* Repository lists own a bounded table scroller. A repository detail is a
-         document-length settings page, so trapping its workspace at 100dvh clips
-         the controls below the fold with no element left that can scroll. */
-      (this.currentView !== 'repositories' || this.currentRepository === null)
-    );
   }
 
   // --- Session lifecycle ---
@@ -574,20 +556,8 @@ export class PanelSession {
 
   /** Opening a repository is a place to come back from, so it pushes. */
   openRepository(name: string): void {
-    void this.navigate(this.repositoryRoute({ name, section: 'file' }));
+    void this.navigate(this.repositoryRoute({ name }));
     this.resetPageScroll();
-  }
-
-  /**
-   * The pane rides the address too, so a link points at the commands a colleague
-   * was asked to look at. It replaces rather than pushes: moving between the
-   * panes is part of reading one repository, not a second place to come back
-   * from, and Back should leave for the list rather than walk the panes.
-   */
-  selectRepositorySection(section: RepositorySection): void {
-    const open = this.currentRepository;
-    if (open === null || open.section === section) return;
-    void this.navigate(this.repositoryRoute({ name: open.name, section }), true);
   }
 
   /** Back to the list. A push, so it pairs with the push that opened the page. */
@@ -596,8 +566,8 @@ export class PanelSession {
     this.resetPageScroll();
   }
 
-  repositoryHref(name: string, section: RepositorySection = 'file'): string {
-    return panelAddress(this.repositoryRoute({ name, section }));
+  repositoryHref(name: string): string {
+    return panelAddress(this.repositoryRoute({ name }));
   }
 
   /** The list this page was opened from, in whichever surface that was. */
@@ -659,22 +629,22 @@ export class PanelSession {
     void this.navigate(route);
   }
 
-  selectRootInstallation(account: string, nextView: RootInstallationView): void {
-    const route = this.rootInstallationRoute(account, nextView);
+  selectRootWorkspace(account: string, nextView: RootWorkspaceView): void {
+    const route = this.rootWorkspaceRoute(account, nextView);
     void this.navigate(route);
     this.resetPageScroll();
   }
 
-  selectRootInstallationHistory(section: HistorySection): void {
+  selectRootWorkspaceHistory(section: HistorySection): void {
     const current = this.currentRootRoute;
-    if (current.rootView !== 'installation') return;
+    if (current.rootView !== 'workspace') return;
     if (current.view === 'history' && this.currentHistorySection === section) return;
-    const route = this.rootInstallationRoute(current.account, 'history', section);
+    const route = this.rootWorkspaceRoute(current.account, 'history', section);
     void this.navigate(route);
   }
 
-  selectRootInstallations(): void {
-    void this.navigate({ rootView: 'installations' });
+  selectRootWorkspaces(): void {
+    void this.navigate({ rootView: 'workspaces' });
     this.resetPageScroll();
   }
 
@@ -754,8 +724,8 @@ export class PanelSession {
     return panelAddress(this.consoleRoute());
   }
 
-  rootInstallationsHref(): string {
-    return panelAddress({ rootView: 'installations' });
+  rootWorkspacesHref(): string {
+    return panelAddress({ rootView: 'workspaces' });
   }
 
   rootAuditHref(): string {
@@ -775,18 +745,28 @@ export class PanelSession {
   }
 
   /**
-   * Where one installation's view lives on the console.
+   * Where one workspace's view lives on the console.
    *
    * The history section is a parameter rather than always the current one:
    * history's own strip is two addresses, and a builder that always answered
    * with the section being looked at would give both tabs the same href.
    */
-  rootInstallationHref(
+  rootWorkspaceHref(
     account: string,
-    nextView: RootInstallationView,
+    nextView: RootWorkspaceView,
     section?: HistorySection,
   ): string {
-    return panelAddress(this.rootInstallationRoute(account, nextView, section));
+    return panelAddress(this.rootWorkspaceRoute(account, nextView, section));
+  }
+
+  /** One repository's page, read from the console rather than from its workspace. */
+  rootRepositoryHref(account: string, repository: string): string {
+    return panelAddress({
+      rootView: 'workspace',
+      account,
+      view: 'repositories',
+      repository: { name: repository },
+    });
   }
 
   returnHref(): string {
@@ -867,7 +847,7 @@ export class PanelSession {
     switch (event.type) {
       case 'target.changed':
         void this.queryClient.invalidateQueries({ queryKey: ['targets'] });
-        void this.queryClient.invalidateQueries({ queryKey: ['root-installations'] });
+        void this.queryClient.invalidateQueries({ queryKey: ['root-workspaces'] });
         void this.queryClient.invalidateQueries({ queryKey: ['root-overview'] });
         this.invalidateTargetData(targetId);
         return;
@@ -958,9 +938,9 @@ export class PanelSession {
    * Where Return goes: the page the reader left, while it is still theirs to open.
    *
    * A remembered page outlives the tab's reloads, and can outlive the reader too - the
-   * next person to sign in on this tab has their own installations. So it is offered only
+   * next person to sign in on this tab has their own workspaces. So it is offered only
    * while the account it names is one of them, and anything else falls back to what the
-   * panel answered before it remembered anything: the selected installation, on the view
+   * panel answered before it remembered anything: the selected workspace, on the view
    * that was last looked at.
    */
   private returnRoute(): PanelRoute | null {
@@ -975,7 +955,7 @@ export class PanelSession {
    * Where the console opens.
    *
    * No check against what exists, unlike the workspace side. Whoever may enter the
-   * console may read every installation in it, so a page here is only ever stale in the
+   * console may read every workspace in it, so a page here is only ever stale in the
    * way a bookmark is - and the one reader it could have belonged to instead, a Root
    * whose role has since been taken away, is turned back at the door by `enterRoot`.
    */
@@ -989,7 +969,7 @@ export class PanelSession {
     return this.targets.some((target) => target.account.login.toLowerCase() === folded);
   }
 
-  /** The same view on another installation, which is what its own link promises. */
+  /** The same view on another workspace, which is what its own link promises. */
   private targetRoute(target: PanelTarget): PanelRoute {
     if (this.lastScopedView === 'queue') {
       return this.queueRoute(target, this.lastScopedQueueSection);
@@ -1012,7 +992,7 @@ export class PanelSession {
 
   private invalidateRepositoryAggregates(): void {
     void this.queryClient.invalidateQueries({ queryKey: ['targets'] });
-    void this.queryClient.invalidateQueries({ queryKey: ['root-installations'] });
+    void this.queryClient.invalidateQueries({ queryKey: ['root-workspaces'] });
     void this.queryClient.invalidateQueries({ queryKey: ['root-overview'] });
   }
 
@@ -1029,14 +1009,13 @@ export class PanelSession {
     return dialog === undefined ? route : { ...route, dialog };
   }
 
-  private queueRoute(target: PanelTarget, section: QueueSection): InstallationRoute {
-    const route: InstallationRoute = { account: target.account.login, view: 'queue' };
+  private queueRoute(target: PanelTarget, section: QueueSection): WorkspaceRoute {
+    const route: WorkspaceRoute = { account: target.account.login, view: 'queue' };
     return section === 'active' ? route : { ...route, queue: section };
   }
 
   private rootQueueRoute(section: QueueSection): RootRoute {
-    if (section === 'approvals') return { rootView: 'queue-approvals' };
-    if (section === 'history') return { rootView: 'queue-history' };
+    if (section !== 'active') return { rootView: `queue-${section}` };
     return { rootView: 'queue' };
   }
 
@@ -1049,9 +1028,9 @@ export class PanelSession {
    */
   private repositoryRoute(repository: RepositoryPage | null): PanelRoute {
     const root = this.currentRootRoute;
-    if (this.isRootMode && root.rootView === 'installation') {
+    if (this.isRootMode && root.rootView === 'workspace') {
       const route: RootRoute = {
-        rootView: 'installation',
+        rootView: 'workspace',
         account: root.account,
         view: 'repositories',
       };
@@ -1059,7 +1038,7 @@ export class PanelSession {
       return repository === null ? route : { ...route, repository };
     }
 
-    const route: InstallationRoute = {
+    const route: WorkspaceRoute = {
       account: this.selectedTarget?.account.login ?? '',
       view: 'repositories',
     };
@@ -1067,14 +1046,14 @@ export class PanelSession {
     return repository === null ? route : { ...route, repository };
   }
 
-  private rootInstallationRoute(
+  private rootWorkspaceRoute(
     account: string,
-    nextView: RootInstallationView,
+    nextView: RootWorkspaceView,
     section: HistorySection | undefined = this.currentHistorySection,
   ): RootRoute {
     return nextView === 'history'
-      ? { rootView: 'installation', account, view: nextView, section }
-      : { rootView: 'installation', account, view: nextView };
+      ? { rootView: 'workspace', account, view: nextView, section }
+      : { rootView: 'workspace', account, view: nextView };
   }
 
   private resetPageScroll(): void {
@@ -1094,4 +1073,33 @@ export class PanelSession {
   }
 }
 
-export const [getPanelSession, setPanelSession] = createContext<PanelSession>();
+/**
+ * The session, on the context.
+ *
+ * `setContext`/`getContext` with a key of our own rather than `createContext`, because
+ * one caller has to be able to ask whether there IS a session: a component drawn
+ * inside the shell always has one, and the same component rendered by a story or a
+ * component test does not. `createContext` hides its key and, at the version pinned
+ * here, hands back no `has`, so the question cannot be asked through it.
+ */
+const PANEL_SESSION = Symbol('panel-session');
+
+export function setPanelSession(session: PanelSession): PanelSession {
+  return setContext(PANEL_SESSION, session);
+}
+
+export function getPanelSession(): PanelSession {
+  const session = getContext<PanelSession | undefined>(PANEL_SESSION);
+  if (session === undefined) throw new Error('the panel session is not on the context');
+  return session;
+}
+
+/**
+ * The session where there is one.
+ *
+ * A component that only wants to say WHERE it is - the workspace a page belongs to -
+ * degrades to saying nothing outside the shell rather than refusing to render.
+ */
+export function panelSessionOrNull(): PanelSession | null {
+  return getContext<PanelSession | undefined>(PANEL_SESSION) ?? null;
+}

@@ -19,7 +19,10 @@
     targetDefaultsResource,
     type TargetDefaultsControlId,
   } from '../target-defaults-settings';
+  import type { PanelApi } from '../api';
   import type { ConfigKey, ConfigPatch, PanelTarget, PendingCIMode } from '../types';
+  import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import ClippedLabel from './ClippedLabel.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
   import FormattingEditor from './FormattingEditor.svelte';
@@ -27,26 +30,52 @@
   import Icon from './Icon.svelte';
   import PatternEntries from './PatternEntries.svelte';
   import PageHeader from './PageHeader.svelte';
+  import PageToc, { type TocEntry } from './PageToc.svelte';
   import Popover from './Popover.svelte';
-  import Switch from './Switch.svelte';
+  import SegmentedControl from './SegmentedControl.svelte';
+  import WorkspaceTiming from './WorkspaceTiming.svelte';
 
   const PENDING_CI_CHOICES = [
     { value: 'checks', label: 'Checks' },
     { value: 'labels', label: 'Labels' },
   ] as const;
 
+  const ARRIVAL_CHOICES = [
+    { value: 'off', label: 'Start off' },
+    { value: 'on', label: 'Start on' },
+  ] as const;
+
+  /* The page's own sections, in the order they are written. The formatting card is the
+     one the design does not model - the rules it holds are real and reachable nowhere
+     else, so it is indexed like the rest rather than left off the list. */
+  const TOC: readonly TocEntry[] = [
+    { id: 'ws-newrepos', label: 'New repositories' },
+    { id: 'ws-merging', label: 'Merging' },
+    { id: 'ws-behavior', label: 'Behavior' },
+    { id: 'ws-commands', label: 'Commands' },
+    { id: 'ws-formatting', label: 'Formatting' },
+    { id: 'ws-timing', label: 'Timing' },
+  ];
+
   const {
     target: canonicalTarget,
     readOnly = false,
+    timing,
   }: {
     target: PanelTarget;
     readOnly?: boolean;
+    /**
+     * What the Timing card needs to say when Smyklot acts and to carry a request to the
+     * operators. Absent where the page is rendered outside the shell - a story, a
+     * component spec - and the card then holds the settings this page owns and no more.
+     */
+    timing?: { api: PanelApi; canRequest: boolean };
   } = $props();
 
   const drafts = getSettingsDraftRegistry();
   const resource = $derived(targetDefaultsResource(canonicalTarget.id));
   const settingsScope = $derived({
-    type: 'installation',
+    type: 'workspace',
     targetId: canonicalTarget.id,
   } as const satisfies SettingsScope);
   const document = $derived(targetDefaultsDraftDocument(drafts, canonicalTarget));
@@ -215,7 +244,7 @@
   function saveIndexDraft(amount: string, unit: DurationUnit): boolean {
     const seconds = Math.round(Number(amount) * UNIT_SECONDS[unit]);
     if (!Number.isFinite(seconds) || seconds < 60 || seconds > 604_800) {
-      failure = 'Path index interval must be from 1 minute to 7 days';
+      failure = 'File index interval must be from 1 minute to 7 days';
       return false;
     }
     return stage(
@@ -233,105 +262,208 @@
   }
 </script>
 
+<!--
+@component
+What a workspace does by default, which every repository inside it inherits until it
+says otherwise. This is the top of the settings chain the panel exposes, so a value set
+here is the one a repository's editor shows as inherited.
+
+`readOnly` keeps the page whole and closes the controls. A member who can see how their
+workspace is configured without being able to change it is a real reader, and hiding the
+settings from them answers a different question than the one they asked.
+-->
+
 <div class="view-frame">
-  <section class="settings-page" aria-labelledby="defaults-heading">
-    <PageHeader
-      id="defaults-heading"
-      eyebrow="Workspace"
-      title="Workspace defaults"
-      description="Defaults every repository inherits unless a repository overrides them"
-    />
+  <div class="page-main">
+    <section class="settings-page card-stack" aria-labelledby="defaults-heading">
+      <PageHeader
+        id="defaults-heading"
+        title="Workspace settings"
+        description="What every repository here inherits, unless one overrides it for itself"
+      />
 
-    {#if failure !== null}
-      <FormError message={failure} />
-    {/if}
+      {#if failure !== null}
+        <FormError message={failure} />
+      {/if}
 
-    <section class="card group-card" aria-labelledby="settings-repositories">
-      <div class="group-head">
-        <h3 class="group-name" id="settings-repositories">Repositories</h3>
-      </div>
-      <div class="policy-rows">
-        <div
-          class={[
-            'policy-row',
-            { 'is-unsaved': controlDirty('defaults.repository_default_enabled') },
-          ]}
-          data-unsaved={controlDirty('defaults.repository_default_enabled') || undefined}
-        >
-          <span class="setting-say">
-            <span class="setting-name">Unconfigured repositories</span>
-            <span class="setting-why"
-              >How Smyklot treats repositories that don't have their own setting yet. New
-              installations start disabled, so nothing runs before you decide</span
-            >
-          </span>
-          <span class="policy-value">
-            <span class="value-word" class:is-on={target.repository_default_enabled}
-              >{target.repository_default_enabled ? 'On' : 'Off'}</span
-            >
-            <Switch
-              checked={target.repository_default_enabled}
-              label="Unconfigured repositories"
-              disabled={frozen}
-              onToggle={(next) =>
-                stage(
-                  { ...document, repository_default_enabled: next },
-                  'defaults.repository_default_enabled',
-                )}
-            />
-          </span>
+      <Card id="ws-newrepos" labelledby="settings-repositories">
+        <div class="card-head">
+          <h2 class="card-title" id="settings-repositories">New repositories</h2>
         </div>
-        <div
-          class={[
-            'policy-row',
-            { 'is-unsaved': controlDirty('defaults.path_index_interval_seconds_override') },
-          ]}
-          data-unsaved={controlDirty('defaults.path_index_interval_seconds_override') || undefined}
-        >
-          <span class="setting-say">
-            <span class="setting-name">Path index</span>
-            <span class="setting-why"
-              >How often each repository's file list is read again for the finder and the plans</span
-            >
-          </span>
-          {#if target.path_index_interval_seconds_override === null}
-            <span class="policy-value">
-              <span class="setting-unmanaged"
-                >Follows the deployment - every {formatDuration(
-                  durationParts(target.path_index_interval_seconds_inherited, PATH_INDEX_UNITS),
-                )}</span
+        <div class="policy-rows">
+          <div
+            class={[
+              'policy-row',
+              { 'is-unsaved': controlDirty('defaults.repository_default_enabled') },
+            ]}
+            data-unsaved={controlDirty('defaults.repository_default_enabled') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">When a repository appears</span>
+              <span class="setting-why"
+                >A repository with no setting of its own starts here, and stays there until somebody
+                turns it on</span
               >
             </span>
-            <button
-              class="setting-clear"
-              title="Answer for this workspace"
-              disabled={frozen}
-              onclick={() =>
-                stage(
-                  {
-                    ...document,
-                    path_index_interval_seconds_override:
-                      target.path_index_interval_seconds_inherited,
-                  },
-                  'defaults.path_index_interval_seconds_override',
-                )}
-            >
-              <Icon name="plus" size={10} />
-            </button>
-          {:else}
             <span class="policy-value">
-              <input
-                class="num-inline num-short"
-                inputmode="numeric"
-                aria-label="Path index interval amount"
-                value={indexAmountShown}
+              <!-- TWO WORDS, NOT A TOGGLE. The question is what a repository Smyklot has never
+                 seen should do on arrival, and "off" and "on" are the two answers to it -
+                 a switch would ask instead whether the policy itself is enabled. -->
+              <SegmentedControl
+                name="repository-default-{canonicalTarget.id}"
+                label="When a repository appears"
+                options={ARRIVAL_CHOICES}
+                value={target.repository_default_enabled ? 'on' : 'off'}
                 disabled={frozen}
-                oninput={(event) => typeIndexAmount(event.currentTarget.value)}
-                onblur={finishIndexDraft}
+                compact
+                onSelect={(next) =>
+                  stage(
+                    { ...document, repository_default_enabled: next === 'on' },
+                    'defaults.repository_default_enabled',
+                  )}
               />
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      {#snippet timingCard()}
+        <details class="card fold" id="ws-timing">
+          <summary>
+            <Icon name="chevron-right" size="xs" />
+            <h2 class="card-title">Timing</h2>
+            <span class="fold-scent">When Smyklot acts, and how often - rarely changed</span>
+          </summary>
+          {#if timing !== undefined}
+            <WorkspaceTiming
+              api={timing.api}
+              targetId={canonicalTarget.id}
+              canRequest={timing.canRequest}
+            />
+          {/if}
+          <div class="policy-rows">
+            <div
+              class={[
+                'policy-row',
+                { 'is-unsaved': controlDirty('defaults.path_index_interval_seconds_override') },
+              ]}
+              data-unsaved={controlDirty('defaults.path_index_interval_seconds_override') ||
+                undefined}
+            >
+              <span class="setting-say">
+                <span class="setting-name">File index</span>
+                <span class="setting-why">How often each repository's file list is read again</span>
+              </span>
+              {#if target.path_index_interval_seconds_override === null}
+                <span class="policy-value">
+                  <span class="setting-unmanaged"
+                    >From the service: every {formatDuration(
+                      durationParts(target.path_index_interval_seconds_inherited, PATH_INDEX_UNITS),
+                    )}</span
+                  >
+                  <Button
+                    tone="quiet"
+                    disabled={frozen}
+                    onclick={() =>
+                      stage(
+                        {
+                          ...document,
+                          path_index_interval_seconds_override:
+                            target.path_index_interval_seconds_inherited,
+                        },
+                        'defaults.path_index_interval_seconds_override',
+                      )}
+                  >
+                    {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
+                    Answer here
+                  </Button>
+                </span>
+              {:else}
+                <span class="policy-value">
+                  <input
+                    class="num-inline num-short"
+                    inputmode="numeric"
+                    aria-label="File index interval amount"
+                    value={indexAmountShown}
+                    disabled={frozen}
+                    oninput={(event) => typeIndexAmount(event.currentTarget.value)}
+                    onblur={finishIndexDraft}
+                  />
+                  <Popover
+                    role="listbox"
+                    label="File index interval unit"
+                    align="end"
+                    itemSelector=".menu-item"
+                  >
+                    {#snippet trigger(attributes)}
+                      <button
+                        {...attributes}
+                        class="value-select"
+                        type="button"
+                        aria-label="File index interval unit"
+                        disabled={frozen}
+                      >
+                        <span class="t">{indexUnitShown}</span>
+                      </button>
+                    {/snippet}
+                    <div class="menu-list">
+                      {#each PATH_INDEX_UNITS as unit (unit)}
+                        <button
+                          class="menu-item"
+                          role="option"
+                          aria-selected={indexUnitShown === unit}
+                          onclick={() => pickIndexUnit(unit)}
+                        >
+                          <span class="menu-check">
+                            {#if indexUnitShown === unit}<Icon name="check" size="base" />{/if}
+                          </span>
+                          <ClippedLabel class="mi-label" text={unit} />
+                        </button>
+                      {/each}
+                    </div>
+                  </Popover>
+                  <!-- A WORD, NOT A GLYPH. The bare x asked a reader to know that this one
+                     crossed out an answer rather than deleting the setting. -->
+                  <Button
+                    tone="quiet"
+                    disabled={frozen}
+                    onclick={() =>
+                      stage(
+                        { ...document, path_index_interval_seconds_override: null },
+                        'defaults.path_index_interval_seconds_override',
+                      )}>Reset</Button
+                  >
+                </span>
+              {/if}
+            </div>
+          </div>
+        </details>
+      {/snippet}
+
+      <Card id="ws-merging" labelledby="settings-merge-ci">
+        <div class="card-head">
+          <h2 class="card-title" id="settings-merge-ci">Merging</h2>
+          <span class="pill {mergePill.tone}"><span class="t">{mergePill.word}</span></span>
+        </div>
+        <div class="policy-rows">
+          <div
+            class={[
+              'policy-row',
+              { 'is-unsaved': controlDirty('defaults.pending_ci_mode_default') },
+            ]}
+            data-unsaved={controlDirty('defaults.pending_ci_mode_default') || undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Repository protection</span>
+              <span class="setting-why"
+                >Checks mode creates an app-bound required check and merges the exact authorized
+                head</span
+              >
+            </span>
+            <span class="policy-value">
               <Popover
                 role="listbox"
-                label="Path index interval unit"
+                label="Repository protection choices"
                 align="end"
                 itemSelector=".menu-item"
               >
@@ -340,232 +472,161 @@
                     {...attributes}
                     class="value-select"
                     type="button"
-                    aria-label="Path index interval unit"
+                    aria-label="{target.pending_ci_mode_default === 'checks'
+                      ? 'Checks'
+                      : 'Labels'} - repository protection"
                     disabled={frozen}
                   >
-                    <span class="t">{indexUnitShown}</span>
+                    <span class="t"
+                      >{target.pending_ci_mode_default === 'checks' ? 'Checks' : 'Labels'}</span
+                    >
                   </button>
                 {/snippet}
                 <div class="menu-list">
-                  {#each PATH_INDEX_UNITS as unit (unit)}
+                  {#each PENDING_CI_CHOICES as option (option.value)}
                     <button
                       class="menu-item"
                       role="option"
-                      aria-selected={indexUnitShown === unit}
-                      onclick={() => pickIndexUnit(unit)}
+                      aria-selected={target.pending_ci_mode_default === option.value}
+                      onclick={() => setMode(option.value)}
                     >
                       <span class="menu-check">
-                        {#if indexUnitShown === unit}<Icon name="check" size={16} />{/if}
+                        {#if target.pending_ci_mode_default === option.value}<Icon
+                            name="check"
+                            size="base"
+                          />{/if}
                       </span>
-                      <ClippedLabel class="mi-label" text={unit} />
+                      <ClippedLabel class="mi-label" text={option.label} />
                     </button>
                   {/each}
                 </div>
               </Popover>
             </span>
-            <button
-              class="setting-clear"
-              title="Stop answering - follow the deployment"
-              disabled={frozen}
-              onclick={() =>
-                stage(
-                  { ...document, path_index_interval_seconds_override: null },
-                  'defaults.path_index_interval_seconds_override',
-                )}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          {/if}
-        </div>
-      </div>
-    </section>
-
-    <section class="card group-card" aria-labelledby="settings-merge-ci">
-      <div class="group-head">
-        <h3 class="group-name" id="settings-merge-ci">Merge after CI</h3>
-        <span class="pill {mergePill.tone}"><span class="t">{mergePill.word}</span></span>
-      </div>
-      <div class="policy-rows">
-        <div
-          class={['policy-row', { 'is-unsaved': controlDirty('defaults.pending_ci_mode_default') }]}
-          data-unsaved={controlDirty('defaults.pending_ci_mode_default') || undefined}
-        >
-          <span class="setting-say">
-            <span class="setting-name">Repository protection</span>
-            <span class="setting-why"
-              >Checks mode creates an app-bound required check and merges the exact authorized head</span
-            >
-          </span>
-          <span class="policy-value">
-            <Popover
-              role="listbox"
-              label="Repository protection choices"
-              align="end"
-              itemSelector=".menu-item"
-            >
-              {#snippet trigger(attributes)}
-                <button
-                  {...attributes}
-                  class="value-select"
-                  type="button"
-                  aria-label="Repository protection"
-                  disabled={frozen}
-                >
-                  <span class="t"
-                    >{target.pending_ci_mode_default === 'checks' ? 'Checks' : 'Labels'}</span
-                  >
-                </button>
-              {/snippet}
-              <div class="menu-list">
-                {#each PENDING_CI_CHOICES as option (option.value)}
-                  <button
-                    class="menu-item"
-                    role="option"
-                    aria-selected={target.pending_ci_mode_default === option.value}
-                    onclick={() => setMode(option.value)}
-                  >
-                    <span class="menu-check">
-                      {#if target.pending_ci_mode_default === option.value}<Icon
-                          name="check"
-                          size={16}
-                        />{/if}
-                    </span>
-                    <ClippedLabel class="mi-label" text={option.label} />
-                  </button>
-                {/each}
-              </div>
-            </Popover>
-          </span>
-        </div>
-        <div
-          class={[
-            'policy-row',
-            'policy-block',
-            {
-              'is-unsaved': controlDirty('defaults.pending_ci_branch_patterns_default.include'),
-            },
-          ]}
-          data-unsaved={controlDirty('defaults.pending_ci_branch_patterns_default.include') ||
-            undefined}
-        >
-          <span class="setting-say">
-            <span class="setting-name">Protected refs</span>
-            <span class="setting-why"
-              >Raw GitHub ruleset patterns, such as <code>~DEFAULT_BRANCH</code>. At least one is
-              required</span
-            >
-          </span>
-          <div class="pattern-line">
-            <PatternEntries
-              patterns={target.pending_ci_branch_patterns_default.include}
-              readOnly={frozen}
-              onChange={setIncludes}
-            />
+          </div>
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('defaults.pending_ci_branch_patterns_default.include'),
+              },
+            ]}
+            data-unsaved={controlDirty('defaults.pending_ci_branch_patterns_default.include') ||
+              undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Protected branches</span>
+              <span class="setting-why"
+                >Where the protection applies - branches matching any pattern here. Raw GitHub
+                ruleset patterns, such as <code>~DEFAULT_BRANCH</code>, and at least one is required</span
+              >
+            </span>
+            <span class="policy-value setting-value-wrap">
+              <PatternEntries
+                patterns={target.pending_ci_branch_patterns_default.include}
+                readOnly={frozen}
+                onChange={setIncludes}
+              />
+            </span>
+          </div>
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('defaults.pending_ci_branch_patterns_default.exclude'),
+              },
+            ]}
+            data-unsaved={controlDirty('defaults.pending_ci_branch_patterns_default.exclude') ||
+              undefined}
+          >
+            <span class="setting-say">
+              <span class="setting-name">Excluded refs</span>
+              <span class="setting-why"
+                >Optional patterns that should keep the inherited merge behavior</span
+              >
+            </span>
+            <span class="policy-value setting-value-wrap">
+              <PatternEntries
+                patterns={target.pending_ci_branch_patterns_default.exclude}
+                readOnly={frozen}
+                onChange={setExcludes}
+              />
+            </span>
+          </div>
+          <div
+            class={[
+              'policy-row',
+              {
+                'is-unsaved': controlDirty('defaults.pending_ci_quiet_period_seconds_override'),
+              },
+            ]}
+            data-unsaved={controlDirty('defaults.pending_ci_quiet_period_seconds_override') ||
+              undefined}
+          >
+            <span class="setting-say">
+              <label class="setting-name" for="settings-quiet-period"
+                >Quiet period after checks pass</label
+              >
+              <span class="setting-why"
+                >Checks must pass and stay green this long before Smyklot merges. At zero seconds
+                Smyklot merges as soon as a second look agrees</span
+              >
+            </span>
+            <!-- THE UNIT LIVES BESIDE THE NUMBER, never buried in the sentence: a reader
+               typing 30 into a box should not have to read a line of prose to learn
+               whether the field is asking for seconds or minutes. -->
+            <span class="policy-value entry-suffix">
+              <input
+                id="settings-quiet-period"
+                class="num-inline"
+                inputmode="numeric"
+                placeholder={target.pending_ci_quiet_period_seconds_inherited.toString()}
+                value={quietShown}
+                disabled={frozen}
+                oninput={(event) => typeQuiet(event.currentTarget.value)}
+                onblur={finishQuiet}
+              />
+              <span class="entry-unit">seconds</span>
+            </span>
           </div>
         </div>
-        <div
-          class={[
-            'policy-row',
-            'policy-block',
-            {
-              'is-unsaved': controlDirty('defaults.pending_ci_branch_patterns_default.exclude'),
-            },
-          ]}
-          data-unsaved={controlDirty('defaults.pending_ci_branch_patterns_default.exclude') ||
-            undefined}
-        >
-          <span class="setting-say">
-            <span class="setting-name">Excluded refs</span>
-            <span class="setting-why"
-              >Optional patterns that should keep the inherited merge behavior</span
-            >
-          </span>
-          <div class="pattern-line">
-            <PatternEntries
-              patterns={target.pending_ci_branch_patterns_default.exclude}
-              readOnly={frozen}
-              onChange={setExcludes}
-            />
-          </div>
-        </div>
-        <div
-          class={[
-            'policy-row',
-            {
-              'is-unsaved': controlDirty('defaults.pending_ci_quiet_period_seconds_override'),
-            },
-          ]}
-          data-unsaved={controlDirty('defaults.pending_ci_quiet_period_seconds_override') ||
-            undefined}
-        >
-          <span class="setting-say">
-            <label class="setting-name" for="settings-quiet-period">Stable passing window</label>
-            <span class="setting-why"
-              >Seconds. Zero still requires two matching passing observations</span
-            >
-          </span>
-          <span class="policy-value">
-            <input
-              id="settings-quiet-period"
-              class="num-inline"
-              inputmode="numeric"
-              placeholder={target.pending_ci_quiet_period_seconds_inherited.toString()}
-              value={quietShown}
-              disabled={frozen}
-              oninput={(event) => typeQuiet(event.currentTarget.value)}
-              onblur={finishQuiet}
-            />
-          </span>
-        </div>
-      </div>
-      {#if target.pending_ci_mode_default === 'checks' && !pendingCIPermissionsReady}
-        <p class="perm-note" role="status">
-          Grant Checks write and Administration write to activate checks mode. Repositories remain
-          blocked until GitHub approves both permissions.
-        </p>
-      {/if}
-    </section>
+        {#if target.pending_ci_mode_default === 'checks' && !pendingCIPermissionsReady}
+          <p class="perm-note" role="status">
+            Grant Checks write and Administration write to activate checks mode. Repositories remain
+            blocked until GitHub approves both permissions.
+          </p>
+        {/if}
+      </Card>
 
-    <ConfigEditor
-      patch={target.config_patch}
-      inherited={target.inherited_config}
-      scope="target"
-      idPrefix={target.id}
-      disabled={frozen}
-      dirtyKeys={dirtyConfigKeys}
-      onChange={updateConfig}
-    />
-    <FormattingEditor
-      patch={target.config_patch.formatting ?? {}}
-      inherited={target.inherited_config.formatting}
-      scope="target"
-      idPrefix={target.id}
-      disabled={frozen}
-      dirtyKeys={dirtyFormattingKeys}
-      onChange={updateFormatting}
-      onValidity={setFormattingValidity}
-    />
-  </section>
+      <ConfigEditor
+        patch={target.config_patch}
+        inherited={target.inherited_config}
+        scope="target"
+        idPrefix={target.id}
+        anchorPrefix="ws"
+        disabled={frozen}
+        dirtyKeys={dirtyConfigKeys}
+        onChange={updateConfig}
+      />
+      <FormattingEditor
+        patch={target.config_patch.formatting ?? {}}
+        inherited={target.inherited_config.formatting}
+        scope="target"
+        idPrefix={target.id}
+        anchor="ws-formatting"
+        disabled={frozen}
+        dirtyKeys={dirtyFormattingKeys}
+        onChange={updateFormatting}
+        onValidity={setFormattingValidity}
+      />
+      <!-- LAST, BECAUSE IT IS RARELY WANTED. Written beside the setting it holds and
+           rendered at the foot of the page, where a shut card costs a reader one line. -->
+      {@render timingCard()}
+    </section>
+  </div>
+  <PageToc entries={TOC} />
 </div>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
-  .settings-page {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
   .group-head {
     align-items: end;
     display: flex;
@@ -584,13 +645,13 @@
 
   .pill {
     align-items: center;
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -614,134 +675,9 @@
     color: var(--text-muted);
   }
 
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    /* The air around a drawn hairline is the card's own padding, on both
-       sides; the edge rows shed it where no line follows, since the card
-       edge already carries that inset. */
-    padding: var(--space-5) var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .policy-row:first-child {
-    padding-block-start: var(--space-2);
-  }
-
-  .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  /* Every row owns the drawn hairline under itself; the last one stands
-     down, so the card ends on its own padding. */
-  .policy-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why code {
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  .value-word {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-inline-size: 1.9rem;
-    text-align: end;
-    text-box: trim-both cap alphabetic;
-  }
-
   .value-word.is-on {
     color: var(--text-secondary);
     font-weight: 600;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-style: normal;
-    /* Ink-true, so the padding around the hairlines measures to the glyphs
-       rather than to the line box's leading. */
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
   }
 
   .value-select {
@@ -759,7 +695,7 @@
     cursor: pointer;
     display: inline-flex;
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 1.5rem 0 var(--space-2);
   }
 
@@ -821,15 +757,6 @@
     white-space: nowrap;
   }
 
-  /* A block row keeps the grid for its say and lays its entries on a
-     full-width second line. The extra breathing room lives INSIDE the row,
-     above the entries - the block padding stays the shared 8px so the air
-     around every hairline is the same on both sides. */
-  .pattern-line {
-    grid-column: 1 / -1;
-    margin-block: var(--space-1) 0;
-  }
-
   .num-inline {
     background: var(--input-bg);
     border: 1px solid var(--control-border);
@@ -837,7 +764,7 @@
     color: var(--text-primary);
     font-family: var(--mono);
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 var(--space-2);
     text-align: end;
     width: 8.5rem;
@@ -853,7 +780,7 @@
 
   .num-inline:focus-visible {
     border-color: var(--brand-action);
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
   }
 
   .perm-note {
@@ -862,7 +789,7 @@
     color: var(--warning);
     font-size: var(--font-size-meta);
     /* Ink-true with even padding, so the words sit on the note's centre. */
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-meta);
     margin: var(--space-3) 0 0;
     padding: var(--space-3);
     text-box: trim-both cap alphabetic;
@@ -873,30 +800,6 @@
   @media (max-width: 30rem) {
     .group-head {
       flex-wrap: wrap;
-    }
-
-    /* The say keeps the line and the control moves under it - beside it,
-       the copy was down to a word a line while the control still ran off
-       the screen and took the layout viewport with it. */
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
-    }
-
-    .policy-row .policy-value {
-      flex-wrap: wrap;
-      grid-column: 1 / -1;
-      justify-self: start;
     }
   }
 </style>

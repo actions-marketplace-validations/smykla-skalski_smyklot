@@ -3,9 +3,8 @@ import { defineParams } from '@sveltejs/kit/params';
 import {
   ACCESS_SECTIONS,
   DIRECT_PANEL_VIEWS,
-  DIRECT_ROOT_INSTALLATION_VIEWS,
+  DIRECT_ROOT_WORKSPACE_VIEWS,
   HISTORY_SECTIONS,
-  REPOSITORY_SECTIONS,
   WRITTEN_QUEUE_SECTIONS,
   WRITTEN_SYNC_SECTIONS,
 } from './lib/routes.ts';
@@ -82,7 +81,7 @@ const MATCHERS = {
   invitationToken: matching('^[A-Za-z0-9_-]{43}$'),
 
   /**
-   * The views an installation address may name, taken from the list itself.
+   * The views a workspace address may name, taken from the list itself.
    *
    * A second copy is a copy that drifts, and it did: the sync view was added to every
    * other list and this one still refused it, so the row in the navigation led to the
@@ -94,25 +93,15 @@ const MATCHERS = {
   queueSection: oneOf(WRITTEN_QUEUE_SECTIONS),
 
   /**
-   * The panes one repository's page can open on.
-   *
-   * The segment is optional in the route, so what makes it worth matching is the segment
-   * that is not one: `/i/acme/repositories/api-gateway/nonsense` resolves to no route at
-   * all and is answered 404 from the wire, rather than reaching the page and quietly
-   * opening the pane it starts on.
-   */
-  repositorySection: oneOf(REPOSITORY_SECTIONS),
-
-  /**
-   * The views the Root console renders for an installation, which are fewer than the
-   * installation itself has.
+   * The views the Root console renders for a workspace, which are fewer than the
+   * workspace itself has.
    *
    * A separate matcher from `panelView` because the difference is a boundary and not an
    * oversight: an address the console has no page for must answer with the not-found
    * page rather than with a shell that says the view is unavailable, which reads as a
    * fault. The two lists used to be told apart by a third copy of both, written in Go.
    */
-  rootInstallationView: oneOf(DIRECT_ROOT_INSTALLATION_VIEWS),
+  rootWorkspaceView: oneOf(DIRECT_ROOT_WORKSPACE_VIEWS),
 
   /**
    * The sync sections written into an address; the overview leaves the bare

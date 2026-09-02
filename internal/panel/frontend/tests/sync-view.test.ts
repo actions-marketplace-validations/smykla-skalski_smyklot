@@ -59,7 +59,7 @@ const renderFile = async (_targetId: string, input: { draft_content: string }) =
  *
  * A kind switched on without the permission behind it plans nothing and fails at
  * nothing, so the plan list below reads exactly as it does while waiting for a
- * sweep. Settings sync is the first kind needing a permission no installation
+ * sweep. Settings sync is the first kind needing a permission no workspace
  * has granted, which makes that the ordinary first-use answer rather than a
  * corner of one.
  */
@@ -166,20 +166,21 @@ describe('SyncView [Component]', () => {
     );
 
     await screen.findByRole('heading', { name: 'Labels' });
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Label sync' }));
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Resume label syncing' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Remove bug' }));
 
     expect(drafts.dirtyControls().map(({ id }) => id)).toEqual([
       'sync.labels.enabled',
       'sync.labels.labels',
     ]);
-    expect(document.querySelector('.kind-head')?.getAttribute('data-unsaved')).toBe('true');
+    expect(document.querySelector('.page-status')?.getAttribute('data-unsaved')).toBe('true');
     expect(document.querySelector('.label-card')?.getAttribute('data-unsaved')).toBe('true');
 
-    expect(drafts.discardScope({ type: 'installation', targetId: 'target-1' })).toBe(1);
+    expect(drafts.discardScope({ type: 'workspace', targetId: 'target-1' })).toBe(1);
     await waitFor(() =>
       expect(
-        (screen.getByRole('checkbox', { name: 'Label sync' }) as HTMLInputElement).checked,
+        (screen.getByRole('checkbox', { name: 'Resume label syncing' }) as HTMLInputElement)
+          .checked,
       ).toBe(false),
     );
     expect(screen.getByRole('button', { name: 'Remove bug' })).toBeTruthy();
@@ -194,8 +195,10 @@ describe('SyncView [Component]', () => {
       'settings',
     );
 
-    await screen.findByRole('heading', { name: 'Repository settings' });
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Settings sync' }));
+    await screen.findByRole('heading', { name: 'Repository options' });
+    await fireEvent.click(
+      screen.getByRole('checkbox', { name: 'Resume repository option syncing' }),
+    );
     await fireEvent.click(screen.getByRole('checkbox', { name: 'Wiki' }));
 
     expect(drafts.dirtyControls().map(({ id }) => id)).toEqual([
@@ -292,7 +295,7 @@ describe('SyncView [Component]', () => {
       { drafts: registry(storage) },
     );
     await screen.findByRole('heading', { name: 'Labels' });
-    await fireEvent.click(screen.getByRole('checkbox', { name: 'Label sync' }));
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Resume label syncing' }));
     first.page.unmount();
 
     const restarted = registry(storage);
@@ -301,9 +304,11 @@ describe('SyncView [Component]', () => {
       drafts: restarted,
     });
 
+    /* On, so the switch now offers to pause - the restored draft is legible in
+       the name as well as in the state. */
     await waitFor(() =>
       expect(
-        (screen.getByRole('checkbox', { name: 'Label sync' }) as HTMLInputElement).checked,
+        (screen.getByRole('checkbox', { name: 'Pause label syncing' }) as HTMLInputElement).checked,
       ).toBe(true),
     );
   });
@@ -416,7 +421,7 @@ describe('SyncView [Component]', () => {
   it('says nothing of a permission while the kind is switched off', async () => {
     mount(config('labels'), config('settings', { unavailable: MISSING }));
 
-    await screen.findByRole('heading', { name: 'Repository settings' });
+    await screen.findByRole('heading', { name: 'Repository options' });
 
     expect(screen.queryByRole('status')).toBeNull();
   });
@@ -462,10 +467,40 @@ describe('SyncView [Component]', () => {
     await screen.findByRole('heading', { name: '1 active in step · 1 switched off' });
   });
 
-  it('gives an empty fleet an honest verdict', async () => {
+  /**
+   * An empty fleet is two different silences, and the page used to answer both
+   * with "No repositories to check" over an empty board and a legend of four
+   * zeros - which reads as a fleet that failed to load, and is untrue besides
+   * for a workspace that holds repositories and simply syncs none of them.
+   *
+   * The verdict names which silence it is; the panel says what follows and
+   * carries the way out. Neither says the other's sentence.
+   */
+  it('names which silence an empty fleet is, and offers the way out', async () => {
     mount(config('labels'), config('settings'), config('rulesets'), config('files'), 'overview');
 
-    await screen.findByRole('heading', { name: 'No repositories to check' });
+    await screen.findByRole('heading', { name: 'Sync is off here' });
+    const panel = document.querySelector('.state-panel');
+    expect(panel?.textContent).toContain('Nothing is being kept in step');
+    // Not a dead end: the kind cards are gone with the board, so the one next
+    // step is named here rather than pointed at.
+    expect(screen.getByRole('link', { name: 'Open Labels' })).toBeTruthy();
+    expect(document.querySelector('.kind-grid'), 'kind cards over an empty board').toBeNull();
+  });
+
+  it('tells a syncing workspace that its repositories opted out', async () => {
+    mount(
+      config('labels', { enabled: true }),
+      config('settings'),
+      config('rulesets'),
+      config('files'),
+      'overview',
+    );
+
+    await screen.findByRole('heading', { name: 'No repository syncs yet' });
+    expect(document.querySelector('.state-panel')?.textContent).toContain(
+      'Every repository has turned this off for itself',
+    );
   });
 
   it('renders relative plan times against an injected catalogue clock', async () => {
@@ -510,7 +545,7 @@ describe('SyncView [Component]', () => {
       status,
     });
 
-    await screen.findByRole('heading', { name: '1 of 1 are out of step' });
+    await screen.findByRole('heading', { name: '1 of 1 syncing repositories are out of step' });
     expect(screen.getByText('5 minutes ago')).toBeTruthy();
     expect(screen.getByText(/Expires in 6 hours/u)).toBeTruthy();
   });

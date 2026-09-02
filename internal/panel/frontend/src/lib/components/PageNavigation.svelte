@@ -18,6 +18,19 @@
   const items = $derived(paginationItems(currentPage, pageCount));
 </script>
 
+<!--
+@component
+Previous, next, and the numbered pages between them. A group rather than a navigation
+landmark, because it moves within one collection rather than between places.
+
+It never hides a step it cannot take: an unavailable Previous is disabled and stays
+where it is, so the row does not reflow under a reader who is pressing Next
+repeatedly.
+
+Belongs under something counted. It is `PaginationBar` that pairs it with the range and
+the page size; this half is the move alone.
+-->
+
 <div class="page-navigation" role="group" aria-label="Pages">
   <button
     class="page-step"
@@ -25,7 +38,7 @@
     aria-label="Previous page"
     onclick={() => onSelect(pageIndex - 1)}
   >
-    <Icon name="chevron-left" size={16} />
+    <Icon name="chevron-left" size="base" />
     <span class="step-label">Previous</span>
   </button>
 
@@ -55,7 +68,7 @@
     onclick={() => onSelect(pageIndex + 1)}
   >
     <span class="step-label">Next</span>
-    <Icon name="chevron-right" size={16} />
+    <Icon name="chevron-right" size="base" />
   </button>
 </div>
 
@@ -79,30 +92,30 @@
     background: transparent;
     border: 1px solid transparent;
     box-sizing: border-box;
-    color: var(--dim);
+    color: var(--text-muted);
     display: inline-flex;
     font-size: var(--font-size-compact);
     font-weight: 600;
     height: var(--local-control-height, var(--control-height-compact));
     justify-content: center;
-    line-height: 1;
+    line-height: var(--leading-flat);
     max-height: var(--local-control-height, var(--control-height-compact));
     min-height: var(--local-control-height, var(--control-height-compact));
     transition:
-      background-color 120ms ease-out,
-      border-color 120ms ease-out,
-      color 120ms ease-out,
-      transform 80ms ease-out;
+      background-color var(--duration-press) var(--ease-standard),
+      border-color var(--duration-press) var(--ease-standard),
+      color var(--duration-press) var(--ease-standard),
+      transform var(--duration-press) var(--ease-standard);
   }
 
   button:hover:not(:disabled):not(.current) {
-    background: var(--strip-lift);
+    background: var(--surface-raised);
     border-color: var(--control-border);
-    color: var(--text);
+    color: var(--text-primary);
   }
 
   button:active:not(:disabled) {
-    box-shadow: inset 0 0 0 100vmax var(--press);
+    box-shadow: inset 0 0 0 100vmax var(--interactive-pressed);
   }
 
   button:disabled {
@@ -137,9 +150,9 @@
   }
 
   .ellipsis {
-    color: var(--dim);
+    color: var(--text-muted);
     display: grid;
-    font: 600 var(--font-size-compact) / 1 var(--sans);
+    font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
     height: var(--local-control-height, var(--control-height-compact));
     min-width: 1.25rem;
     place-items: center;

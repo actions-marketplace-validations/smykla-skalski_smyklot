@@ -1,5 +1,5 @@
 <script module lang="ts">
-  export type SettingsDraftAttentionKind = 'restored' | 'inactive' | 'storage-problem';
+  export type SettingsDraftAttentionKind = 'inactive' | 'storage-problem';
 </script>
 
 <script lang="ts">
@@ -23,26 +23,31 @@
   } = $props();
 
   const heading = $derived(
-    kind === 'restored'
-      ? 'Unsaved settings restored'
-      : kind === 'inactive'
-        ? 'Unsaved settings need attention'
-        : 'Unsaved settings may not survive',
+    kind === 'inactive' ? 'Unsaved settings need attention' : 'Unsaved settings may not survive',
   );
-  const iconName = $derived<IconName>(
-    kind === 'restored' ? 'history' : kind === 'inactive' ? 'pending' : 'warning',
-  );
+  const iconName = $derived<IconName>(kind === 'inactive' ? 'pending' : 'warning');
   const detail = $derived.by(() => {
     const settings = `${count} unsaved ${count === 1 ? 'setting' : 'settings'}`;
-    if (kind === 'restored') {
-      return `${settings} from an earlier session ${count === 1 ? 'is' : 'are'} still waiting`;
-    }
     if (kind === 'inactive') {
       return `This tab was out of view for at least ${SETTINGS_DRAFT_INACTIVITY_MINUTES} minutes. ${settings} ${count === 1 ? 'is' : 'are'} still here and not saved`;
     }
     return problem ?? 'Browser storage is unavailable. Unsaved changes will not survive';
   });
 </script>
+
+<!--
+@component
+The line that says a draft is waiting somewhere the reader is not looking. Settings
+drafts survive navigation, so a page can be left with changes on it and nothing on
+screen would otherwise say so.
+
+Distinct from the save composer: that one is the bar on the page that owns the draft,
+and this is the notice everywhere else. `reviewHref` is the way back to it.
+
+`storage-problem` is the other kind - a draft that could not be kept - and takes the
+warning tone, because a draft the panel has lost is the one thing here a reader cannot
+recover by going back.
+-->
 
 <div class="settings-draft-attention" data-kind={kind}>
   <Callout
@@ -53,7 +58,7 @@
     aria-atomic="true"
   >
     {#snippet icon()}
-      <span class="attention-mark"><Icon name={iconName} size={16} strokeWidth={2} /></span>
+      <span class="attention-mark"><Icon name={iconName} size="base" strokeWidth={2} /></span>
     {/snippet}
     <div class="attention-copy">
       <strong>{heading}</strong>
@@ -70,7 +75,7 @@
 
 <style>
   .settings-draft-attention {
-    animation: attention-arrive 160ms ease-out both;
+    animation: attention-arrive var(--duration-fast) var(--ease-standard) both;
   }
 
   .settings-draft-attention :global(.attention-surface) {
@@ -84,8 +89,8 @@
   }
 
   .settings-draft-attention[data-kind='inactive'] :global(.attention-surface) {
-    background: color-mix(in srgb, var(--accent-tint) 82%, transparent);
-    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    background: color-mix(in srgb, var(--brand-action-tint) 82%, transparent);
+    border-color: color-mix(in srgb, var(--brand-action) 28%, transparent);
   }
 
   .settings-draft-attention[data-kind='storage-problem'] :global(.attention-surface) {
@@ -107,7 +112,7 @@
   }
 
   .attention-copy strong {
-    color: var(--text);
+    color: var(--text-primary);
   }
 
   .attention-actions {

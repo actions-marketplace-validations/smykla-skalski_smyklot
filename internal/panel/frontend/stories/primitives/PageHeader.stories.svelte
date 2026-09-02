@@ -34,7 +34,7 @@
     <PageHeader {...args}>
       {#snippet actions()}
         <Button tone="signal">
-          {#snippet icon()}<Icon name="user-plus" size={14} strokeWidth={2} />{/snippet}
+          {#snippet icon()}<Icon name="user-plus" size="sm" strokeWidth={2} />{/snippet}
           Add user
         </Button>
       {/snippet}
@@ -68,7 +68,6 @@
 <Story name="Root console">
   {#snippet template()}
     <RootPageHeader
-      role="Super Root"
       title="Overview"
       subtitle="Live service, catalog, ownership, and security state"
     />

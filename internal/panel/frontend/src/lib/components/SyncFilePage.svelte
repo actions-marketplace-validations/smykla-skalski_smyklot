@@ -47,16 +47,18 @@
   }
 </script>
 
+<!--
+@component
+One template's own page: what it says, and what each adjusting
+repository turns it into. The composed copy is the surface a reader
+studies - overridden lines wear the managed gutter bar, the keys an
+adjustment writes stand on the patch strip with the x that removes the
+override (never "writes the default"), and the one question a merge
+cannot answer itself - what happens to a list both sides set - is asked
+where it arises.
+-->
+
 <script lang="ts">
-  /**
-   * One template's own page: what it says, and what each adjusting
-   * repository turns it into. The composed copy is the surface a reader
-   * studies - overridden lines wear the managed gutter bar, the keys an
-   * adjustment writes stand on the patch strip with the x that removes the
-   * override (never "writes the default"), and the one question a merge
-   * cannot answer itself - what happens to a list both sides set - is asked
-   * where it arises.
-   */
   import { onDestroy, untrack } from 'svelte';
 
   import { unifiedDiff } from '../code-tokens';
@@ -89,15 +91,17 @@
     SyncFilesContext,
     SyncOverride,
   } from '../types';
-  import type { SyncSection } from '../routes';
+  import { SYNC_SECTION_LABELS, type SyncSection } from '../routes';
 
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import CodeBlock from './CodeBlock.svelte';
   import Icon from './Icon.svelte';
   import FormError from './FormError.svelte';
   import CodeEditor from './CodeEditor.svelte';
   import DiffBlock from './DiffBlock.svelte';
   import FormattingEditor from './FormattingEditor.svelte';
+  import PageHeader from './PageHeader.svelte';
   import PanePath from './PanePath.svelte';
 
   const {
@@ -168,6 +172,12 @@
     const when = formatRelative(at, nowMs);
     return by === '' ? ` · updated ${when}` : ` · updated ${when} by ${by}`;
   });
+
+  const reach = $derived(
+    file === null
+      ? 'No template at this path - it may have been renamed or removed'
+      : `In ${context?.covered ?? 0} of ${context?.repositories ?? 0} repositories${freshness}`,
+  );
 
   const strategyPill = $derived.by(() => {
     if (merges.length === 0) return 'replaces';
@@ -338,7 +348,7 @@
   const COMPOSED_DRAFT_PREFIX = '// Smyklot composed file draft\n';
 
   /* The composed copy is the editable surface. Edits stage here, and the
-     shared application composer writes the complete installation batch. */
+     shared application composer writes the complete workspace batch. */
   let editedText = $state<string | null>(null);
   /** The list answers given so far - stored rules, then the ask cards. */
   let answers = $state<ArrayRule[]>([]);
@@ -917,36 +927,32 @@
 </script>
 
 <div class="view-frame">
+  <!-- One crumb, to the row this page sits under. Sync is where that row lives,
+       not a second place to go back to. -->
   <PanePath
     segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
-      { label: 'Files', href: sectionHref('files'), onSelect: () => onOpenSection('files') },
+      {
+        label: SYNC_SECTION_LABELS.files,
+        href: sectionHref('files'),
+        onSelect: () => onOpenSection('files'),
+      },
     ]}
   />
 
-  <header class="object-head">
-    <h2 class="mono-title">{path}</h2>
-    <p class="object-sub">
-      {#if file === null}
-        No template at this path - it may have been renamed or removed
-      {:else}
-        In {context?.covered ?? 0} of {context?.repositories ?? 0} repositories{freshness}
-      {/if}
-    </p>
-  </header>
+  <PageHeader id="sync-file-heading" section="Shared file" title={path} mono description={reach} />
 
   {#if problem !== null}
     <FormError message={problem} />
   {/if}
 
   {#if file !== null}
-    <div class="card" class:is-unsaved={templateDirty} data-unsaved={templateDirty || undefined}>
+    <Card unsaved={templateDirty}>
       <div class="card-head">
         <h3 class="card-title">Template</h3>
         <div class="head-tools">
           {#if templateUndoDepth > 0}
             <Button onclick={() => templateEditor?.undoEdit()}>
-              {#snippet icon()}<Icon name="undo" size={13} />{/snippet}
+              {#snippet icon()}<Icon name="undo" size="sm" />{/snippet}
               Undo
             </Button>
           {/if}
@@ -991,7 +997,7 @@
           <DiffBlock before={templateText} after={templateRender.content} {lang} />
         </div>
       {/if}
-    </div>
+    </Card>
 
     {#if context !== null}
       <FormattingEditor
@@ -1011,11 +1017,7 @@
       />
     {/if}
 
-    <div
-      class="card"
-      class:is-unsaved={anyOverrideDirty}
-      data-unsaved={anyOverrideDirty || undefined}
-    >
+    <Card unsaved={anyOverrideDirty}>
       <div class="card-head">
         <h3 class="card-title">Repository outputs</h3>
         <span class="object-sum"
@@ -1025,7 +1027,12 @@
       </div>
 
       {#if repositoryRows.length === 0}
-        <p class="sync-empty">No repositories are available for this installation</p>
+        <div class="state-panel">
+          <span
+            ><strong>No repository takes this file yet.</strong> Every syncing repository would get it
+            exactly as written above, and any that adjusts it appears here</span
+          >
+        </div>
       {/if}
 
       {#each repositoryRows as entry (entry.repository_id)}
@@ -1046,7 +1053,7 @@
               <span class="object-sum">{summaryWord(entry)}</span>
             </span>
             <span class="object-side">
-              <span class="row-chev"><Icon name="chevron-right" size={12} /></span>
+              <span class="row-chev"><Icon name="chevron-right" size="xs" /></span>
             </span>
           </button>
 
@@ -1060,7 +1067,7 @@
                 <span class="pane-tools">
                   {#if editedText !== null && resultUndoDepth > 0}
                     <Button onclick={() => resultEditor?.undoEdit()}>
-                      {#snippet icon()}<Icon name="undo" size={13} />{/snippet}
+                      {#snippet icon()}<Icon name="undo" size="sm" />{/snippet}
                       Undo
                     </Button>
                   {/if}
@@ -1072,12 +1079,12 @@
                 </span>
               </div>
               {#if openMerge === null}
-                <p class="sync-empty">
+                <p class="sync-note">
                   This repository takes the shared content unchanged before its formatting policy is
                   applied
                 </p>
               {:else if editedText === null}
-                <p class="sync-empty">
+                <p class="sync-note">
                   This copy cannot compose a {openMerge.strategy ?? 'deep-merge'} adjustment of a
                   {lang} template - the stored override below is the whole of it
                 </p>
@@ -1113,7 +1120,7 @@
                 />
               {/if}
               {#if editedText !== null && staged === null}
-                <p class="sync-empty">
+                <p class="sync-note">
                   Not JSON yet - the override picks the edit up when it parses again
                 </p>
               {/if}
@@ -1127,7 +1134,7 @@
                       <button
                         aria-label="Stop changing {key}"
                         disabled={mergeFrozen}
-                        onclick={() => dropKey(key)}><Icon name="close" size={8} /></button
+                        onclick={() => dropKey(key)}><Icon name="close" size="nano" /></button
                       ></span
                     >
                   {/each}
@@ -1137,7 +1144,7 @@
                       <button
                         aria-label="Stop removing {key}"
                         disabled={mergeFrozen}
-                        onclick={() => dropKey(key)}><Icon name="close" size={8} /></button
+                        onclick={() => dropKey(key)}><Icon name="close" size="nano" /></button
                       ></span
                     >
                   {/each}
@@ -1210,7 +1217,7 @@
                   {/if}
                 </div>
                 {#if repositoryRendering}
-                  <p class="sync-empty">Rendering the repository's complete effective policy…</p>
+                  <p class="sync-note">Rendering the repository's complete effective policy…</p>
                 {:else if repositoryRender?.valid === false}
                   <FormError
                     message={repositoryRender.diagnostics.map(({ message }) => message).join(' · ')}
@@ -1223,67 +1230,25 @@
           {/if}
         </div>
       {/each}
-    </div>
+    </Card>
   {/if}
 </div>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
-  .object-head {
-    display: grid;
-    gap: var(--space-2);
-    margin-bottom: var(--space-4);
-  }
-
-  .mono-title {
-    font-family: var(--mono);
-    font-size: 1.375rem;
-    letter-spacing: -0.01em;
-    margin: 0;
-  }
-
-  .object-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-    max-width: 64ch;
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
-  .card.is-unsaved {
-    border-color: color-mix(in srgb, var(--brand-action) 55%, var(--border-subtle));
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .card + .card {
-    margin-top: var(--space-4);
-  }
-
-  .card-title {
-    font-size: var(--font-size-card-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 13px;
-    text-box: trim-both cap alphabetic;
-  }
-
+  /* THE HEAD'S LINE IS ITS TITLE'S CAP, so the title-to-first-row ink never
+     depends on which adornments the card happens to carry. A control in the
+     head gives its own slack back rather than growing the line. */
   .card-head {
     align-items: center;
     display: flex;
     gap: var(--space-3);
     justify-content: space-between;
-    margin-bottom: var(--space-4);
+    margin-bottom: var(--rhythm-card-head-body);
+    min-block-size: var(--card-head-line);
+  }
+
+  .card-head :global(.btn) {
+    margin-block: calc((var(--card-head-line) - var(--control-height-compact)) / 2);
   }
 
   .head-tools {
@@ -1292,7 +1257,12 @@
     gap: var(--space-2);
   }
 
-  .sync-empty {
+  /* A line ABOUT a row, not a page with nothing in it - what one repository
+     does with the template, why an editor cannot compose, what is being waited
+     for. It was `.sync-empty`, which is how three of these came to wear the
+     name of a state they are not: a page that has nothing says so in a
+     `.state-panel`. */
+  .sync-note {
     color: var(--text-muted);
     font-size: var(--font-size-meta);
     margin: 0 0 var(--space-2);
@@ -1334,13 +1304,13 @@
 
   .pill {
     align-items: center;
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -1392,14 +1362,14 @@
     gap: var(--space-4);
     grid-template-columns: 1fr auto;
     margin-inline: calc(var(--space-3) * -1);
-    padding: 0.75rem var(--space-3);
+    padding: var(--row-pad-default) var(--space-3);
     position: relative;
     text-align: start;
     width: calc(100% + (var(--space-3) * 2));
   }
 
   .object-row:hover:not(:disabled) {
-    background: var(--table-row-hover);
+    background: var(--row-hover);
   }
 
   .row-chev {
@@ -1420,7 +1390,7 @@
     align-items: center;
     display: flex;
     gap: var(--space-2);
-    min-block-size: 20px;
+    min-block-size: var(--object-name-line);
   }
 
   .file-path {
@@ -1460,7 +1430,7 @@
     margin-bottom: var(--space-2);
     /* One declared height whether or not the pane carries tools, so paired
        panes start their code at the same pixel. */
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     text-transform: uppercase;
   }
 
@@ -1511,7 +1481,7 @@
   .patch-key {
     align-items: center;
     background: var(--brand-action-tint);
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--r-chip);
     box-sizing: border-box;
     color: var(--brand-action-text);
@@ -1519,7 +1489,7 @@
     font-family: var(--mono);
     font-size: var(--font-size-micro);
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 7px;
   }
 
@@ -1580,7 +1550,7 @@
   .list-ask-word {
     color: var(--text-primary);
     font-size: var(--font-size-compact);
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-compact);
   }
 
   .list-ask-word code {
@@ -1588,100 +1558,23 @@
     font-family: var(--mono);
     /* The mono face's taller metrics raised the line box 1.5px over the
        sans text around it; the words set the line, the key rides it. */
-    line-height: 1;
+    line-height: var(--leading-flat);
   }
 
-  .choice-cards {
-    display: grid;
-    gap: var(--space-3);
-    grid-template-columns: repeat(3, 1fr);
-  }
-
-  @media (max-width: 52rem) {
-    .choice-cards {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .choice-card {
-    align-content: start;
-    align-items: center;
-    background: var(--surface-base);
-    border: 1px solid var(--control-border);
-    border-radius: var(--r-strip);
-    cursor: pointer;
-    display: grid;
-    gap: var(--space-2);
-    grid-template-columns: auto 1fr;
-    padding: var(--space-3) var(--space-4);
-  }
-
-  .choice-card:hover {
-    background: var(--surface-raised);
-    border-color: var(--control-border-hover);
-  }
-
-  .choice-card input {
-    opacity: 0;
-    pointer-events: none;
-    position: absolute;
-  }
-
-  .choice-dot {
-    border: 1px solid var(--border-strong);
-    border-radius: 50%;
-    block-size: 15px;
-    inline-size: 15px;
-    position: relative;
-  }
-
-  .choice-card.is-chosen {
-    background: var(--brand-action-tint);
-    border-color: var(--brand-action);
-  }
-
-  .choice-card.is-chosen .choice-dot {
-    border-color: var(--brand-action);
-  }
-
-  .choice-card.is-chosen .choice-dot::after {
-    background: var(--brand-action);
-    border-radius: 50%;
-    content: '';
-    inset: 3px;
-    position: absolute;
-  }
-
-  /* An answer the edited list cannot express any more - the template's
-     entries are no longer intact inside it - stays visible but cannot be
-     chosen. */
+  /* The group, the card, the dot and the two voices are one vocabulary in `app.css`.
+     What is this page's alone is the answer it cannot offer: the edited list no longer
+     holds the template's entries intact, so the option stays visible and unchoosable
+     rather than disappearing and taking its explanation with it. */
   .choice-card.is-unaskable {
     cursor: default;
     opacity: 0.5;
   }
 
   .choice-card.is-unaskable:hover {
-    background: var(--surface-base);
-    border-color: var(--control-border);
-  }
-
-  .choice-title {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .choice-why {
-    color: var(--text-secondary);
-    font-size: var(--font-size-compact);
-    grid-column: 2;
+    background: transparent;
   }
 
   @media (max-width: 36rem) {
-    .card {
-      padding: var(--space-4);
-    }
-
     .card-head {
       align-items: start;
       flex-wrap: wrap;

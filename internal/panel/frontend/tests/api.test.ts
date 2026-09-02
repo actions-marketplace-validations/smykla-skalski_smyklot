@@ -131,7 +131,7 @@ const REPOSITORY = {
 };
 
 describe('file rendering', () => {
-  it('posts the complete typed render request to the encoded installation route', async () => {
+  it('posts the complete typed render request to the encoded workspace route', async () => {
     const response = { valid: true, content: '{}\n', changed: true, diagnostics: [] };
     const stub = stubFetch([jsonResponse(200, response)]);
     const api = createPanelApi('/panel', stub.fetch);
@@ -255,7 +255,7 @@ describe('targets and repositories', () => {
     );
   });
 
-  it('saves every installation settings resource through one literal-preserving PUT', async () => {
+  it('saves every workspace settings resource through one literal-preserving PUT', async () => {
     const answer =
       '{"checkpoint_id":"checkpoint.1","sync_configs":[{"target_id":"target/1",' +
       '"kind":"files","enabled":true,"document":{"app_id":12345678901234567890},' +
@@ -285,12 +285,12 @@ describe('targets and repositories', () => {
       ],
     };
 
-    const saved = await api.saveInstallationSettings('target/1', input);
-    await api.saveRootInstallationSettings('target/1', input);
+    const saved = await api.saveWorkspaceSettings('target/1', input);
+    await api.saveRootWorkspaceSettings('target/1', input);
 
     expect(stub.calls.map((call) => call.url)).toEqual([
       '/panel/api/v1/targets/target%2F1/settings',
-      '/panel/api/v1/root/installations/target%2F1/settings',
+      '/panel/api/v1/root/workspaces/target%2F1/settings',
     ]);
     expect(stub.calls.every((call) => call.init?.method === 'PUT')).toBe(true);
     expect(JSON.parse(String(stub.calls[0]?.init?.body))).toEqual(input);
@@ -313,7 +313,7 @@ describe('targets and repositories', () => {
 
     let failure: unknown;
     try {
-      await api.saveInstallationSettings('target.1', {
+      await api.saveWorkspaceSettings('target.1', {
         sync_configs: [
           {
             kind: 'files',
@@ -353,7 +353,7 @@ describe('targets and repositories', () => {
     expect(stub.calls[0]?.url).toBe('/panel/api/v1/targets/a%2Fb/repositories/%2E%2E');
   });
 
-  it('inspects and restores selected installation settings', async () => {
+  it('inspects and restores selected workspace settings', async () => {
     const checkpoint =
       '{"id":"checkpoint/1","action":"installation.settings.saved",' +
       '"actor":{"id":"1001","provider":"github:https://api.github.com",' +
@@ -373,9 +373,9 @@ describe('targets and repositories', () => {
     ]);
     const api = createPanelApi('/panel', stub.fetch);
 
-    const inspected = await api.fetchInstallationSettingsCheckpoint('target/1', 'checkpoint/1');
+    const inspected = await api.fetchWorkspaceSettingsCheckpoint('target/1', 'checkpoint/1');
     await expect(
-      api.restoreInstallationSettingsCheckpoint('target/1', 'checkpoint/1', {
+      api.restoreWorkspaceSettingsCheckpoint('target/1', 'checkpoint/1', {
         state: 'before',
         selections: [{ kind: 'sync_config', sync_kind: 'files', expected_revision: 7 }],
       }),
@@ -396,8 +396,8 @@ describe('targets and repositories', () => {
   });
 });
 
-describe('Root installation access', () => {
-  it('inspects and restores installation settings through Root routes', async () => {
+describe('Root workspace access', () => {
+  it('inspects and restores workspace settings through Root routes', async () => {
     const checkpoint: SettingsCheckpoint = {
       id: 'checkpoint/1',
       action: 'installation.settings.saved',
@@ -410,15 +410,15 @@ describe('Root installation access', () => {
     const stub = stubFetch([jsonResponse(200, checkpoint), jsonResponse(200, restored)]);
     const api = createPanelApi('/panel', stub.fetch);
 
-    await api.fetchRootInstallationSettingsCheckpoint('target/1', 'checkpoint/1');
-    await api.restoreRootInstallationSettingsCheckpoint('target/1', 'checkpoint/1', {
+    await api.fetchRootWorkspaceSettingsCheckpoint('target/1', 'checkpoint/1');
+    await api.restoreRootWorkspaceSettingsCheckpoint('target/1', 'checkpoint/1', {
       state: 'after',
       selections: [{ kind: 'target', expected_revision: 2 }],
     });
 
     expect(stub.calls.map((call) => call.url)).toEqual([
-      '/panel/api/v1/root/installations/target%2F1/settings/checkpoints/checkpoint%2F1',
-      '/panel/api/v1/root/installations/target%2F1/settings/checkpoints/checkpoint%2F1/restore',
+      '/panel/api/v1/root/workspaces/target%2F1/settings/checkpoints/checkpoint%2F1',
+      '/panel/api/v1/root/workspaces/target%2F1/settings/checkpoints/checkpoint%2F1/restore',
     ]);
     expect(stub.calls[1]?.init?.method).toBe('POST');
     expect(JSON.parse(String(stub.calls[1]?.init?.body))).toEqual({
@@ -431,8 +431,8 @@ describe('Root installation access', () => {
     const stub = stubFetch([jsonResponse(200, { target_ids: ['target.1', 'target.2'] })]);
     const api = createPanelApi('/panel', stub.fetch);
 
-    await expect(api.syncRootInstallations()).resolves.toEqual(['target.1', 'target.2']);
-    expect(stub.calls[0]?.url).toBe('/panel/api/v1/root/installations/sync');
+    await expect(api.syncRootWorkspaces()).resolves.toEqual(['target.1', 'target.2']);
+    expect(stub.calls[0]?.url).toBe('/panel/api/v1/root/workspaces/sync');
     expect(stub.calls[0]?.init?.method).toBe('POST');
   });
 
@@ -538,7 +538,7 @@ describe('Root installation access', () => {
       started_at: '2026-08-10T10:00:00Z',
       expires_at: '2026-08-10T10:15:00Z',
     };
-    const installation = {
+    const workspace = {
       id: 'target.1',
       installation_id: '3001',
       type: 'Organization' as const,
@@ -564,13 +564,13 @@ describe('Root installation access', () => {
           uptime_seconds: 120,
           storage: 'healthy',
         },
-        catalog: { installations: 1, repositories: 1, enabled_repositories: 0 },
+        catalog: { workspaces: 1, repositories: 1, enabled_repositories: 0 },
         ownership: { fresh: 1, stale: 0, permission_pending: 0, error: 0 },
         active_elevations: 0,
         unread_security_events: 0,
         recent_failures: [],
       }),
-      jsonResponse(200, { installations: [installation] }),
+      jsonResponse(200, { workspaces: [workspace] }),
       jsonResponse(200, TARGET),
       jsonResponse(200, { items: [REPOSITORY], next_cursor: null, total: 1 }),
       jsonResponse(200, DETAIL),
@@ -592,9 +592,9 @@ describe('Root installation access', () => {
 
     await expect(api.fetchRootOverview()).resolves.toMatchObject({
       service: { status: 'healthy', version: '1.0.0' },
-      catalog: { installations: 1, repositories: 1 },
+      catalog: { workspaces: 1, repositories: 1 },
     });
-    await expect(api.fetchRootInstallations()).resolves.toEqual([installation]);
+    await expect(api.fetchRootWorkspaces()).resolves.toEqual([workspace]);
     await api.fetchRootTargetSettings('target.1');
     await api.fetchRootRepositories('target.1', repositoryPage);
     await api.fetchRootRepository('target.1', 'repo.1');
@@ -619,12 +619,12 @@ describe('Root installation access', () => {
 
     expect(stub.calls.map((call) => call.url)).toEqual([
       '/panel/api/v1/root/overview',
-      '/panel/api/v1/root/installations',
-      '/panel/api/v1/root/installations/target%2E1/settings',
-      '/panel/api/v1/root/installations/target%2E1/repositories?sort=name_asc&limit=20&state=all',
-      '/panel/api/v1/root/installations/target%2E1/repositories/repo%2E1',
-      '/panel/api/v1/root/installations/target%2E1/elevation',
-      '/panel/api/v1/root/installations/target%2E1/elevation',
+      '/panel/api/v1/root/workspaces',
+      '/panel/api/v1/root/workspaces/target%2E1/settings',
+      '/panel/api/v1/root/workspaces/target%2E1/repositories?sort=name_asc&limit=20&state=all',
+      '/panel/api/v1/root/workspaces/target%2E1/repositories/repo%2E1',
+      '/panel/api/v1/root/workspaces/target%2E1/elevation',
+      '/panel/api/v1/root/workspaces/target%2E1/elevation',
       '/panel/api/v1/root/elevations/elevation%2E1',
       '/panel/api/v1/root/access/users?cursor=20&q=ada&sort=role_desc&limit=20&system_role=root&system_role=super_root&status=active&status=banned',
       '/panel/api/v1/root/access/users/account%2E1',
@@ -642,7 +642,7 @@ describe('Root installation access', () => {
     });
   });
 
-  it('uses installation-scoped Root access and history endpoints', async () => {
+  it('uses workspace-scoped Root access and history endpoints', async () => {
     const user = {
       account: VIEWER.account,
       system_role: 'none' as const,
@@ -721,16 +721,16 @@ describe('Root installation access', () => {
     });
 
     expect(stub.calls.map((call) => call.url)).toEqual([
-      '/panel/api/v1/root/installations/target%2E1/users?q=ada&sort=role_desc&limit=20&role=editor&status=active',
-      '/panel/api/v1/root/installations/target%2E1/users',
-      '/panel/api/v1/root/installations/target%2E1/users/github%3Auser%3A1',
-      '/panel/api/v1/root/installations/target%2E1/users/github%3Auser%3A1/decisions',
-      '/panel/api/v1/root/installations/target%2E1/invitations?q=ada&sort=expiry_soonest&limit=20&role=viewer&status=pending',
-      '/panel/api/v1/root/installations/target%2E1/invitations',
-      '/panel/api/v1/root/installations/target%2E1/invitations/invite%2E1/reissue',
-      '/panel/api/v1/root/installations/target%2E1/invitations/invite%2E1',
-      '/panel/api/v1/root/installations/target%2E1/audit?sort=newest&limit=20&scope=all&change=all',
-      '/panel/api/v1/root/installations/target%2E1/failures?sort=newest&limit=20&kind=all',
+      '/panel/api/v1/root/workspaces/target%2E1/users?q=ada&sort=role_desc&limit=20&role=editor&status=active',
+      '/panel/api/v1/root/workspaces/target%2E1/users',
+      '/panel/api/v1/root/workspaces/target%2E1/users/github%3Auser%3A1',
+      '/panel/api/v1/root/workspaces/target%2E1/users/github%3Auser%3A1/decisions',
+      '/panel/api/v1/root/workspaces/target%2E1/invitations?q=ada&sort=expiry_soonest&limit=20&role=viewer&status=pending',
+      '/panel/api/v1/root/workspaces/target%2E1/invitations',
+      '/panel/api/v1/root/workspaces/target%2E1/invitations/invite%2E1/reissue',
+      '/panel/api/v1/root/workspaces/target%2E1/invitations/invite%2E1',
+      '/panel/api/v1/root/workspaces/target%2E1/audit?sort=newest&limit=20&scope=all&change=all',
+      '/panel/api/v1/root/workspaces/target%2E1/failures?sort=newest&limit=20&kind=all',
     ]);
   });
 });
@@ -950,8 +950,8 @@ describe('Root runtime settings', () => {
 
 describe('settings checkpoint baselines', () => {
   it('fetches each baseline from its canonical settings route', async () => {
-    const installationBaseline: SettingsCheckpoint = {
-      id: 'installation-baseline',
+    const workspaceBaseline: SettingsCheckpoint = {
+      id: 'workspace-baseline',
       action: 'installation.settings.baseline',
       actor: VIEWER.account,
       created_at: '2026-08-23T07:00:00Z',
@@ -959,28 +959,28 @@ describe('settings checkpoint baselines', () => {
       items: [],
     };
     const runtimeBaseline: SettingsCheckpoint = {
-      ...installationBaseline,
+      ...workspaceBaseline,
       id: 'runtime-baseline',
       action: 'runtime.settings.baseline',
     };
     const stub = stubFetch([
-      jsonResponse(200, installationBaseline),
-      jsonResponse(200, installationBaseline),
+      jsonResponse(200, workspaceBaseline),
+      jsonResponse(200, workspaceBaseline),
       jsonResponse(200, runtimeBaseline),
     ]);
     const api = createPanelApi('/panel', stub.fetch);
 
-    await expect(api.fetchInstallationSettingsBaseline('target/1')).resolves.toEqual(
-      installationBaseline,
+    await expect(api.fetchWorkspaceSettingsBaseline('target/1')).resolves.toEqual(
+      workspaceBaseline,
     );
-    await expect(api.fetchRootInstallationSettingsBaseline('target/1')).resolves.toEqual(
-      installationBaseline,
+    await expect(api.fetchRootWorkspaceSettingsBaseline('target/1')).resolves.toEqual(
+      workspaceBaseline,
     );
     await expect(api.fetchRootRuntimeSettingsBaseline()).resolves.toEqual(runtimeBaseline);
 
     expect(stub.calls.map((call) => call.url)).toEqual([
       '/panel/api/v1/targets/target%2F1/settings/checkpoints/baseline',
-      '/panel/api/v1/root/installations/target%2F1/settings/checkpoints/baseline',
+      '/panel/api/v1/root/workspaces/target%2F1/settings/checkpoints/baseline',
       '/panel/api/v1/root/runtime/settings/checkpoints/baseline',
     ]);
   });
@@ -990,7 +990,7 @@ describe('security notifications', () => {
   it('pages the Owner inbox and marks notifications read', async () => {
     const notification = {
       id: '12',
-      installation: TARGET.account,
+      workspace: TARGET.account,
       actor: VIEWER.account,
       elevation_id: 'elevation.1',
       audit_event_id: '25',
@@ -1118,12 +1118,12 @@ describe('history and authentication routes', () => {
   it('encodes history cursors and exposes both histories', async () => {
     const emptyPage = { items: [], next_cursor: null, total: 0 };
     const rootFailure = {
-      installation: TARGET.account,
+      workspace: TARGET.account,
       failure: {
         id: 'failure.1',
         delivery_id: 'delivery.1',
         repository_full_name: 'smykla-skalski/smyklot',
-        event: 'installation_repositories',
+        event: 'workspace_repositories',
         stage: 'provider',
         reason: 'provider unavailable',
         retryable: true,
@@ -1161,7 +1161,7 @@ describe('history and authentication routes', () => {
     await expect(
       api.fetchRootFailures({ query: 'provider', sort: 'newest', limit: 10, kind: 'permanent' }),
     ).resolves.toMatchObject({
-      items: [{ id: 'failure.1', installation: TARGET.account }],
+      items: [{ id: 'failure.1', workspace: TARGET.account }],
     });
 
     expect(stub.calls.map((call) => call.url)).toEqual([

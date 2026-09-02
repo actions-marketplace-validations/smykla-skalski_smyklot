@@ -94,11 +94,23 @@
   }
 
   function roleLabel(value: PanelInvitation): string {
-    if (value.system_role === 'root') return 'Root';
+    if (value.system_role === 'root') return 'Operator';
     const role = value.role ?? 'viewer';
     return role.slice(0, 1).toUpperCase() + role.slice(1);
   }
 </script>
+
+<!--
+@component
+The page somebody lands on from an invitation link, before they are part of anything.
+It is the panel's only page for a reader who is outside it, which is why it carries its
+own header, its own footer and its own theme control - none of the shell is there to
+supply them.
+
+It has to answer for every state the link can be in: valid, already used, expired,
+revoked, or meant for somebody else. A page that only handles the happy one sends every
+other reader to a blank screen with no way to tell which of the five they hit.
+-->
 
 <!-- The tab says "Access Invitation" for every state the page has an invitation
      for, and names the error otherwise: a 404 that leads nowhere should not be
@@ -226,15 +238,15 @@
   }
 
   .invitation-details div {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
     display: grid;
     gap: 0.25rem;
     padding-top: 0.625rem;
   }
 
   dt {
-    color: var(--dim);
-    font: 650 var(--font-size-compact) / 1.3 var(--sans);
+    color: var(--text-muted);
+    font: 650 var(--font-size-compact) / var(--leading-compact) var(--sans);
     letter-spacing: 0.02em;
   }
 
@@ -249,11 +261,11 @@
     flex-wrap: wrap;
   }
 
-  /* Whether accepting joins an organisation or one person's installation. Quiet,
+  /* Whether accepting joins an organisation or one person's workspace. Quiet,
      because it qualifies the name rather than competing with it. */
   .scope-kind {
     color: var(--text-muted);
-    font: 600 var(--font-size-meta) / 1.2 var(--sans);
+    font: 600 var(--font-size-meta) / var(--leading-meta) var(--sans);
   }
 
   /* What the reader is actually being asked to consent to, so it is ruled off from
@@ -265,7 +277,7 @@
      page asking a stranger to authorise something. Keep it true if that changes
      (`newGitHubSignIn` in internal/panel/github.go). */
   .invitation-consent {
-    border-top: 1px solid var(--rule);
+    border-top: 1px solid var(--border-subtle);
     color: var(--text-secondary);
     padding-top: 0.875rem;
   }
@@ -287,7 +299,7 @@
        different ranges, and collapsing them was not allowed to move any of them. */
     --skeleton-from: 0.5;
     --skeleton-to: 0.9;
-    animation: skeleton-pulse 1.35s ease-in-out infinite alternate;
+    animation: skeleton-pulse var(--rhythm-shimmer) var(--ease-inout) infinite alternate;
     background: var(--surface-inset);
     border-radius: var(--radius-control);
     display: block;

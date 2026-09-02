@@ -1,14 +1,4 @@
 <script lang="ts">
-  /**
-   * The panel's page for a reader who is not inside the panel: the mark standing
-   * in a night sky, a title, and one card under it.
-   *
-   * Two things reach people who have no session - an invitation, and whatever the
-   * server answered when something went wrong - and both are the first thing some
-   * readers ever see of Smyklot. They share this shell so they cannot drift into
-   * two different products, and so the sky, the card's glass and the theme switch
-   * are written once.
-   */
   import type { Snippet } from 'svelte';
 
   import type { PanelBuild } from '../base';
@@ -125,6 +115,18 @@
     prefs.set('theme', nextTheme);
   }
 </script>
+
+<!--
+@component
+The panel's page for a reader who is not inside the panel: the mark standing
+in a night sky, a title, and one card under it.
+
+Two things reach people who have no session - an invitation, and whatever the
+server answered when something went wrong - and both are the first thing some
+readers ever see of Smyklot. They share this shell so they cannot drift into
+two different products, and so the sky, the card's glass and the theme switch
+are written once.
+-->
 
 <svelte:head>
   <title>{documentTitle} | SMYKLOT</title>
@@ -304,7 +306,7 @@
      plate header gave it. */
   .night-title {
     color: rgb(246 249 255);
-    font: 700 1.0625rem / 1.3 var(--sans);
+    font: 700 1.0625rem / var(--leading-body) var(--sans);
     letter-spacing: 0;
     margin: 0;
     min-width: 0;
@@ -347,7 +349,7 @@
     --night-card-lift: 1.6;
 
     backdrop-filter: blur(22px) saturate(1.4) brightness(var(--night-card-lift));
-    background: color-mix(in srgb, var(--strip) 86%, transparent);
+    background: color-mix(in srgb, var(--surface-base) 86%, transparent);
     border-color: var(--dialog-border);
     box-shadow: var(--shadow-plate);
     margin-bottom: 0;

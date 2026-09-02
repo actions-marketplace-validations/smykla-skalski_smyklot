@@ -47,8 +47,7 @@ describe('SyncSettingsPage [Component]', () => {
   const base = {
     readOnly: false,
     problem: null,
-    sectionHref: () => '#',
-    onOpenSection: () => {},
+    nowMs: Date.UTC(2026, 7, 18, 12, 0, 0),
     onToggleEnabled: () => {},
     onChangeDocument: () => {},
   };
@@ -117,7 +116,7 @@ describe('SyncSettingsPage [Component]', () => {
       },
     });
 
-    const restButtons = screen.getAllByRole('button', { name: /Manage one/ });
+    const restButtons = screen.getAllByRole('button', { name: /Manage another setting/ });
     await fireEvent.click(restButtons[0] as HTMLElement);
     const chip = [...document.querySelectorAll<HTMLButtonElement>('.add-chip')].find((held) =>
       (held.textContent ?? '').includes('Merge commits'),
@@ -142,7 +141,7 @@ describe('SyncSettingsPage [Component]', () => {
       },
     });
 
-    await fireEvent.click(screen.getByLabelText('Settings sync'));
+    await fireEvent.click(screen.getByLabelText('Resume repository option syncing'));
 
     expect(sent).toEqual([true]);
   });
@@ -191,6 +190,6 @@ describe('SyncSettingsPage [Component]', () => {
     await fireEvent.click(everything as HTMLInputElement);
 
     expect(document.querySelectorAll('.policy-row')).toHaveLength(17);
-    expect(row('Merge commits').textContent).toContain('Follows each repository');
+    expect(row('Merge commits').textContent).toContain('From each repository');
   });
 });

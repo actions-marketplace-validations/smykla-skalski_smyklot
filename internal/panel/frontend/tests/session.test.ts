@@ -83,7 +83,7 @@ describe('PanelSession [Unit]', () => {
     vi.unstubAllGlobals();
   });
 
-  it('leaves an unauthorized Root route even when there is no installation to return to', () => {
+  it('leaves an unauthorized Root route even when there is no workspace to return to', () => {
     const session = createSession();
 
     session.returnToPanel();
@@ -92,7 +92,7 @@ describe('PanelSession [Unit]', () => {
     expect(session.returnHref()).toBe(`${basePath}/`);
   });
 
-  it('replaces an unauthorized Root route when an installation exists', () => {
+  it('replaces an unauthorized Root route when a workspace exists', () => {
     const session = createSession();
     session.targets = [
       {
@@ -103,31 +103,31 @@ describe('PanelSession [Unit]', () => {
 
     session.returnToPanel(true);
 
-    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/i/acme/defaults`, { replace: true });
+    expect(navigation.goto).toHaveBeenCalledWith(`${basePath}/workspace/acme/settings`, {
+      replace: true,
+    });
   });
 
   it('records nothing from a page that failed to load', () => {
     const session = createSession();
     session.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
     session.selectedId = 'target-1';
-    routePage.url = at('/i/acme/history/failures');
+    routePage.url = at('/workspace/acme/history/failures');
     routePage.params = { account: 'acme', section: 'failures' };
-    routePage.route = { id: '/i/[account]/history/[[section=historySection]]' };
+    routePage.route = { id: '/workspace/[account]/history/[[section=historySection]]' };
     session.syncRouteContext();
 
     // A pasted link naming a repository that cannot load. The address names the
     // repositories view and the chrome shows it, but the reader was never on it, so
     // Return has to take them back to where they actually were.
-    routePage.url = at('/i/acme/repositories/bogus');
+    routePage.url = at('/workspace/acme/repositories/bogus');
     routePage.params = { account: 'acme', repository: 'bogus' };
-    routePage.route = {
-      id: '/i/[account]/repositories/[repository]/[[section=repositorySection]]',
-    };
+    routePage.route = { id: '/workspace/[account]/repositories/[repository]' };
     routePage.error = { message: 'Panel view not found' };
     session.syncRouteContext();
 
     expect(session.currentView, 'the chrome should still name the address').toBe('repositories');
-    expect(session.returnHref()).toBe(`${basePath}/i/acme/history/failures`);
+    expect(session.returnHref()).toBe(`${basePath}/workspace/acme/history/failures`);
 
     routePage.error = null;
   });
@@ -137,26 +137,26 @@ describe('PanelSession [Unit]', () => {
     session.viewer = { system_role: 'root' } as PanelViewer;
     session.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
     session.selectedId = 'target-1';
-    routePage.url = at('/i/acme/repositories');
+    routePage.url = at('/workspace/acme/repositories');
     routePage.params = { account: 'acme', view: 'repositories' };
-    routePage.route = { id: '/i/[account]/[view=panelView]' };
+    routePage.route = { id: '/workspace/[account]/[view=panelView]' };
     session.syncRouteContext();
 
     session.enterRoot();
     expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/root`, { replace: false });
 
-    // Visiting another installation view inside Root does not replace the
+    // Visiting another workspace view inside Root does not replace the
     // workspace context the Return action promises to restore.
-    routePage.url = at('/root/installations/acme/defaults');
-    routePage.params = { account: 'acme', view: 'defaults' };
-    routePage.route = { id: '/root/installations/[account]/[view=rootInstallationView]' };
+    routePage.url = at('/root/workspaces/acme/settings');
+    routePage.params = { account: 'acme', view: 'settings' };
+    routePage.route = { id: '/root/workspaces/[account]/[view=rootWorkspaceView]' };
     session.syncRouteContext();
     session.returnToPanel();
 
-    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/i/acme/repositories`, {
+    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/workspace/acme/repositories`, {
       replace: false,
     });
-    expect(session.returnHref()).toBe(`${basePath}/i/acme/repositories`);
+    expect(session.returnHref()).toBe(`${basePath}/workspace/acme/repositories`);
   });
 
   it('returns from Root to the repository page it left, not to the list', () => {
@@ -167,39 +167,12 @@ describe('PanelSession [Unit]', () => {
     openRepository(session);
 
     session.enterRoot();
-    routePage.url = at('/root/installations/acme/defaults');
-    routePage.params = { account: 'acme', view: 'defaults' };
-    routePage.route = { id: '/root/installations/[account]/[view=rootInstallationView]' };
+    routePage.url = at('/root/workspaces/acme/settings');
+    routePage.params = { account: 'acme', view: 'settings' };
+    routePage.route = { id: '/root/workspaces/[account]/[view=rootWorkspaceView]' };
     session.syncRouteContext();
 
-    expect(session.returnHref()).toBe(`${basePath}/i/acme/repositories/api-gateway/commands`);
-  });
-
-  it('lets repository detail pages scroll with the document', () => {
-    const session = createSession();
-    session.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
-    session.selectedId = 'target-1';
-
-    openRepository(session);
-    expect(session.tableScrollView).toBe(false);
-
-    routePage.url = at('/i/acme/repositories');
-    routePage.params = { account: 'acme', view: 'repositories' };
-    routePage.route = { id: '/i/[account]/[view=panelView]' };
-    session.syncRouteContext();
-    expect(session.tableScrollView).toBe(true);
-  });
-
-  it('lets Root repository detail pages scroll with the document', () => {
-    const session = createSession();
-    session.viewer = { system_role: 'root' } as PanelViewer;
-    routePage.url = at('/root/installations/acme/repositories/api-gateway/commands');
-    routePage.params = { account: 'acme', repository: 'api-gateway', section: 'commands' };
-    routePage.route = {
-      id: '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]',
-    };
-
-    expect(session.tableScrollView).toBe(false);
+    expect(session.returnHref()).toBe(`${basePath}/workspace/acme/repositories/api-gateway`);
   });
 
   it('still knows the page it left when the console is reloaded', () => {
@@ -212,10 +185,10 @@ describe('PanelSession [Unit]', () => {
     routePage.params = {};
     routePage.route = { id: '/root' };
 
-    expect(reloaded.returnHref()).toBe(`${basePath}/i/acme/repositories/api-gateway/commands`);
+    expect(reloaded.returnHref()).toBe(`${basePath}/workspace/acme/repositories/api-gateway`);
   });
 
-  it('ignores a remembered page whose installation is not this reader’s', () => {
+  it('ignores a remembered page whose workspace is not this reader’s', () => {
     openRepository(createSession());
 
     const reloaded = createSession();
@@ -224,7 +197,7 @@ describe('PanelSession [Unit]', () => {
     routePage.params = {};
     routePage.route = { id: '/root' };
 
-    expect(reloaded.returnHref()).toBe(`${basePath}/i/other-org/defaults`);
+    expect(reloaded.returnHref()).toBe(`${basePath}/workspace/other-org/settings`);
   });
 
   it('opens the console on the page it was last left on', () => {
@@ -240,23 +213,22 @@ describe('PanelSession [Unit]', () => {
     openConsoleQueue(session);
     openRepository(session);
 
-    expect(session.rootEntryHref()).toBe(`${basePath}/root/queue/recent`);
+    expect(session.rootEntryHref()).toBe(`${basePath}/root/queue/waiting`);
     session.enterRoot();
-    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/root/queue/recent`, {
+    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/root/queue/waiting`, {
       replace: false,
     });
   });
 
-  it('navigates between the three Runtime leaves', () => {
+  it('navigates between the two Runtime leaves', () => {
     const session = createSession();
     session.viewer = { system_role: 'root' } as PanelViewer;
-    routePage.url = at('/root/runtime/database');
+    routePage.url = at('/root/runtime/settings');
     routePage.params = {};
-    routePage.route = { id: '/root/runtime/database' };
+    routePage.route = { id: '/root/runtime/settings' };
 
     expect(session.rootValue).toBe('runtime');
     expect(session.rootRuntimeHref('service')).toBe(`${basePath}/root/runtime/service`);
-    expect(session.rootRuntimeHref('database')).toBe(`${basePath}/root/runtime/database`);
     expect(session.rootRuntimeHref('settings')).toBe(`${basePath}/root/runtime/settings`);
 
     session.selectRootRuntimeSection('service');
@@ -278,34 +250,42 @@ describe('PanelSession [Unit]', () => {
     reloaded.viewer = { system_role: 'root' } as PanelViewer;
     reloaded.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
 
-    expect(reloaded.rootEntryHref()).toBe(`${basePath}/root/queue/recent`);
-    expect(reloaded.returnHref()).toBe(`${basePath}/i/acme/repositories/api-gateway/commands`);
+    expect(reloaded.rootEntryHref()).toBe(`${basePath}/root/queue/waiting`);
+    expect(reloaded.returnHref()).toBe(`${basePath}/workspace/acme/repositories/api-gateway`);
   });
 
   it('retains and can reopen the workspace view while the inbox is open', async () => {
     const session = createSession();
     session.targets = [{ id: 'target-1', account: { login: 'acme' } } as PanelTarget];
     session.selectedId = 'target-1';
-    routePage.url = at('/i/acme/history/failures');
+    routePage.url = at('/workspace/acme/history/failures');
     routePage.params = { account: 'acme', section: 'failures' };
-    routePage.route = { id: '/i/[account]/history/[[section=historySection]]' };
+    routePage.route = { id: '/workspace/[account]/history/[[section=historySection]]' };
     session.syncRouteContext();
     routePage.url = at('/inbox');
     routePage.params = {};
     routePage.route = { id: '/inbox' };
 
-    expect(session.targetHref(session.targets[0]!)).toBe(`${basePath}/i/acme/history/failures`);
-    expect(session.returnHref()).toBe(`${basePath}/i/acme/history/failures`);
+    expect(session.targetHref(session.targets[0]!)).toBe(
+      `${basePath}/workspace/acme/history/failures`,
+    );
+    expect(session.returnHref()).toBe(`${basePath}/workspace/acme/history/failures`);
 
     session.selectView('history');
-    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/i/acme/history/failures`, {
-      replace: false,
-    });
+    expect(navigation.goto).toHaveBeenLastCalledWith(
+      `${basePath}/workspace/acme/history/failures`,
+      {
+        replace: false,
+      },
+    );
 
     await session.selectTarget('target-1');
-    expect(navigation.goto).toHaveBeenLastCalledWith(`${basePath}/i/acme/history/failures`, {
-      replace: false,
-    });
+    expect(navigation.goto).toHaveBeenLastCalledWith(
+      `${basePath}/workspace/acme/history/failures`,
+      {
+        replace: false,
+      },
+    );
   });
 
   it('refreshes every repository-count aggregate after a remote repository change', () => {
@@ -327,7 +307,7 @@ describe('PanelSession [Unit]', () => {
         ['repositories', 'target-1'],
         ['repository', 'target-1'],
         ['targets'],
-        ['root-installations'],
+        ['root-workspaces'],
         ['root-overview'],
       ]),
     );
@@ -392,11 +372,11 @@ describe('PanelSession [Unit]', () => {
   });
 });
 
-/** Puts a session on one repository's Commands pane, which is the page Return has to name. */
+/** Puts a session on one repository's page, which is what Return has to name. */
 function openRepository(session: PanelSession): PanelSession {
-  routePage.url = at('/i/acme/repositories/api-gateway/commands');
-  routePage.params = { account: 'acme', repository: 'api-gateway', section: 'commands' };
-  routePage.route = { id: '/i/[account]/repositories/[repository]/[[section=repositorySection]]' };
+  routePage.url = at('/workspace/acme/repositories/api-gateway');
+  routePage.params = { account: 'acme', repository: 'api-gateway' };
+  routePage.route = { id: '/workspace/[account]/repositories/[repository]' };
   session.syncRouteContext();
 
   return session;
@@ -404,9 +384,9 @@ function openRepository(session: PanelSession): PanelSession {
 
 /** And on a console page that is not its front one, which is what Root console has to name. */
 function openConsoleQueue(session: PanelSession): PanelSession {
-  routePage.url = at('/root/queue/recent');
-  routePage.params = {};
-  routePage.route = { id: '/root/queue/recent' };
+  routePage.url = at('/root/queue/waiting');
+  routePage.params = { section: 'waiting' };
+  routePage.route = { id: '/root/queue/[section=queueSection]' };
   session.syncRouteContext();
 
   return session;

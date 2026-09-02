@@ -20,84 +20,85 @@ import { parsePanelRoute, type PanelRoute } from '../src/lib/routes.ts';
 const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, string> }> = [
   { route: { personal: 'inbox' }, id: '/inbox', params: {} },
   {
-    route: { account: 'acme', view: 'defaults' },
-    id: '/i/[account]/[view=panelView]',
-    params: { account: 'acme', view: 'defaults' },
+    route: { account: 'acme', view: 'settings' },
+    id: '/workspace/[account]/[view=panelView]',
+    params: { account: 'acme', view: 'settings' },
   },
   {
     route: { account: 'acme', view: 'repositories' },
-    id: '/i/[account]/[view=panelView]',
+    id: '/workspace/[account]/[view=panelView]',
     params: { account: 'acme', view: 'repositories' },
   },
   {
     route: { account: 'acme', view: 'sync' },
-    id: '/i/[account]/[view=panelView]',
+    id: '/workspace/[account]/[view=panelView]',
     params: { account: 'acme', view: 'sync' },
   },
   {
     route: { account: 'acme', view: 'queue' },
-    id: '/i/[account]/queue',
+    id: '/workspace/[account]/queue',
     params: { account: 'acme' },
   },
   {
     route: { account: 'acme', view: 'queue', queue: 'approvals' },
-    id: '/i/[account]/queue/[section=queueSection]',
+    id: '/workspace/[account]/queue/[section=queueSection]',
     params: { account: 'acme', section: 'approvals' },
   },
   {
+    route: { account: 'acme', view: 'queue', queue: 'waiting' },
+    id: '/workspace/[account]/queue/[section=queueSection]',
+    params: { account: 'acme', section: 'waiting' },
+  },
+  {
+    route: { account: 'acme', view: 'queue', queue: 'running' },
+    id: '/workspace/[account]/queue/[section=queueSection]',
+    params: { account: 'acme', section: 'running' },
+  },
+  {
     route: { account: 'acme', view: 'queue', queue: 'history' },
-    id: '/i/[account]/queue/[section=queueSection]',
+    id: '/workspace/[account]/queue/[section=queueSection]',
     params: { account: 'acme', section: 'history' },
   },
   {
     route: { account: 'smykla skalski', view: 'repositories' },
-    id: '/i/[account]/[view=panelView]',
+    id: '/workspace/[account]/[view=panelView]',
     params: { account: 'smykla skalski', view: 'repositories' },
   },
   {
     route: { account: 'acme', view: 'history', section: 'failures' },
-    id: '/i/[account]/history/[[section=historySection]]',
+    id: '/workspace/[account]/history/[[section=historySection]]',
     params: { account: 'acme', section: 'failures' },
   },
   {
     route: { account: 'acme', view: 'sync', sync: 'plan' },
-    id: '/i/[account]/sync/[section=syncSection]',
+    id: '/workspace/[account]/sync/[section=syncSection]',
     params: { account: 'acme', section: 'plan' },
   },
   {
     route: { account: 'acme', view: 'sync', sync: 'rulesets' },
-    id: '/i/[account]/sync/[section=syncSection]',
+    id: '/workspace/[account]/sync/[section=syncSection]',
     params: { account: 'acme', section: 'rulesets' },
   },
   {
     route: { account: 'acme', view: 'sync', sync: 'rulesets', syncRuleset: 'main-protection' },
-    id: '/i/[account]/sync/rulesets/[ruleset]',
+    id: '/workspace/[account]/sync/rulesets/[ruleset]',
     params: { account: 'acme', ruleset: 'main-protection' },
   },
   {
-    // A bare repository segment means the pane the page opens on, which reading it back
-    // says out loud - so the shape that comes out is the normalised one.
+    // The repository is the whole address: its page is one scroll, so there is no pane
+    // to name and nothing after the name to read back.
     route: {
       account: 'acme',
       view: 'repositories',
-      repository: { name: 'api-gateway', section: 'file' },
+      repository: { name: 'api-gateway' },
     },
-    id: '/i/[account]/repositories/[repository]/[[section=repositorySection]]',
+    id: '/workspace/[account]/repositories/[repository]',
     params: { account: 'acme', repository: 'api-gateway' },
   },
   {
     route: { account: 'acme', view: 'users' },
-    id: '/i/[account]/access/[section=accessSection]/[...rest=dialogPath]',
+    id: '/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]',
     params: { account: 'acme', section: 'users', rest: '' },
-  },
-  {
-    route: {
-      account: 'acme',
-      view: 'repositories',
-      repository: { name: 'api-gateway', section: 'commands' },
-    },
-    id: '/i/[account]/repositories/[repository]/[[section=repositorySection]]',
-    params: { account: 'acme', repository: 'api-gateway', section: 'commands' },
   },
   {
     route: {
@@ -105,11 +106,11 @@ const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, stri
       view: 'users',
       dialog: { name: 'user-action', params: { user: 'octocat', action: 'suspend' } },
     },
-    id: '/i/[account]/access/[section=accessSection]/[...rest=dialogPath]',
+    id: '/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]',
     params: { account: 'acme', section: 'users', rest: 'octocat/suspend' },
   },
   { route: { rootView: 'overview' }, id: '/root', params: {} },
-  { route: { rootView: 'installations' }, id: '/root/installations', params: {} },
+  { route: { rootView: 'workspaces' }, id: '/root/workspaces', params: {} },
   { route: { rootView: 'queue' }, id: '/root/queue', params: {} },
   {
     route: { rootView: 'queue-approvals' },
@@ -117,18 +118,26 @@ const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, stri
     params: { section: 'approvals' },
   },
   {
+    route: { rootView: 'queue-waiting' },
+    id: '/root/queue/[section=queueSection]',
+    params: { section: 'waiting' },
+  },
+  {
+    route: { rootView: 'queue-running' },
+    id: '/root/queue/[section=queueSection]',
+    params: { section: 'running' },
+  },
+  {
     route: { rootView: 'queue-history' },
     id: '/root/queue/[section=queueSection]',
     params: { section: 'history' },
   },
-  { route: { rootView: 'queue-recent' }, id: '/root/queue/recent', params: {} },
   {
     route: { rootView: 'queue-request', request: 'req-1' },
     id: '/root/queue/request/[id]',
     params: { id: 'req-1' },
   },
   { route: { rootView: 'runtime-service' }, id: '/root/runtime/service', params: {} },
-  { route: { rootView: 'runtime-database' }, id: '/root/runtime/database', params: {} },
   { route: { rootView: 'runtime-settings' }, id: '/root/runtime/settings', params: {} },
   {
     route: { rootView: 'history-audit' },
@@ -159,34 +168,34 @@ const CASES: Array<{ route: PanelRoute; id: RouteId; params: Record<string, stri
     params: { section: 'users', rest: 'octocat/ban' },
   },
   {
-    route: { rootView: 'installation', account: 'acme', view: 'defaults' },
-    id: '/root/installations/[account]/[view=rootInstallationView]',
-    params: { account: 'acme', view: 'defaults' },
+    route: { rootView: 'workspace', account: 'acme', view: 'settings' },
+    id: '/root/workspaces/[account]/[view=rootWorkspaceView]',
+    params: { account: 'acme', view: 'settings' },
   },
   {
-    route: { rootView: 'installation', account: 'acme', view: 'repositories' },
-    id: '/root/installations/[account]/[view=rootInstallationView]',
+    route: { rootView: 'workspace', account: 'acme', view: 'repositories' },
+    id: '/root/workspaces/[account]/[view=rootWorkspaceView]',
     params: { account: 'acme', view: 'repositories' },
   },
   {
-    route: { rootView: 'installation', account: 'acme', view: 'invitations' },
-    id: '/root/installations/[account]/access/[section=accessSection]/[...rest=dialogPath]',
+    route: { rootView: 'workspace', account: 'acme', view: 'invitations' },
+    id: '/root/workspaces/[account]/access/[section=accessSection]/[...rest=dialogPath]',
     params: { account: 'acme', section: 'invitations', rest: '' },
   },
   {
-    route: { rootView: 'installation', account: 'acme', view: 'history', section: 'failures' },
-    id: '/root/installations/[account]/history/[[section=historySection]]',
+    route: { rootView: 'workspace', account: 'acme', view: 'history', section: 'failures' },
+    id: '/root/workspaces/[account]/history/[[section=historySection]]',
     params: { account: 'acme', section: 'failures' },
   },
   {
     route: {
-      rootView: 'installation',
+      rootView: 'workspace',
       account: 'acme',
       view: 'repositories',
-      repository: { name: 'api-gateway', section: 'behavior' },
+      repository: { name: 'api-gateway' },
     },
-    id: '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]',
-    params: { account: 'acme', repository: 'api-gateway', section: 'behavior' },
+    id: '/root/workspaces/[account]/repositories/[repository]',
+    params: { account: 'acme', repository: 'api-gateway' },
   },
 ];
 
@@ -233,10 +242,10 @@ describe('panel addresses [Unit]', () => {
     };
     const address = panelAddress(route);
 
-    expect(address).toBe(`${basePath}/i/acme/access/users/a%25b/history`);
+    expect(address).toBe(`${basePath}/workspace/acme/access/users/a%25b/history`);
     expect(
       defined(
-        panelRouteAt('/i/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
+        panelRouteAt('/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
           account: 'acme',
           section: 'users',
           rest: 'a%b/history',
@@ -251,14 +260,14 @@ describe('panel addresses [Unit]', () => {
     const route: PanelRoute = {
       account: 'acme',
       view: 'repositories',
-      repository: { name: 'a%b', section: 'file' },
+      repository: { name: 'a%b' },
     };
     const address = panelAddress(route);
 
-    expect(address).toBe(`${basePath}/i/acme/repositories/a%25b`);
+    expect(address).toBe(`${basePath}/workspace/acme/repositories/a%25b`);
     expect(
       defined(
-        panelRouteAt('/i/[account]/repositories/[repository]/[[section=repositorySection]]', {
+        panelRouteAt('/workspace/[account]/repositories/[repository]', {
           account: 'acme',
           repository: 'a%b',
         }),
@@ -276,10 +285,10 @@ describe('panel addresses [Unit]', () => {
     };
     const address = panelAddress(route);
 
-    expect(address).toBe(`${basePath}/i/acme/sync/files/docs/100%25bad.json`);
+    expect(address).toBe(`${basePath}/workspace/acme/sync/files/docs/100%25bad.json`);
     expect(
       defined(
-        panelRouteAt('/i/[account]/sync/files/[...file=syncFilePath]', {
+        panelRouteAt('/workspace/[account]/sync/files/[...file=syncFilePath]', {
           account: 'acme',
           file: 'docs/100%bad.json',
         }),
@@ -295,7 +304,7 @@ describe('panel addresses [Unit]', () => {
     // the view being recorded as one the reader was on.
     expect(
       defined(
-        panelRouteAt('/i/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
+        panelRouteAt('/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
           account: 'acme',
           section: 'users',
           rest: 'bogus/bogus2',

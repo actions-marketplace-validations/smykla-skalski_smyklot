@@ -29,6 +29,25 @@
   } = $props();
 </script>
 
+<!--
+@component
+The rows a table draws while it is waiting for its first answer, and only its first. A
+placeholder never replaces content that has already loaded: a refresh reports itself in
+place rather than blanking what the reader was reading, which is the caller's decision
+and the one rule here that a prop cannot enforce.
+
+A skeleton hints at the columns underneath it, so its geometry is per table in the same
+way `grid-template-columns` is - the shape is a prop and the measurements are custom
+properties, and every caller keeps exactly what it had. What is shared is what should
+never have been copied: the markup, the pulse, and the line that tells a screen reader
+what is being waited for. Six tables wrote all three by hand and the copies had
+drifted, two of them having lost the content bars entirely.
+
+Only where the shape of what is coming is already decided. A skeleton for an unknown
+layout promises something the page cannot keep; where the end is known but the shape is
+not, a bar or a spinner says the same thing without the lie.
+-->
+
 <div class="skeleton" class:bars aria-hidden="true">
   {#each { length: rows }, index (index)}
     <span></span>
@@ -48,8 +67,8 @@
      their own markup animate with the same one. Reduced motion is answered there
      too, by the blanket rule that shortens every animation. */
   .skeleton span {
-    animation: skeleton-pulse 1.35s ease-in-out infinite alternate;
-    border-bottom: 1px solid var(--rule);
+    animation: skeleton-pulse var(--rhythm-shimmer) var(--ease-inout) infinite alternate;
+    border-bottom: 1px solid var(--border-subtle);
     display: block;
     height: var(--skeleton-row-height, 3.5rem);
     position: relative;

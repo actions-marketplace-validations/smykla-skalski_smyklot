@@ -9,149 +9,143 @@ import {
 
 export type { RouteDialog };
 
+/**
+ * A workspace has no Schedules page. Timing is the service's to set, so what a workspace
+ * has is one row on its settings page saying when Smyklot acts and the way to ask for
+ * that to change; the tables of policies and profiles are the operators' own and stay on
+ * the console. It was a page that answered a question a workspace never asks.
+ */
 export const PANEL_VIEWS = [
-  'defaults',
+  /* Where a workspace OPENS - what needs somebody, what is in flight, what
+     just happened. It is the bare address rather than a written one, the way
+     the console's own overview is: a workspace that opened on its settings
+     page asked a reader to start from the least urgent thing it holds. */
+  'overview',
+  'settings',
   'repositories',
   'sync',
   'queue',
-  'schedules',
   'users',
   'invitations',
   'history',
 ] as const;
 
-/** Views written directly after an installation account in the route tree. */
-export const DIRECT_PANEL_VIEWS = [
-  'defaults',
-  'repositories',
-  'sync',
-  'schedules',
-  'history',
-] as const;
+/** Views written directly after a workspace account in the route tree. */
+export const DIRECT_PANEL_VIEWS = ['settings', 'repositories', 'sync', 'history'] as const;
 
 /**
  * The views that belong to the reader rather than to a workspace or the console.
  *
- * Everything else the panel shows is scoped to something in the address: an
- * installation under `/i/<account>`, the application under `/root`. The inbox is
+ * Everything else the panel shows is scoped to something in the address: a
+ * workspace under `/workspace/<account>`, the application under `/root`. The inbox is
  * scoped to whoever is signed in, which no path segment can name, so it sits at
  * the top: `/inbox`. One address, and the same page whichever part of the panel
  * it was reached from - a Root who opens it leaves the console rather than
  * carrying it along, because an address that says nothing about the console
  * cannot be reloaded back into one.
  */
-export const PERSONAL_VIEWS = ['inbox'] as const;
+export const PERSONAL_VIEWS = ['inbox', 'search'] as const;
 
 /**
- * The views the Root console renders for one installation, which is not every
- * view an installation has.
+ * The views the Root console renders for one workspace, which is not every
+ * view a workspace has.
  *
  * Sync is the difference. Configuring what an organization's repositories
- * should carry is the installation's own business, reached by elevating into
+ * should carry is the workspace's own business, reached by elevating into
  * it, and the console reads through its own Root-scoped endpoints rather than
- * the ones an installation's members use. Accepting the address without
+ * the ones a workspace's members use. Accepting the address without
  * rendering anything is worse than refusing it: a bookmark that answers "this
  * view is unavailable" looks like a fault rather than a boundary.
  */
-export const ROOT_INSTALLATION_VIEWS = [
-  'defaults',
+export const ROOT_WORKSPACE_VIEWS = [
+  'settings',
   'repositories',
   'users',
   'invitations',
   'history',
 ] as const;
 
-/** Root installation views written directly after the installation account. */
-export const DIRECT_ROOT_INSTALLATION_VIEWS = ['defaults', 'repositories', 'history'] as const;
+/** Root workspace views written directly after the workspace account. */
+export const DIRECT_ROOT_WORKSPACE_VIEWS = ['settings', 'repositories', 'history'] as const;
 
 export const HISTORY_SECTIONS = ['audit', 'failures'] as const;
 
-/** Queue sections are pages. Active owns the bare Queue address. */
-export const WRITTEN_QUEUE_SECTIONS = ['approvals', 'history'] as const;
+/**
+ * Queue sections are pages. Active owns the bare Queue address.
+ *
+ * Five, because the queue's own control offers five: which slice of the work a reader
+ * is looking at is a fact about the page, and a fact about the page is an address here.
+ * Two of them being links and three being state a reload forgets is the incoherence
+ * this list exists to refuse.
+ */
+export const WRITTEN_QUEUE_SECTIONS = ['approvals', 'waiting', 'running', 'history'] as const;
 export const QUEUE_SECTIONS = ['active', ...WRITTEN_QUEUE_SECTIONS] as const;
 export type QueueSection = (typeof QUEUE_SECTIONS)[number];
+export type WrittenQueueSection = (typeof WRITTEN_QUEUE_SECTIONS)[number];
 
 /** The tables the Root console's access page is split into. */
 export const ACCESS_SECTIONS = ['users', 'invitations'] as const;
 
-/** The three addressable pages nested under Root Runtime. */
-export const ROOT_RUNTIME_SECTIONS = ['service', 'database', 'settings'] as const;
-
-/**
- * The panes of one repository's own page.
- *
- * A repository is reached at `/i/acme/repositories/api-gateway`, and the pane it
- * opens on rides the address the same way history's table does, so a link points
- * at the commands a colleague was asked to look at rather than at the file pane
- * everyone starts on.
- *
- * `file` is not written into the path. It is where the page opens, so the bare
- * repository already means it, and an address that says so twice is one a reader
- * would have to be told to ignore.
- */
-export const REPOSITORY_SECTIONS = ['file', 'behavior', 'commands', 'formatting', 'sync'] as const;
-export type RepositorySection = (typeof REPOSITORY_SECTIONS)[number];
+/** The two addressable pages nested under Root Runtime. */
+export const ROOT_RUNTIME_SECTIONS = ['service', 'settings'] as const;
 
 /**
  * The sections of the sync view, each a sidebar row and an address.
  *
  * `overview` is not written into the path: it is where the view opens, so the
- * bare `/i/acme/sync` already means it - the same rule the repository page
- * applies to its `file` pane.
+ * bare `/workspace/acme/sync` already means it.
  */
 export const WRITTEN_SYNC_SECTIONS = ['labels', 'settings', 'rulesets', 'files', 'plan'] as const;
 export const SYNC_SECTIONS = ['overview', ...WRITTEN_SYNC_SECTIONS] as const;
 export type SyncSection = (typeof SYNC_SECTIONS)[number];
 
 /**
- * Which of the panes a surface can offer.
+ * What each sync section is CALLED, which is not what it is addressed by.
  *
- * Root manages somebody else's installation and sync has no Root address, so
- * whether there is anywhere to ask is what says the pane can be opened. Asked
- * once, here, rather than paired with `sync` at each of the places that would
- * otherwise have to remember: the switch's options and the fallback an address
- * naming a pane this surface has no answer for lands on.
- *
- * Takes what it needs as an argument and reaches for nothing. This module is
- * imported by `src/params.ts`, which the route-manifest build runs under plain
- * Node to write `routes.json` for the Go server - so a later pane answering
- * this from a store or a session would break that build with an error nowhere
- * near this file.
+ * `overview` is written "Sync status" and `settings` is written "Repository
+ * options" - the tree already carries a Workspace settings row, and no two
+ * rows in it may share a word a reader navigates by. Held here because the
+ * tree, the overview board, the plan and the browser tab all say it, and a
+ * word spelled in four places is a word that drifts in three.
  */
-export function availableRepositorySections(syncOffered: boolean): readonly RepositorySection[] {
-  return REPOSITORY_SECTIONS.filter((section) => section !== 'sync' || syncOffered);
-}
+export const SYNC_SECTION_LABELS: Record<SyncSection, string> = {
+  overview: 'Sync status',
+  labels: 'Labels',
+  settings: 'Repository options',
+  rulesets: 'Rulesets',
+  files: 'Shared files',
+  plan: 'Plan',
+};
 
-/** One repository, opened on one of its panes. */
+/** One repository's own page. */
 export interface RepositoryPage {
   /** Named the way a person names it - `api-gateway`, never an id. */
   name: string;
-  section: RepositorySection;
 }
 
 export type PanelView = (typeof PANEL_VIEWS)[number];
 
 /**
- * A view in an installation's own address, which is every view there is.
+ * A view in a workspace's own address, which is every view there is.
  *
  * The name is kept because it says which surface an address belongs to - the
- * console's subset is `RootInstallationView` - but it is the same list rather
+ * console's subset is `RootWorkspaceView` - but it is the same list rather
  * than a second copy of it. It used to be a copy, and a copy is what the
  * router's own list turned out to be too: sync was added to every list but
  * that one, and the row led to the not-found page.
  */
 export type ScopedPanelView = PanelView;
-export type RootInstallationView = (typeof ROOT_INSTALLATION_VIEWS)[number];
+export type RootWorkspaceView = (typeof ROOT_WORKSPACE_VIEWS)[number];
 export type PersonalView = (typeof PERSONAL_VIEWS)[number];
 /** History's two tables are addressable, so a reload lands where you left off. */
 export type HistorySection = (typeof HISTORY_SECTIONS)[number];
 export type RootRuntimeSection = (typeof ROOT_RUNTIME_SECTIONS)[number];
 export type RootSection =
-  'overview' | 'queue' | 'schedules' | 'installations' | 'access' | 'history' | 'runtime';
+  'overview' | 'queue' | 'schedules' | 'workspaces' | 'access' | 'history' | 'runtime';
 export type PanelSection = Exclude<ScopedPanelView, 'users' | 'invitations'> | 'access';
 export type RootRoute =
   | {
-      rootView: 'overview' | 'installations' | 'schedules' | 'access-users' | 'access-invitations';
+      rootView: 'overview' | 'workspaces' | 'schedules' | 'access-users' | 'access-invitations';
       dialog?: RouteDialog;
     }
   | {
@@ -159,10 +153,11 @@ export type RootRoute =
         | 'history-audit'
         | 'history-failures'
         | 'queue-approvals'
+        | 'queue-waiting'
+        | 'queue-running'
         | 'queue-history'
         | 'runtime-settings'
-        | 'runtime-service'
-        | 'runtime-database';
+        | 'runtime-service';
     }
   /**
    * Work the service has accepted and will do later, on a schedule it chooses.
@@ -172,19 +167,25 @@ export type RootRoute =
    * carries cleanup retries. "Merge queue" is GitHub's name for batching pull
    * requests and testing them together, which is not this.
    */
-  | { rootView: 'queue' | 'queue-recent' }
+  /* No `queue-recent`. The console kept a second surface for finished work - a table
+     of its own at `/root/queue/recent` - and nothing on any page reached it: the
+     queue's segments name Active, Needs a decision, Waiting, Running and Done, and
+     Done is a card on the queue itself. An address a reader cannot arrive at is not a
+     page, and the table, its story and the two sweeps that held it to the shared
+     heading went with it. */
+  | { rootView: 'queue' }
   /** A request is a page rather than a dialog: the timeline is a record to link someone to. */
   | { rootView: 'queue-request'; request: string }
   | {
-      rootView: 'installation';
+      rootView: 'workspace';
       account: string;
-      view: RootInstallationView;
+      view: RootWorkspaceView;
       section?: HistorySection;
       repository?: RepositoryPage;
       dialog?: RouteDialog;
     };
 
-export type InstallationRoute = {
+export type WorkspaceRoute = {
   account: string;
   view: ScopedPanelView;
   section?: HistorySection;
@@ -213,7 +214,7 @@ export type InstallationRoute = {
 };
 /** A page of the reader's own, standing beside the workspaces and the console. */
 export type PersonalRoute = { personal: PersonalView };
-export type PanelRoute = InstallationRoute | RootRoute | PersonalRoute;
+export type PanelRoute = WorkspaceRoute | RootRoute | PersonalRoute;
 
 export interface ResolvedPanelRoute {
   account: string;
@@ -236,11 +237,17 @@ export function parsePanelRoute(basePath: string, pathname: string): PanelRoute 
      that does not resolve rather than the view with something appended. */
   const personal = PERSONAL_VIEWS.find((view) => view === parts[0]);
   if (personal !== undefined) return parts.length === 1 ? { personal } : null;
+  /* A workspace with nothing after it IS its overview - the page it opens on
+     takes the bare address rather than a written one, the way the console's
+     own overview takes `/root`. */
+  if (parts.length === 2 && parts[0] === 'workspace' && (parts[1] ?? '') !== '') {
+    return { account: decodeURIComponent(parts[1] ?? ''), view: 'overview' };
+  }
   if (parts.length < 3) return null;
 
   const [namespace, encodedAccount, rawSection] = parts;
   if (
-    namespace !== 'i' ||
+    namespace !== 'workspace' ||
     encodedAccount === undefined ||
     encodedAccount.length === 0 ||
     rawSection === undefined
@@ -296,7 +303,7 @@ export function parsePanelRoute(basePath: string, pathname: string): PanelRoute 
   }
 
   if (account.trim() === '') return null;
-  const route: InstallationRoute = { account, view: rawView };
+  const route: WorkspaceRoute = { account, view: rawView };
   if (repository !== undefined) return { ...route, repository };
   if (dialog !== undefined) return { ...route, dialog };
   if (sync !== undefined) return { ...route, ...sync };
@@ -317,9 +324,12 @@ function parseTrailingRepository(
   segments: string[],
 ): RepositoryPage | undefined | 'invalid' {
   if (segments.length === 0 || view !== 'repositories') return undefined;
-  if (segments.length > 2) return 'invalid';
+  /* The repository IS the whole address now. Its page used to open on one of five
+     panes and carry the pane in a second segment; the page is one scroll, so there is
+     no pane to name and an address that names one resolves to nothing. */
+  if (segments.length > 1) return 'invalid';
 
-  const [encodedName, rawSection] = segments;
+  const [encodedName] = segments;
   if (encodedName === undefined || encodedName === '') return 'invalid';
 
   let name: string;
@@ -328,14 +338,8 @@ function parseTrailingRepository(
   } catch {
     return 'invalid';
   }
-  if (name.trim() === '') return 'invalid';
-  /* A name is only ever read in the first position, so the repository called
-     `behavior` is reachable, and `.../behavior/behavior` is its Behavior pane. */
-  if (rawSection === undefined) return { name, section: 'file' };
 
-  const section = REPOSITORY_SECTIONS.find((known) => known === rawSection);
-
-  return section === undefined ? 'invalid' : { name, section };
+  return name.trim() === '' ? 'invalid' : { name };
 }
 
 /**
@@ -386,23 +390,46 @@ export function panelDocumentTitle(route: PanelRoute): string {
   const rootConsole = 'rootView' in route;
   const segments = routeTitleSegments(route);
   if (rootConsole) segments.push('root-console');
-  return [...segments.map(routeSegmentLabel), 'SMYKLOT'].join(' | ');
+  const object = routeTitleObject(route);
+  const said = segments.map(routeSegmentLabel);
+  if (object !== null) said.unshift(object);
+  return [...said, 'SMYKLOT'].join(' | ');
 }
 
 export function panelViewSection(view: ScopedPanelView): PanelSection {
   return view === 'users' || view === 'invitations' ? 'access' : view;
 }
 
+/**
+ * Where a segment is not simply its own word capitalised.
+ *
+ * The tab says what the sidebar row and the heading say, which for the settings pages
+ * is more than the segment: the tree carries a Workspace settings row and a Service
+ * settings row, so a tab reading "Settings" says which of the two only by luck. The
+ * page used to be addressed `defaults` and the tab read "Defaults", which is a word the
+ * dictionary retires and the only place in the panel it still reached a reader.
+ */
+const SEGMENT_LABELS: Record<string, string> = {
+  settings: 'Workspace settings',
+  /* Two words apiece, and only the first is capitalised: spelling these from the
+     segment gave "Service Health", which is the sidebar's row in title case. */
+  'service-health': 'Service health',
+  'service-settings': 'Service settings',
+};
+
 export function routeSegmentLabel(segment: string): string {
-  return segment
-    .split('-')
-    .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
-    .join(' ');
+  return (
+    SEGMENT_LABELS[segment] ??
+    segment
+      .split('-')
+      .map((word) => word.slice(0, 1).toUpperCase() + word.slice(1))
+      .join(' ')
+  );
 }
 
 export function resolvePanelRoute(
   availableAccounts: readonly string[],
-  requested: InstallationRoute | null,
+  requested: WorkspaceRoute | null,
   preferredAccount: string | null,
 ): ResolvedPanelRoute | null {
   const requestedAccount = findAccount(availableAccounts, requested?.account ?? null);
@@ -410,7 +437,7 @@ export function resolvePanelRoute(
     requestedAccount ?? findAccount(availableAccounts, preferredAccount) ?? availableAccounts[0];
   if (account === undefined) return null;
 
-  const view = requested?.view ?? 'defaults';
+  const view = requested?.view ?? 'overview';
   /* History always resolves to a named table, so the address bar never sits on
      a bare /history that a reload would have to guess at. */
   return view === 'history'
@@ -420,23 +447,20 @@ export function resolvePanelRoute(
       : { account, view };
 }
 
+/** Whether a console view is one of the queue's own sections, written as its address. */
+function isQueueSectionView(view: RootRoute['rootView']): view is `queue-${WrittenQueueSection}` {
+  return WRITTEN_QUEUE_SECTIONS.some((section) => view === `queue-${section}`);
+}
+
 export function rootSection(route: RootRoute): RootSection {
   if (route.rootView === 'access-users' || route.rootView === 'access-invitations') return 'access';
   if (route.rootView === 'history-audit' || route.rootView === 'history-failures') return 'history';
-  if (route.rootView === 'installation') return 'installations';
-  if (
-    route.rootView === 'queue-recent' ||
-    route.rootView === 'queue-request' ||
-    route.rootView === 'queue-approvals' ||
-    route.rootView === 'queue-history'
-  )
-    return 'queue';
-  if (
-    route.rootView === 'runtime-settings' ||
-    route.rootView === 'runtime-service' ||
-    route.rootView === 'runtime-database'
-  )
+  if (route.rootView === 'workspace') return 'workspaces';
+  if (route.rootView === 'queue-request') return 'queue';
+  if (isQueueSectionView(route.rootView)) return 'queue';
+  if (route.rootView === 'runtime-settings' || route.rootView === 'runtime-service') {
     return 'runtime';
+  }
   return route.rootView;
 }
 
@@ -451,23 +475,53 @@ export function isScopedPanelView(value: string | undefined): value is ScopedPan
   return PANEL_VIEWS.some((view) => view === value);
 }
 
-export function isRootInstallationView(value: string | undefined): value is RootInstallationView {
-  return ROOT_INSTALLATION_VIEWS.some((view) => view === value);
+export function isRootWorkspaceView(value: string | undefined): value is RootWorkspaceView {
+  return ROOT_WORKSPACE_VIEWS.some((view) => view === value);
 }
+
+/**
+ * Console views the product does not call what the address calls them.
+ *
+ * `workspaces` used to be here, because the address said GitHub's word for a grant
+ * while the console, the tree and the page all said Workspaces. The address says
+ * Workspaces now too: one word for one thing, everywhere a reader can see it, which is
+ * worth more than the links an operator kept to the old one.
+ */
+const ROOT_VIEW_WORDS: Partial<Record<RootRoute['rootView'], string>> = {
+  /* "Runtime" is the address's word for the two pages under it, and neither page
+     says it: this one is Service health and the other is Service settings. */
+  'runtime-service': 'service-health',
+  'runtime-settings': 'service-settings',
+};
 
 function routeTitleSegments(route: PanelRoute): string[] {
   if ('personal' in route) return [route.personal];
-  if ('rootView' in route && route.rootView !== 'installation') {
+  if ('rootView' in route && route.rootView !== 'workspace') {
+    const said = ROOT_VIEW_WORDS[route.rootView];
+    if (said !== undefined) return [said];
+
     return route.rootView.split('-').reverse();
   }
   const view = route.view;
   const section = panelViewSection(view);
-  const leaf =
-    route.section ??
-    ('sync' in route ? route.sync : undefined) ??
-    ('queue' in route ? route.queue : undefined) ??
-    view;
-  return leaf === section ? [leaf] : [leaf, section];
+  const sync = 'sync' in route ? route.sync : undefined;
+  const leaf = route.section ?? sync ?? ('queue' in route ? route.queue : undefined) ?? view;
+  /* A sync section is named rather than spelled from its address: the tab
+     would otherwise read "Settings" on the page whose title is Repository
+     options, which is the one word the tree deliberately does not use twice. */
+  const said = sync !== undefined && leaf === sync ? SYNC_SECTION_LABELS[sync] : leaf;
+  return leaf === section ? [said] : [said, section];
+}
+
+/**
+ * The object one page is about, for the tab that would otherwise name only the
+ * list it came from - two ruleset tabs both reading "Rulesets" are two tabs a
+ * reader has to open to tell apart. Returned unspelled, because a name Smyklot
+ * did not choose is not a segment to capitalise.
+ */
+function routeTitleObject(route: PanelRoute): string | null {
+  if ('personal' in route || 'rootView' in route) return null;
+  return route.syncRuleset ?? route.syncFile ?? route.repository?.name ?? null;
 }
 
 /** `undefined` for "no segment", `'invalid'` for a segment that cannot be one. */
@@ -493,7 +547,7 @@ function parseSection(
 function parseTrailingSync(
   view: string,
   segments: string[],
-): Pick<InstallationRoute, 'sync' | 'syncRuleset' | 'syncFile'> | undefined | 'invalid' {
+): Pick<WorkspaceRoute, 'sync' | 'syncRuleset' | 'syncFile'> | undefined | 'invalid' {
   if (view !== 'sync' || segments.length === 0) return undefined;
 
   const [rawSection, ...encodedRest] = segments;
@@ -530,17 +584,20 @@ function parseTrailingQueue(
 
 function parseRootRoute(parts: string[]): RootRoute | null {
   if (parts.length === 1) return { rootView: 'overview' };
-  if (parts.length === 2 && parts[1] === 'installations') return { rootView: 'installations' };
+  if (parts.length === 2 && parts[1] === 'workspaces') return { rootView: 'workspaces' };
   if (parts.length === 2 && parts[1] === 'runtime') return { rootView: 'runtime-service' };
   if (parts.length === 3 && parts[1] === 'runtime') {
     if (parts[2] === 'settings') return { rootView: 'runtime-settings' };
     if (parts[2] === 'service') return { rootView: 'runtime-service' };
-    if (parts[2] === 'database') return { rootView: 'runtime-database' };
+    /* The database's own page is part of Service health now. The address still
+       resolves - a route redirects it - so this answers with the page it lands on
+       rather than with a 404. */
+    if (parts[2] === 'database') return { rootView: 'runtime-service' };
     return null;
   }
   if (parts.length >= 3 && parts[1] === 'access') {
-    /* The Root console's tables take the same dialog grammar as an
-       installation's, because they list the same things. */
+    /* The Root console's tables take the same dialog grammar as a
+       workspace's, because they list the same things. */
     const host = parts[2] === 'users' ? 'access-users' : 'access-invitations';
     if (parts[2] === 'users' || parts[2] === 'invitations') {
       if (parts.length === 3) return { rootView: host };
@@ -551,14 +608,9 @@ function parseRootRoute(parts: string[]): RootRoute | null {
   }
   if (parts.length === 2 && parts[1] === 'queue') return { rootView: 'queue' };
   if (parts.length === 2 && parts[1] === 'schedules') return { rootView: 'schedules' };
-  if (parts.length === 3 && parts[1] === 'queue' && parts[2] === 'approvals') {
-    return { rootView: 'queue-approvals' };
-  }
-  if (parts.length === 3 && parts[1] === 'queue' && parts[2] === 'history') {
-    return { rootView: 'queue-history' };
-  }
-  if (parts.length === 3 && parts[1] === 'queue' && parts[2] === 'recent') {
-    return { rootView: 'queue-recent' };
+  if (parts.length === 3 && parts[1] === 'queue') {
+    const written = WRITTEN_QUEUE_SECTIONS.find((section) => section === parts[2]);
+    if (written !== undefined) return { rootView: `queue-${written}` };
   }
   if (parts.length === 4 && parts[1] === 'queue' && parts[2] === 'request') {
     let request: string;
@@ -576,20 +628,20 @@ function parseRootRoute(parts: string[]): RootRoute | null {
   }
   /* A bare section path is a legitimate address - somebody typed or bookmarked
      it - and resolves to that section's default table rather than falling
-     through to the installation default. */
+     through to the workspace default. */
   if (parts.length === 2 && parts[1] === 'history') return { rootView: 'history-audit' };
   if (parts.length === 2 && parts[1] === 'access') return { rootView: 'access-users' };
-  if (parts.length < 4 || parts[1] !== 'installations') return null;
+  if (parts.length < 4 || parts[1] !== 'workspaces') return null;
 
   const rawView = parts[3] ?? '';
   const accessView =
     rawView === 'access' ? ACCESS_SECTIONS.find((section) => section === parts[4]) : undefined;
   if (rawView === 'access' && parts.length > 4 && accessView === undefined) return null;
-  if (rawView !== 'access' && !DIRECT_ROOT_INSTALLATION_VIEWS.some((view) => view === rawView)) {
+  if (rawView !== 'access' && !DIRECT_ROOT_WORKSPACE_VIEWS.some((view) => view === rawView)) {
     return null;
   }
   const view = rawView === 'access' ? (accessView ?? 'users') : rawView;
-  if (!isRootInstallationView(view)) return null;
+  if (!isRootWorkspaceView(view)) return null;
   const trailing = parts.slice(rawView === 'access' ? 5 : 4);
   const repository = parseTrailingRepository(view, trailing);
   if (repository === 'invalid') return null;
@@ -608,7 +660,7 @@ function parseRootRoute(parts: string[]): RootRoute | null {
     return null;
   }
   if (account.trim() === '') return null;
-  const route: RootRoute = { rootView: 'installation', account, view };
+  const route: RootRoute = { rootView: 'workspace', account, view };
   if (repository !== undefined) return { ...route, repository };
   if (dialog !== undefined) return { ...route, dialog };
   return section === undefined ? route : { ...route, section };

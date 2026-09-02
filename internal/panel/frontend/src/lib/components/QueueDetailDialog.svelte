@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { QueueDetail, QueueItem } from '#lib/types.js';
+  import { workloadTitle } from '#lib/workloads.js';
   import Button from './Button.svelte';
   import Modal from './Modal.svelte';
 
@@ -40,12 +41,24 @@
   }
 </script>
 
+<!--
+@component
+One piece of queued work, read alongside the queue rather than instead of it. An
+inspector, which is the widest of the three dialog shapes and the one that does not
+cover the list it came from: the reader is comparing this record against its
+neighbours, so taking the neighbours away would be the wrong help.
+
+`loading` and `error` are the dialog's own, not the queue's. It opens on a row that is
+already on screen and fetches the rest, so it has a state the list behind it does
+not.
+-->
+
 <Modal
   id="queue-detail"
   {open}
   variant="inspector"
   title={detail?.item.title ?? 'Queue item'}
-  description="Durable schedule, execution facts, and audited transitions"
+  description="When it runs, what it has done, and every change it has been through"
   {onClose}
 >
   {#if loading && detail === null}
@@ -55,8 +68,8 @@
   {:else if detail !== null}
     <dl class="facts">
       <div>
-        <dt>Workload</dt>
-        <dd>{words(detail.item.kind)}</dd>
+        <dt>Job</dt>
+        <dd>{workloadTitle(detail.item.kind)}</dd>
       </div>
       <div>
         <dt>State</dt>
@@ -71,7 +84,7 @@
         <dd>{words(detail.item.priority)}</dd>
       </div>
       <div>
-        <dt>Window</dt>
+        <dt>Hours</dt>
         <dd>
           {detail.item.profile_name ?? 'Immediate'}{detail.item.profile_timezone
             ? ` · ${detail.item.profile_timezone}`
@@ -79,12 +92,12 @@
         </dd>
       </div>
       <div>
-        <dt>Viewer-local eligibility</dt>
+        <dt>Ready, in your timezone</dt>
         <dd>{absolute(detail.item.eligible_at)}</dd>
       </div>
       {#if detail.item.profile_timezone}
         <div>
-          <dt>Window-local eligibility</dt>
+          <dt>Ready, in the job's timezone</dt>
           <dd>{absolute(detail.item.eligible_at, detail.item.profile_timezone)}</dd>
         </div>
       {/if}
@@ -111,7 +124,7 @@
     </dl>
 
     <section class="workload-detail" aria-labelledby="queue-workload-detail">
-      <h3 id="queue-workload-detail">Workload detail</h3>
+      <h3 id="queue-workload-detail">What this job is doing</h3>
       {#if detail.item.kind === 'webhook_delivery'}
         {#if detail.item.details}
           <p>
@@ -132,9 +145,13 @@
           {detail.item.details?.delete ?? 0} delete
         </p>
       {:else if detail.item.kind === 'schedule_change'}
-        <p>Requested policy: {words(detail.item.details?.policy_kind ?? 'unknown')}</p>
+        <p>
+          The job asked about: {detail.item.details?.policy_kind === undefined
+            ? 'unknown'
+            : workloadTitle(detail.item.details.policy_kind)}
+        </p>
       {:else}
-        <p>{detail.item.summary ?? 'No workload-specific detail was recorded.'}</p>
+        <p>{detail.item.summary ?? 'Nothing further was recorded about this job.'}</p>
       {/if}
       {#if detail.item.blocked_reason}
         <p class="blocking"><strong>Blocked:</strong> {detail.item.blocked_reason}</p>
@@ -173,7 +190,7 @@
 
 <style>
   .detail-message {
-    color: var(--dim);
+    color: var(--text-muted);
     margin: 0;
   }
   .detail-error,
@@ -195,7 +212,7 @@
     padding: var(--space-3);
   }
   dt {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.66rem;
     font-weight: 760;
     letter-spacing: 0.045em;
@@ -218,9 +235,9 @@
     text-transform: uppercase;
   }
   .workload-detail p {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.78rem;
-    line-height: 1.5;
+    line-height: var(--leading-meta);
     margin: var(--space-2) 0 0;
   }
   .timeline ol {
@@ -245,7 +262,7 @@
     width: 1px;
   }
   .timeline-mark {
-    background: var(--accent);
+    background: var(--brand-action);
     border: 2px solid var(--dialog-bg);
     border-radius: 50%;
     height: 0.65rem;
@@ -264,7 +281,7 @@
   }
   .timeline li div > span,
   .timeline time {
-    color: var(--dim);
+    color: var(--text-muted);
     font-size: 0.7rem;
     margin-top: var(--space-1);
   }

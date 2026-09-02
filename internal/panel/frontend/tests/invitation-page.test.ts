@@ -36,8 +36,11 @@ describe('the invitation page', () => {
     expect(rootLayout.indexOf('{:else if session.isInvitation}')).toBeLessThan(
       rootLayout.indexOf('{:else if session.signedOut}'),
     );
+    // The guard that keeps target resolution off this page. It no longer names the
+    // inbox: every personal address is covered further down, and what has to hold here
+    // is that an invitation never resolves a workspace out of the path.
     expect(rootLayout).toMatch(
-      /if \(session\.isRootMode \|\| session\.isInbox \|\| session\.isInvitation\) return;\s*const account = page\.params\.account/u,
+      /if \(session\.isRootMode \|\| session\.isInvitation\) return;\s*const account = page\.params\.account/u,
     );
   });
 
@@ -93,7 +96,7 @@ describe('the invitation page', () => {
   it('names the scope by more than its display name', () => {
     // "Smykla Skalski" identifies nothing on its own. The login is what a reader can check against
     // GitHub, and the kind says whether accepting joins an organisation or one person's
-    // installation. Both are optional in the payload, so both need a branch that copes without.
+    // workspace. Both are optional in the payload, so both need a branch that copes without.
     expect(page).toContain('invitation.target_login');
     expect(page).toContain('invitation.target_kind');
     expect(page).toMatch(/invitation\.target_login === undefined/u);

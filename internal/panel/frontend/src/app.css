@@ -1,3 +1,5 @@
+@import './tokens.css';
+
 @font-face {
   font-display: swap;
   font-family: 'Plus Jakarta Sans';
@@ -43,700 +45,6 @@
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
     U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
-
-:root {
-  color-scheme: light;
-
-  /* Primitive palette. Graphite carries structure; petrol marks interaction. */
-  --primitive-light-canvas: #f5f7f6;
-  --primitive-light-surface: #ffffff;
-  --primitive-light-raised: #fafbfa;
-  --primitive-light-inset: #f0f3f2;
-  --primitive-light-control: #f8faf9;
-  --primitive-light-rule: #e3e8e6;
-  --primitive-light-control-border: #c4cec9;
-  --primitive-light-text: #18211f;
-  --primitive-light-secondary: #4c5b57;
-  --primitive-light-muted: #63716c;
-  --primitive-dark-canvas: #0e1116;
-  --primitive-dark-surface: #151a21;
-  --primitive-dark-raised: #1b222b;
-  --primitive-dark-inset: #202833;
-  --primitive-dark-control: #1a2029;
-  --primitive-dark-rule: #2a323d;
-  --primitive-dark-control-border: #3a4653;
-  --primitive-dark-text: #f3f6f7;
-  --primitive-dark-secondary: #c4cdd4;
-  --primitive-dark-muted: #95a1ab;
-  /* #e6ede9, not the old #eef2f0: that sat 1.6 dE00 from the canvas and the
-     column read as content. The zone has to be a zone - 3.8 dE00 from the
-     canvas, with hover/press/thumb/border laddered off it. */
-  --primitive-light-sidebar: #e6ede9;
-  --primitive-dark-sidebar: #10151b;
-  --primitive-petrol-800: #115e59;
-  --primitive-petrol-700: #0f766e;
-  --primitive-petrol-400: #2dd4bf;
-  --primitive-petrol-200: #99f6e4;
-  --primitive-petrol-50: #e7f5f2;
-  --primitive-petrol-950: #103634;
-  --primitive-info-light: #526b7a;
-  --primitive-info-light-tint: #edf2f4;
-  --primitive-info-dark: #b6c5d1;
-  --primitive-info-dark-tint: #26323b;
-  --primitive-success-light: #0f766e;
-  --primitive-success-light-tint: #e7f5f2;
-  --primitive-success-dark: #71cabc;
-  --primitive-success-dark-tint: #173633;
-  --primitive-warning-light: #8a5d17;
-  --primitive-warning-light-tint: #f8f0de;
-  --primitive-warning-dark: #e8c07a;
-  --primitive-warning-dark-tint: #382f20;
-  --primitive-danger-light: #a33a45;
-  --primitive-danger-light-tint: #faecee;
-  --primitive-danger-dark: #f0a0a6;
-  --primitive-danger-dark-tint: #3a2429;
-
-  /* Semantic palette. Neutral surfaces establish hierarchy; hue communicates
-     brand, focus, or real state. */
-  --canvas: var(--primitive-light-canvas);
-  --surface-base: var(--primitive-light-surface);
-  --surface-raised: var(--primitive-light-raised);
-  --surface-inset: var(--primitive-light-inset);
-  --surface-control: var(--primitive-light-control);
-  --border-subtle: var(--primitive-light-rule);
-  --border-control: var(--primitive-light-control-border);
-  /* The edge a photograph is given, so a portrait ending in the card's own colour
-     still reads as a circle. Ink on light grounds, light on dark ones. */
-  --avatar-ring: rgb(24 33 31 / 22%);
-  --text-primary: var(--primitive-light-text);
-  --text-secondary: var(--primitive-light-secondary);
-  --text-muted: var(--primitive-light-muted);
-  --brand-action: var(--primitive-petrol-700);
-  --brand-action-hover: var(--primitive-petrol-800);
-  --brand-action-pressed: #134e4a;
-  --brand-action-tint: var(--primitive-petrol-50);
-  --brand-action-text: #0f625b;
-  --on-brand-action: #ffffff;
-  --focus: var(--primitive-petrol-700);
-  --info: var(--primitive-info-light);
-  --info-tint: var(--primitive-info-light-tint);
-  --on-info: #ffffff;
-  --success: var(--primitive-success-light);
-  --success-tint: var(--primitive-success-light-tint);
-  /* The ink a filled tone carries. --brand-action and --info had one; success,
-     warning and danger did not, so the one control that fills with a state tone
-     (.btn-stop) named white itself - correct here at 6.46:1 and 2.04:1 on the
-     dark palettes, where the same token is a pale pink. A tone is a *text*
-     colour on both sides of the theme; only its partner knows which way round
-     the pair goes. Measured light / dark: 5.47 and 7.76, 5.74 and 9.38, 6.46
-     and 8.78. */
-  --on-success: #ffffff;
-  --warning: var(--primitive-warning-light);
-  --warning-tint: var(--primitive-warning-light-tint);
-  --on-warning: #ffffff;
-  --danger: var(--primitive-danger-light);
-  --danger-tint: var(--primitive-danger-light-tint);
-  --on-danger: #ffffff;
-  /* Deepens on a light ground and brightens on a dark one, which is the rule
-     --brand-action-hover already follows and the reason it is stated per
-     palette rather than mixed at the call site: a fill that darkens on both
-     sends hover and press in opposite directions on dark. */
-  --danger-hover: color-mix(in srgb, var(--danger) 88%, black);
-  --neutral-tint: var(--primitive-light-inset);
-  /* These are the measured hover grounds, and they are measured ALONE: the steps
-     `tests/control-states.test.ts` pins - 2.51 and 5.09 dE00 on light, 5.07 and
-     8.92 on dark - are the distance from each track to the value written here.
-     A blanket `button:hover` layer used to paint a second coat of 5.5% over all
-     of them, which put the sidebar's hover at 8.92 dE00 against a ceiling of 6.
-     That rule is gone; do not reintroduce it, here or globally. */
-  --interactive-hover: #f1f5f3;
-  /* One state change and two, as overlays so the step is the same on any ground.
-     Sized against the sidebar's approved pair - 2.51 and 5.09 dE00 - rather than picked:
-     4% measured 1.81, which is under two thirds of a state change on a white surface. */
-  --interactive-hover-layer: rgb(24 33 31 / 5.5%);
-  --interactive-pressed: rgb(24 33 31 / 11%);
-  --interactive-pressed-bg: #e7ece9;
-  /* What a column heading is, in each of the four states it can be in.
-     ------------------------------------------------------------------------
-     Colours, not layers: each is mixed against the header's own ground, so what
-     lands on the cell is one flat colour that was decided here rather than an
-     alpha whose result depends on whatever it was painted over. Sorted-and-hovered
-     is stated for the same reason - two solid colours cannot stack the way two
-     washes can, so the combination is a colour of its own.
-
-     ONE RAMP, not five numbers. Every ground below is the same expression at a
-     different multiple of `--heading-step`, and every ink is the same expression
-     at a multiple of `--heading-ink-share`, so a mode states one figure each and
-     the whole band follows. Hand-picked percentages per state is exactly how this
-     drifted before: five values, each defensible on its own, and no rule anybody
-     could apply to a sixth.
-
-     Everything is mixed from the shell's own colours. A grey band with a grey
-     word on it says nothing but "table"; the shell's hue says WHICH console the
-     reader is in - violet in Root, petrol in the panel - and it is the hue the
-     sort arrow and the sorted heading already carry, so the cell, the word and
-     the mark make one statement instead of three. Nothing here is written per
-     table: the ramp is the palette's, and a seventh table gets it by existing. */
-  --heading-step: 3.6%;
-  --heading-bg: color-mix(in srgb, var(--brand-action) var(--heading-step), var(--table-header-bg));
-  --heading-hover-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 3),
-    var(--table-header-bg)
-  );
-  --heading-sorted-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 5),
-    var(--table-header-bg)
-  );
-  --heading-sorted-hover-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 7),
-    var(--table-header-bg)
-  );
-  --heading-pressed-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 9),
-    var(--table-header-bg)
-  );
-
-  /* The inks, on the same principle. `--brand-action-text` rather than
-     `--brand-action`: that is the token the palette picked to be READ in this
-     shell, so a mix of it with the heading's own grey is legible at both ends.
-     A mark sits further back than a word, and a control that is being touched
-     comes all the way forward to the undiluted ink - which is also where the
-     sorted column's word sits, because both mean "this one". */
-  --heading-ink-share: 55%;
-  --heading-text: color-mix(
-    in srgb,
-    var(--brand-action-text) var(--heading-ink-share),
-    var(--text-secondary)
-  );
-  --heading-mark: color-mix(
-    in srgb,
-    var(--brand-action-text) calc(var(--heading-ink-share) * 0.8),
-    var(--text-muted)
-  );
-  --heading-ink-active: var(--brand-action-text);
-  --scrim: rgb(14 17 22 / 56%);
-  --shadow-color: rgb(24 33 31 / 10%);
-
-  /* Component tokens. */
-  --sidebar-bg: var(--primitive-light-sidebar);
-  --sidebar-border: #c9d4cf;
-  --sidebar-text: var(--primitive-light-text);
-  /* On #eef2f0: secondary 8.1:1, muted 5.8:1 (nav rows read at a glance). */
-  --sidebar-text-secondary: #3d4b47;
-  --sidebar-text-muted: #53615c;
-  /* Left where the design put them. Asked to hover harder, the sidebar has
-     nowhere to go: the band's ceiling is where a press begins, and moving both
-     up far enough to see runs the press past the selected item's own fill -
-     measured at 7.65 against the selection's 6.48 - so the selected row would
-     stop being the loudest thing in the column. That is a bigger change than a
-     hover, and not one to make sideways. */
-  --sidebar-item-hover: #dae3de;
-  --sidebar-item-pressed: #cdd8d2;
-  --sidebar-item-active-text: #0d5c55;
-  /* A count that demands attention (a waiting plan), on sidebar material -
-     the content signal tint is mixed for the page's cards and does not read
-     here. Ink veil over transparent so it survives the hover band too. */
-  --sidebar-count-signal-bg: color-mix(in srgb, #14498f 10%, transparent);
-  --sidebar-count-signal-ink: #14498f;
-  /* Selected nav item is a raised thumb, same language as segmented controls. */
-  --sidebar-thumb: #ffffff;
-  /* The ring at 6% read 2.78 against the sidebar, under both the 3.74 fill and the 5.09 a press on
-     a neighbouring row moves: pressing an unselected row was louder than the selection it sat
-     beside. At 14% the edge reads 6.25 and the order is right again. */
-  --sidebar-thumb-shadow: 0 1px 0 rgb(24 33 31 / 22%), 0 0 0 0.5px rgb(24 33 31 / 14%);
-  /* The 1px hard edge is the thumb's physical height. A press consumes it. */
-  --sidebar-thumb-shadow-pressed: 0 0 0 0.5px rgb(24 33 31 / 14%);
-  /* Popovers and menus anchored to the sidebar follow its context, not the page. */
-  --sidebar-popover-bg: #ffffff;
-  --sidebar-popover-border: #d9e0dd;
-  --sidebar-menu-text: var(--primitive-light-text);
-  --sidebar-menu-muted: #53615c;
-  --sidebar-menu-hover: #eef2f0;
-  --sidebar-menu-pressed: #dfe6e3;
-  /* Sign out is the one destructive row in a sidebar menu, and it has to take its
-     red from the surface it stands on rather than from the page. Reading `--stop`
-     put the light tint under it while the Root console's menu stayed dark in light
-     mode, which is a pale pink row on a near-black card. */
-  --sidebar-stop: var(--primitive-danger-light);
-  --sidebar-stop-tint: var(--primitive-danger-light-tint);
-  /* The segmented control inside a sidebar popover: same rules as the one in the content area,
-     against the popover's own surfaces. Hover and press step down, away from the thumb; the ring
-     carries the selection where the fill alone would lose to a press on a neighbour. */
-  --sidebar-seg-track: #eef1f0;
-  --sidebar-seg-thumb: #ffffff;
-  --sidebar-seg-border: #d9e0dd;
-  --sidebar-seg-hover: color-mix(in srgb, var(--sidebar-menu-text) 5.5%, var(--sidebar-seg-track));
-  --sidebar-seg-pressed: color-mix(in srgb, var(--sidebar-menu-text) 11%, var(--sidebar-seg-track));
-  --sidebar-seg-shadow: 0 1px 3px rgb(24 33 31 / 14%), 0 0 0 0.5px rgb(24 33 31 / 12%);
-  /* Unread dot and count pill: one vivid alert red for every sidebar context.
-     The muted danger tone reads as wine on light and vanishes on the dark
-     purple root sidebar; this red holds 4.9:1 under white ink and stays over
-     3:1 against all three sidebar backgrounds. */
-  --unread-badge-bg: #d03339;
-  --unread-badge-text: #ffffff;
-  --control-bg: var(--surface-control);
-  /* One state change from the control's own ground, like every other state in the shell. It used
-     to be --surface-raised, which is 0.55 dE00 from --surface-control - half a just-noticeable
-     difference, so the pickers above the tables did not visibly answer the pointer at all. */
-  --control-bg-hover: color-mix(in srgb, var(--text-primary) 5.3%, var(--control-bg));
-  /* Two, so a press reads as more than a hover. --interactive-pressed-bg is a menu-row fill and
-     lands within half a just-noticeable difference of this hover on both dark palettes. */
-  --control-bg-pressed: color-mix(in srgb, var(--text-primary) 10.9%, var(--control-bg));
-  --control-border: var(--border-control);
-  --control-border-hover: #99a7a1;
-  --input-bg: var(--surface-inset);
-  --popover-bg: var(--surface-base);
-  --popover-border: var(--border-subtle);
-  --table-header-bg: var(--surface-inset);
-  --table-footer-bg: var(--surface-inset);
-  --table-filler-bg: var(--surface-raised);
-  /* One state change from the row's own ground, measured like every other state in the shell:
-     2.52 dE00 here. It used to be --surface-raised, which is 1.19 from the row - under half a
-     state - and is also what the filler paints, so a hovered row and a dead cell were the same
-     colour. */
-  --table-row-hover: color-mix(in srgb, var(--text-primary) 5.4%, transparent);
-  /* A row that can be pressed acknowledges the press, like every other control.
-     The step from hover is the one the controls use - 5.3% to 10.9% there, so
-     roughly double - rather than a figure picked for this one surface.
-     Mixed over TRANSPARENT, not the surface: a flat surface-base mix vanished
-     on canvas-toned strips (1.2 dE00 vs 2.5 on white) - the veil has to ride
-     whatever ground the row actually has. */
-  --table-row-pressed: color-mix(in srgb, var(--text-primary) 10.9%, transparent);
-  --dialog-bg: var(--surface-base);
-  --dialog-border: var(--border-subtle);
-
-  /* Drift: the one blue that means "something existing would change". The
-     slate --info is a caption tone and reads grey at tile size, so drift
-     carries its own ink. Diff speaks the state tones with glyphs beside the
-     colour: change = drift, remove = danger. */
-  --drift: #14498f;
-  --diff-chg-ink: var(--drift);
-  --diff-chg-bg: color-mix(in srgb, var(--drift) 9%, var(--surface-base));
-  --diff-del-ink: var(--danger);
-  /* True green for ADD - the success tone is teal and reads as brand on a
-     code surface. Grounds are designed FOR code, not reused notice tints. */
-  --verb-add: #176a29;
-  --diff-add-ink: var(--verb-add);
-  --diff-add-bg: #e4f3e6;
-  --diff-del-bg: #fbe9e9;
-  /* Word-level emphasis inside a changed line: one state-step deeper. */
-  --diff-add-word: #c2e5c8;
-  --diff-del-word: #f4cbcb;
-
-  /* Code colour is a property of the language, not of the console, so it is
-     declared per theme. Verified for 4.5:1 on --surface-base and
-     --surface-inset in both themes. */
-  --code-key: #0550ae;
-  --code-const: #6d3fc0;
-  --code-string: #8f3a1c;
-  --code-comment: color-mix(in srgb, var(--text-muted) 85%, var(--text-primary));
-  --code-punct: var(--text-secondary);
-
-  /* The managed-row gutter bar, worn by any line an adjustment rewrote.
-     Brand: management is the product acting. And the finder's matched
-     characters: brand-action-text, the palette's "to be read" brand ink. */
-  --managed-bar: var(--brand-action);
-  --match-ink: var(--brand-action-text);
-
-  /* Matrix cell states. In step is quiet; attention states speak. */
-  --cell-instep: var(--text-muted);
-  --cell-pending: var(--diff-chg-ink);
-  --cell-pending-bg: var(--diff-chg-bg);
-  --cell-refused: var(--danger);
-  --cell-refused-bg: var(--danger-tint);
-  --cell-off: var(--border-control);
-
-  /* Switch (instant boolean). On = brand, like every other "the product is
-     acting" control. */
-  /* Section tabs: navigation, so the indicator is ink, deliberately NOT the
-     brand colour - "you are here" is not "you can act". Hover previews the
-     same affordance in the border's voice; counts are quiet neutral pills. */
-  --tab-ink: var(--text-primary);
-  --tab-muted: var(--text-secondary);
-  --tab-indicator: var(--text-primary);
-  --tab-indicator-hover: var(--border-control);
-  --tab-count-bg: var(--surface-inset);
-  --tab-count-ink: var(--text-secondary);
-
-  --switch-track-off: var(--surface-inset);
-  --switch-track-off-border: var(--border-strong);
-  --switch-track-on: var(--brand-action);
-  --switch-thumb: #ffffff;
-
-  /* Board tile material: a unit of the managed population. Raised off the
-     well by a lightness step and a top edge; never worn by navigation or
-     actions. Derived from the surfaces so all four palettes follow. */
-  --tile-face: color-mix(in srgb, var(--surface-base) 92%, #ffffff);
-  --tile-edge: rgb(255 255 255 / 85%);
-  --tile-border: var(--border-subtle);
-  --tile-shadow: 0 1px 2px var(--shadow-color), 0 0.5px 0 var(--tile-edge) inset;
-  --tile-well: color-mix(in srgb, var(--text-primary) 4.5%, var(--surface-inset));
-  --well-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
-
-  /* Compatibility aliases while components migrate to semantic names. */
-  --ink: var(--canvas);
-  --strip: var(--surface-base);
-  --strip-lift: var(--surface-raised);
-  --well: var(--surface-inset);
-  --rule: var(--border-subtle);
-  --control-surface: var(--control-bg);
-  --text: var(--text-primary);
-  --text-soft: var(--text-secondary);
-  --dim: var(--text-muted);
-  --signal: var(--info);
-  --signal-tint: var(--info-tint);
-  --accent: var(--brand-action);
-  --accent-tint: var(--brand-action-tint);
-  --admin: var(--brand-action);
-  --on-admin: var(--on-brand-action);
-  --clear: var(--success);
-  --clear-tint: var(--success-tint);
-  --stop: var(--danger);
-  --stop-tint: var(--danger-tint);
-  --brand: var(--focus);
-  --press: var(--interactive-pressed);
-  --shadow: var(--shadow-color);
-
-  --mono:
-    'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'Cascadia Code', menlo, consolas, monospace;
-  --sans: 'Plus Jakarta Sans', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
-
-  /* One compact dashboard rhythm shared by every view. */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
-  --space-7: 1.75rem;
-  --space-8: 2rem;
-  /* The room an inheritance marker takes before the control it belongs to. A
-     table header indents its label by exactly this, so the word over a column
-     starts where that column's controls start rather than where its cells do. */
-  --inherit-marker-size: 26px;
-  --inherit-marker-gap: 6px;
-  --inherit-marker-offset: calc(var(--inherit-marker-size) + var(--inherit-marker-gap));
-
-  /* Below micro: for type that has to fit inside something small rather than be
-     read across a page - a count in a segment, two initials in a 20px circle. */
-  --font-size-nano: 0.5625rem;
-  --font-size-micro: 0.6875rem;
-  --font-size-compact: 0.75rem;
-  --font-size-meta: 0.8125rem;
-  --font-size-body: 0.9375rem;
-  --font-size-control: 0.8125rem;
-  --font-size-title: 1rem;
-  /* One heading ramp: page, dialog, and card titles come from these three tokens. */
-  --font-size-card-title: 1.0625rem;
-  --font-size-dialog-title: 1.25rem;
-  --font-size-page-title: 1.75rem;
-  --radius-chip: 999px;
-  --radius-control: 8px;
-  --radius-surface: 10px;
-  --radius-popover: 12px;
-  --radius-dialog: 14px;
-  --r-strip: var(--radius-surface);
-  --r-ctl: var(--radius-control);
-  --r-well: var(--radius-control);
-  /* Chips are 6px rounded rects; only .status-pill keeps the full round
-     (--radius-chip) so status and chips stay distinguishable shapes. */
-  --r-chip: 6px;
-
-  --control-height: 40px;
-  --control-height-compact: 34px;
-  /* A chip and a small chip each keep one declared height rather than a
-     third recipe: both were built out of padding, so each one ended up as tall
-     as whatever it happened to hold - 27.59px for a chip carrying a clear
-     button against 23.8px for the add-chip beside it, neither of them a whole
-     pixel. A control's height is a decision, not an outcome. */
-  --control-height-chip: 24px;
-  --control-height-chip-small: 20px;
-  --touch-target: 44px;
-  --control-inset: 2px;
-  --icon-sm: 0.875rem;
-  --icon-md: 1.125rem;
-  --icon-lg: 1.375rem;
-  /* 228px, the approved shell's pages column beside the 60px rail. */
-  --sidebar-width: 228px;
-  --sidebar-width-collapsed: 4.5rem;
-  /* 1120px, the column the design draws inside its pane. Capped rather than proportional: at
-     100rem the pane kept growing with the display and every card in it grew with the pane, so a
-     wide monitor produced lines nobody wants to read and tables with acres between columns. */
-  --content-max: 70rem;
-  --panel-header-height: 5rem;
-  --pagination-height: 2.75rem;
-  /* One press, everywhere: the control shrinks toward its own centre, which is what reads as
-     pushed in. Half the app was nudging elements down by a pixel instead - the same gesture said
-     two different ways, and on a wide row a downward nudge reads as the row shifting rather than
-     the control depressing.
-
-     Three figures rather than one because a scale is proportional and the pressables here run from
-     a 28px disc to a 400px table header. Each is picked so the edge travels roughly a pixel and a
-     half either way: 0.98 moves a 215px nav row 2.2px, 0.9 moves a 32px disc 1.6px, and 0.995
-     keeps a wide header from lurching 4px when the same 0.98 would. */
-  --press-scale: 0.98;
-  --press-scale-disc: 0.9;
-  --press-scale-compact: 0.96;
-  --press-scale-surface: 0.995;
-  /* The shell's press grammar: 1px straight down, and the hold reads as
-     DEPTH - the well's exact inset recipe, not a harsher one. The pressed
-     fill carries the state; the crease only confirms it. */
-  --pressed-inset: inset 0 1px 2px rgb(24 33 31 / 12%);
-  --duration-press: 100ms;
-  --duration-fast: 160ms;
-  --duration-normal: 220ms;
-  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-out: var(--ease-standard);
-  --layer-menu: 35;
-  --layer-sticky: 30;
-  --layer-popover: 35;
-  /* Above the mobile sidebar drawer, below every modal surface. */
-  --layer-rail: 42;
-  --layer-dialog: 45;
-  --layer-dialog-popover: 47;
-  /* Above the dialog: a tooltip explains whatever is in front of it. */
-  --layer-tooltip: 50;
-  --shadow-plate: 0 1px 2px var(--shadow-color);
-  --shadow-popover: 0 16px 42px var(--shadow-color);
-  --shadow-dialog: 0 24px 72px color-mix(in srgb, var(--shadow-color) 82%, black);
-
-  /* Segmented controls: a raised thumb on a slightly darker track.
-
-     Hover and press step *down* from the track, away from the thumb. Down, not up: the thumb is
-     pure white, so lightening a hovered option moves it toward the selected one. Lifting to
-     --surface-raised left 1.19 dE00 between "hovered" and "selected", against the 3.08 that is the
-     whole selected/unselected signal - hover ate two thirds of it. Darkening opens that gap to
-     5.53 and 7.91.
-
-     The sizes are the pair the sidebar already uses for one state change and two, measured rather
-     than guessed: 2.51 and 5.09 dE00. Both steps are carried by lightness alone, so they survive
-     colour-vision deficiency almost whole - 2.41 of 2.52 under deuteranopia, where mixing the
-     accent in instead would have kept about half. */
-  --segment-track: var(--surface-inset);
-  --segment-thumb: #ffffff;
-  --segment-hover: color-mix(in srgb, var(--text-primary) 5.5%, var(--segment-track));
-  --segment-pressed: color-mix(in srgb, var(--text-primary) 11%, var(--segment-track));
-  /* Two layers, and the second is the load-bearing half: a hairline ring that gives the thumb an
-     edge. A white thumb on a near-white track separates by only 3.08 dE00 - less than the 5.06 a
-     press on a neighbouring option moves - so the fill alone leaves the selection quieter than the
-     states around it. At 14% the ring reads 6.49 against the track and the selection is once again
-     the loudest thing on the control. */
-  --segment-shadow: 0 1px 3px rgb(24 33 31 / 14%), 0 0 0 0.5px rgb(24 33 31 / 14%);
-
-  /* The night surface, for a control standing on the invitation page's sky. It is
-     declared once and never per theme: the sky is night in both, so a control on
-     it that followed the page would turn into a bright chip on a dark ground in
-     light mode. Every value is white at a low alpha rather than a colour, so the
-     stars carry on under the control instead of stopping at its edge, and hover
-     and press step *up* from the track - the opposite of every opaque palette
-     above, where the thumb is the near-white one and a lift moves toward it.
-
-     The steps are about three times the size of the panel's, and the reason is
-     measurable: the sky is a gradient, so the ground under this control drifts
-     4.40 dE00 (light page) and 3.78 (dark) across the control's own width. The
-     panel's 3.08 selection step would be smaller than that - the selected option
-     would read as a lighter patch of sky rather than as a state. Scaled to clear
-     it, and measured on the page: the thumb reads 9.45/12.87 dE00 from the track
-     beside it, hover 7.55/8.19 and press 13.04/13.67 from the track under them,
-     and the track itself 8.96/7.27 from the bare sky outside the control. Hover
-     stays under the selection signal, as it does in the opaque palettes. */
-  --night-seg-track: rgb(255 255 255 / 7%);
-  --night-seg-thumb: rgb(255 255 255 / 17%);
-  --night-seg-border: rgb(255 255 255 / 16%);
-  --night-seg-hover: rgb(255 255 255 / 12%);
-  --night-seg-pressed: rgb(255 255 255 / 20%);
-  --night-seg-shadow: 0 1px 3px rgb(0 0 0 / 34%), inset 0 0 0 0.5px rgb(255 255 255 / 20%);
-  --night-seg-text: rgb(246 249 255);
-  --night-seg-muted: rgb(186 203 233);
-
-  /* Input and checkbox boundaries at ~3:1 against the surface. */
-  --border-strong: #9aa89f;
-}
-
-:root[data-theme='dark'] {
-  color-scheme: dark;
-
-  --canvas: var(--primitive-dark-canvas);
-  --surface-base: var(--primitive-dark-surface);
-  --surface-raised: var(--primitive-dark-raised);
-  --surface-inset: var(--primitive-dark-inset);
-  --surface-control: var(--primitive-dark-control);
-  --border-subtle: var(--primitive-dark-rule);
-  --border-control: var(--primitive-dark-control-border);
-  --avatar-ring: rgb(255 255 255 / 22%);
-  --text-primary: var(--primitive-dark-text);
-  --text-secondary: var(--primitive-dark-secondary);
-  --text-muted: var(--primitive-dark-muted);
-  --brand-action: var(--primitive-petrol-400);
-  --brand-action-hover: #5eead4;
-  /* One direction. A filled accent on a dark ground brightens on hover, so a press that went back
-     down the ramp reversed it: hovering then pressing moved the fill lighter, then darker than it
-     started. The press is now the same gesture one step further. */
-  --brand-action-pressed: var(--primitive-petrol-200);
-  --brand-action-tint: var(--primitive-petrol-950);
-  --brand-action-text: var(--primitive-petrol-200);
-  --on-brand-action: #062c2a;
-  --focus: var(--primitive-petrol-400);
-  --info: var(--primitive-info-dark);
-  --info-tint: var(--primitive-info-dark-tint);
-  --on-info: #0e1116;
-  --success: var(--primitive-success-dark);
-  --success-tint: var(--primitive-success-dark-tint);
-  /* A deep tone of the tone's own hue, the way --on-brand-action is - and this
-     one *is* --on-brand-action, since the dark success and the dark brand are
-     both petrol. Not the canvas: near-black on a pastel fill reads as a hole
-     punched in it rather than as writing on it. */
-  --on-success: #062c2a;
-  --warning: var(--primitive-warning-dark);
-  --warning-tint: var(--primitive-warning-dark-tint);
-  --on-warning: #2c1f06;
-  --danger: var(--primitive-danger-dark);
-  --danger-tint: var(--primitive-danger-dark-tint);
-  --on-danger: #2e0b10;
-  --danger-hover: color-mix(in srgb, var(--danger) 88%, white);
-  --neutral-tint: var(--primitive-dark-inset);
-  --interactive-hover: var(--primitive-dark-raised);
-  /* Light, not dark. Hover lifts a control on a dark ground, so a press that darkened it sent the
-     two states in opposite directions; press is now the same gesture one step further. Sized to
-     the dark sidebar's own approved pair, 5.07 and 8.92 dE00. */
-  --interactive-hover-layer: rgb(255 255 255 / 7%);
-  --interactive-pressed: rgb(255 255 255 / 12.5%);
-  --interactive-pressed-bg: #26313d;
-  /* One figure, and the whole ramp follows - see `:root`. Shorter here because
-     the dark palette's action colour is a pale teal against a near-black inset,
-     so the same step that lifts a white ground gently blows past a dark one. The
-     inks need nothing: they are mixed from tokens this palette already states for
-     itself. */
-  --heading-step: 3.2%;
-  --scrim: rgb(0 0 0 / 62%);
-  --shadow-color: rgb(0 0 0 / 32%);
-  --sidebar-bg: var(--primitive-dark-sidebar);
-  --sidebar-border: var(--primitive-dark-rule);
-  --sidebar-text: var(--primitive-dark-text);
-  --sidebar-text-secondary: #c9d2d9;
-  --sidebar-text-muted: #9caab5;
-  --sidebar-item-hover: #1a242d;
-  --sidebar-item-pressed: #223039;
-  --sidebar-item-active-text: #a1f7e6;
-  --sidebar-count-signal-bg: color-mix(in srgb, #92c1ff 14%, transparent);
-  --sidebar-count-signal-ink: #92c1ff;
-  --pressed-inset: inset 0 1px 2px rgb(0 0 0 / 40%), inset 0 -1px 0 rgb(255 255 255 / 4%);
-  /* Lifted from #2a333e. The dark sidebar has no room below it - it sits 0.02 in OKLCh lightness
-     above the canvas - so its hover and press have to move up, toward the thumb. That left a
-     pressed *unselected* row 3.33 dE00 from the selected one, 73% of the way across a 9.63 gap.
-     Raising the thumb restores the margin: press now stops 5.22 short of it. */
-  --sidebar-thumb: #333b46;
-  --sidebar-thumb-shadow: 0 1px 0 rgb(0 0 0 / 65%), 0 0 0 0.5px rgb(255 255 255 / 4%);
-  --sidebar-thumb-shadow-pressed: 0 0 0 0.5px rgb(255 255 255 / 4%);
-  --sidebar-popover-bg: #1b222b;
-  --sidebar-popover-border: #333d49;
-  --sidebar-menu-text: var(--primitive-dark-text);
-  --sidebar-menu-muted: #9caab5;
-  --sidebar-menu-hover: #232d38;
-  --sidebar-menu-pressed: #2c3844;
-  --sidebar-stop: var(--primitive-danger-dark);
-  --sidebar-stop-tint: var(--primitive-danger-dark-tint);
-  --sidebar-seg-track: #151a21;
-  --sidebar-seg-thumb: #2c3641;
-  --sidebar-seg-border: #333d49;
-  /* Black rather than the sidebar's own ground: the popover track sits close enough to it that
-     mixing toward it saturates at 1.68 dE00, less than a state change. Pressed bottoms out at
-     black, which is why this step is 7.35 rather than the 8.92 the light side reaches. */
-  --sidebar-seg-hover: color-mix(in srgb, black 56%, var(--sidebar-seg-track));
-  --sidebar-seg-pressed: #000000;
-  /* Inset for the same reason as --segment-shadow above. */
-  --sidebar-seg-shadow: 0 1px 3px rgb(0 0 0 / 40%), inset 0 0 0 0.5px rgb(255 255 255 / 14%);
-  /* Same alert pair as light: the vivid red carries its own contrast, so it
-     does not follow the theme's pale danger tone. */
-  --unread-badge-bg: #d03339;
-  --unread-badge-text: #ffffff;
-  --control-border-hover: #536170;
-  --control-bg-hover: color-mix(in srgb, #ffffff 7%, var(--control-bg));
-  --control-bg-pressed: color-mix(in srgb, #ffffff 12.4%, var(--control-bg));
-  --table-header-bg: var(--surface-inset);
-  --table-footer-bg: var(--surface-inset);
-  /* Lifts rather than drops: on a dark ground the pointer raises what it is over, as it does on
-     every other control here. 5.09 dE00. */
-  --table-row-hover: color-mix(in srgb, #ffffff 6.8%, transparent);
-  --table-row-pressed: color-mix(in srgb, #ffffff 12.4%, transparent);
-
-  /* Clears AA on the 14% drift-tinted board tile. The former #92c1ff
-     landed at 4.47:1 once it also contributed to the tile background. */
-  --drift: #9ac7ff;
-  --diff-chg-ink: var(--drift);
-  --diff-chg-bg: color-mix(in srgb, var(--drift) 16%, var(--surface-base));
-  --diff-del-ink: var(--danger);
-  --verb-add: #8ce0a2;
-  --diff-add-ink: var(--verb-add);
-  --diff-add-bg: #14301f;
-  --diff-del-bg: #3c1f24;
-  --diff-add-word: #1f4c32;
-  --diff-del-word: #5c2e35;
-  --code-key: #82b3f0;
-  --code-const: #c5a3f2;
-  --code-string: #ffb187;
-  --code-comment: color-mix(in srgb, var(--text-muted) 85%, var(--text-primary));
-  --code-punct: var(--text-secondary);
-  --managed-bar: var(--brand-action);
-  --match-ink: var(--brand-action-text);
-  --cell-instep: var(--text-muted);
-  --cell-pending: var(--diff-chg-ink);
-  --cell-pending-bg: var(--diff-chg-bg);
-  --cell-refused: var(--danger);
-  --cell-refused-bg: var(--danger-tint);
-  --cell-off: var(--border-control);
-  /* Section tabs: navigation, so the indicator is ink, deliberately NOT the
-     brand colour - "you are here" is not "you can act". Hover previews the
-     same affordance in the border's voice; counts are quiet neutral pills. */
-  --tab-ink: var(--text-primary);
-  --tab-muted: var(--text-secondary);
-  --tab-indicator: var(--text-primary);
-  --tab-indicator-hover: var(--border-control);
-  --tab-count-bg: var(--surface-inset);
-  --tab-count-ink: var(--text-secondary);
-
-  --switch-track-off: var(--surface-inset);
-  --switch-track-off-border: var(--border-strong);
-  --switch-track-on: var(--brand-action);
-  --switch-thumb: #10151b;
-  --tile-face: color-mix(in srgb, var(--surface-raised) 88%, #ffffff);
-  --tile-edge: rgb(255 255 255 / 9%);
-  --tile-border: var(--border-control);
-  --tile-shadow: 0 1px 2px rgb(0 0 0 / 45%), 0 0.5px 0 var(--tile-edge) inset;
-  /* A recess in the card, not a hole in the page: darkened from the card's
-     own surface, with a readable inner top shadow and a bottom rim light -
-     the light theme's debossed read, restated for dark. */
-  --tile-well: color-mix(in srgb, black 20%, var(--surface-base));
-  --well-shadow: inset 0 1px 3px rgb(0 0 0 / 55%), inset 0 -1px 0 rgb(255 255 255 / 5%);
-
-  /* The track is the inset surface here as it is in every other palette. It used to be the sidebar
-     primitive, which sits 0.02 above the canvas in OKLCh lightness and so left the control no room
-     to step down: the furthest a hovered option could recede was 3.68 dE00, and every larger step
-     had to move *toward* the thumb instead. On --surface-inset the same rule as light applies -
-     hover and press recede toward the canvas, away from the selected thumb. */
-  --segment-track: var(--surface-inset);
-  --segment-thumb: #2b3541;
-  /* A pressed option recedes to the page's own ground, which is the darkest surface the product
-     paints and therefore a floor rather than an arbitrary stop: 7.85 dE00 from the track, with
-     hover at 5.07 halfway there. */
-  --segment-hover: color-mix(in srgb, var(--canvas) 65%, var(--segment-track));
-  --segment-pressed: var(--canvas);
-  /* A black ring on a dark track is not a ring: at 20% it measured 1.54 dE00, inside the noise.
-     White at 14% reads 9.76, which clears both the 4.13 fill and the 7.85 press.
-
-     Inset, so it hugs the thumb instead of expanding into the 2px the thumb is
-     held off the track by. Outset it took the first half-pixel of that gap and
-     left a bright hairline running parallel to the track's own border, about a
-     pixel from it - two lines where the design has one. */
-  --segment-shadow: 0 1px 3px rgb(0 0 0 / 40%), inset 0 0 0 0.5px rgb(255 255 255 / 14%);
-
-  --border-strong: #5b6a78;
-}
-
 *,
 *::before,
 *::after {
@@ -748,18 +56,54 @@ html:focus-within {
 }
 
 body {
-  background: var(--ink);
-  color: var(--text);
-  font: 0.9375rem/1.5 var(--sans);
+  background: var(--canvas);
+  color: var(--text-primary);
+  /* NOT A RATIO, AND NOT IN THE SHORTHAND. A ratio inherits as a ratio, so every tier
+     under this one multiplied 1.5 by its own size and landed wherever that fell: 15px
+     body copy rendered 22.5, and 2485 elements sat on a fractional line. A rem length
+     inherits as a length, so a tier that says nothing gets a whole-pixel line and a
+     tier that has its own says so. The `font` shorthand cannot hold it, because
+     leaving leading out of a shorthand resets it to `normal` - the font's own
+     fractional metric, which is the same bug wearing a different number. */
+  font-family: var(--sans);
+  font-size: var(--font-size-body);
   font-optical-sizing: auto;
+  line-height: var(--leading-body);
   margin: 0;
   min-width: 20rem;
   -webkit-font-smoothing: antialiased;
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* NOTHING MOVES WHILE THE PAGE IS STILL ARRIVING.
+   ------------------------------------------------------------------------
+   Motion in this product means something CHANGED, and until the page has settled
+   nothing has: the first paint is a first placement and the geometry after it is the
+   layout finding its answer - a webfont landing, a pane taking its width - not an
+   answer moving. Drawn as motion that reads as a control jittering on every reload,
+   and it was: the queue page's segmented thumb slid 90px and grew 19px over 130ms
+   with the reader touching nothing.
+
+   Transitions and the travel animation only. Anything that loops - a spinner, a live
+   dot - is saying the page is still working, which is exactly what is true here, so
+   suppressing it would replace a jitter with a lie. `!important` because a blanket
+   `*` loses to every rule that states a transition, which is all of them; the reduced
+   motion block below does the same for the same reason.
+
+   Released one frame after the routed tree has mounted and the fonts have loaded -
+   see `panelHasSettled` in `lib/boot.ts`. */
+:root.is-booting *,
+:root.is-booting *::before,
+:root.is-booting *::after {
+  transition: none !important;
+}
+
+:root.is-booting .selection-indicator.is-travelling {
+  animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -772,17 +116,18 @@ body {
     transition-duration: 0.01ms !important;
   }
 
-  .btn:active:not(:disabled),
-  button:active:not(:disabled),
-  a[href]:active {
-    transform: none;
+  /* THE SINK IS THE MOTION, so the sink is what goes. This cancelled `transform`
+     instead, which by then held only the press scale - so the one part of a press that
+     actually travels survived a setting asked for precisely to stop things travelling.
+     The ground and the crease stay: neither moves anything. */
+  :is(.btn, button, a[href], .rail-tile, .rail-ws, .side-fold, .side-search, .tree-row):active,
+  .object-row:active,
+  .object-row:has(.row-hit:active),
+  .choice-card:has(input:not(:disabled)):active,
+  .console-menu .menu-item:active,
+  .tree:has(.tree-row.is-active:active) .nav-thumb {
+    translate: none;
   }
-}
-
-.shell {
-  margin: 0 auto;
-  max-width: 72rem;
-  padding: var(--space-6) var(--space-4) 2.5rem;
 }
 
 /* Three columns, one job each: the rail is the account's consoles, the
@@ -795,242 +140,48 @@ body {
   min-height: 100dvh;
 }
 
-/* Below 64rem the sidebar is a drawer over the content, out of flow - its
-   track has to go with it, or the pane falls into an auto column sized to
-   its own max-content and the layout moves with the content. */
-@media (max-width: 64rem) {
-  .app-shell {
+/* COLLAPSED IS ONE COLUMN, not two narrow ones. Folding the pages away used to
+   leave the rail beside an icon strip, and two chrome columns that narrow read as
+   one confused column. The strip carries the whole of it instead: the workspace
+   switch is the mark in its head, and the inbox and the account are its foot. */
+@media (min-width: 64.0625rem) {
+  .app-shell.sidebar-collapsed {
     grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-shell.sidebar-collapsed .rail {
+    display: none;
+  }
+}
+
+/* BELOW 48rem THE RAIL LEAVES AND THE TOP BAR ARRIVES. A phone has room for one
+   chrome column, not two, and the rail beside a drawer was two: the rail stood there
+   permanently at 60px on a 320px screen, and the pages it could not show were behind a
+   toggle on it. One 56px bar carries all three jobs instead - the pages, the page you
+   are on, and the way across - and the sidebar becomes a drawer over the content, out
+   of flow. Its track goes with it, or the pane falls into an auto column sized to its
+   own max-content and the layout moves with the content. */
+@media (max-width: 47.9375rem) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    /* The bar above it is 56px of the viewport, so the shell is the rest of it. */
+    min-height: calc(100dvh - 56px);
+  }
+
+  .rail {
+    display: none;
   }
 
   .side-scrim {
     background: var(--scrim);
     inset: 0;
     position: fixed;
-    z-index: 30;
+    z-index: var(--layer-scrim);
   }
 }
 
 .app-shell.root-mode {
-  --canvas: #f3f1f7;
-  --surface-base: #fbfaff;
-  --surface-raised: #f7f5fb;
-  --surface-inset: #eeebf4;
-  --surface-control: #f8f6fb;
-  --border-subtle: #ded8e8;
-  --border-control: #c9c0d8;
-  --avatar-ring: rgb(35 24 47 / 22%);
-  --interactive-hover: #f0ecf6;
-  --interactive-pressed-bg: #e7e1ef;
-  --focus: #6d54bd;
-  /* Actions follow the shell: teal controls inside the violet Root context
-     read as another product. */
-  --brand-action: #6d54bd;
-  --brand-action-hover: #5c46a8;
-  --brand-action-pressed: #4f3c91;
-  --brand-action-tint: #ede9fa;
-  --brand-action-text: #5c46a8;
-  --on-brand-action: #ffffff;
-  /* The panel's muted ink is a petrol grey at hue 172. On the violet inset it reads 4.34:1 - under
-     AA - which is what a resting segment label sits on. This is the same weight in the shell's own
-     hue: 4.60:1 on the inset against the panel's 4.58:1 on its own. */
-  --text-muted: #6c6876;
-  --table-row-hover: color-mix(in srgb, var(--text-primary) 5.3%, transparent);
-  --table-row-pressed: color-mix(in srgb, var(--text-primary) 10.9%, transparent);
-  /* Aliases substitute where they are declared, so the :root copies were
-     computed against panel values and inherit here already resolved.
-     Re-declaring them on the shell makes them re-resolve against the Root
-     palette (and, via the cascade, against the dark Root block below).
-
-     Which of them need repeating is not a judgement call, and it is not kept
-     by hand any more: `tests/palette-aliases.test.ts` reads every `--x: var(--y)`
-     out of :root and fails when this shell moves a token and leaves the alias
-     behind. It was kept by hand, and five had gone stale - --dim ran the panel's
-     petrol grey through fifty rules of a violet console, and --spectrum was a
-     teal. Nothing pointed at a wrong colour; the palette was only mostly
-     applied, which is why it read as random. */
-  --rule: var(--border-subtle);
-  --well: var(--surface-inset);
-  --strip: var(--surface-base);
-  --strip-lift: var(--surface-raised);
-  --ink: var(--canvas);
-  --neutral-tint: var(--surface-inset);
-  --text: var(--text-primary);
-  --text-soft: var(--text-secondary);
-  --dim: var(--text-muted);
-  --accent: var(--brand-action);
-  --accent-tint: var(--brand-action-tint);
-  --admin: var(--brand-action);
-  --on-admin: var(--on-brand-action);
-  /* The header ramp, re-resolved rather than re-decided: the expressions are the
-     ones in `:root` and the only thing that changes is what `--brand-action` and
-     `--table-header-bg` mean here. A custom property computes where it is
-     DECLARED, so without these seven lines the whole band would still be mixed
-     from the panel's petrol inside the violet console. */
-  --heading-bg: color-mix(in srgb, var(--brand-action) var(--heading-step), var(--table-header-bg));
-  --heading-hover-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 3),
-    var(--table-header-bg)
-  );
-  --heading-sorted-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 5),
-    var(--table-header-bg)
-  );
-  --heading-sorted-hover-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 7),
-    var(--table-header-bg)
-  );
-  --heading-pressed-bg: color-mix(
-    in srgb,
-    var(--brand-action) calc(var(--heading-step) * 9),
-    var(--table-header-bg)
-  );
-  --heading-text: color-mix(
-    in srgb,
-    var(--brand-action-text) var(--heading-ink-share),
-    var(--text-secondary)
-  );
-  --heading-mark: color-mix(
-    in srgb,
-    var(--brand-action-text) calc(var(--heading-ink-share) * 0.8),
-    var(--text-muted)
-  );
-  --heading-ink-active: var(--brand-action-text);
-  --brand: var(--focus);
-  --table-header-bg: var(--surface-inset);
-  --table-footer-bg: var(--surface-inset);
-  --table-filler-bg: var(--surface-raised);
-  --input-bg: var(--surface-inset);
-  --control-bg: var(--surface-control);
-  --control-bg-hover: color-mix(in srgb, var(--text-primary) 5.4%, var(--control-bg));
-  --control-bg-pressed: color-mix(in srgb, var(--text-primary) 11%, var(--control-bg));
-  --control-border: var(--border-control);
-  --control-surface: var(--control-bg);
-  --segment-track: var(--surface-inset);
-  /* Re-resolved against the Root surfaces, like the aliases above: the panel copies were computed
-     against petrol-neutral greys and would otherwise arrive here already mixed. */
-  --segment-hover: color-mix(in srgb, var(--text-primary) 5.5%, var(--segment-track));
-  --segment-pressed: color-mix(in srgb, var(--text-primary) 11%, var(--segment-track));
-  --popover-bg: var(--surface-base);
-  --popover-border: var(--border-subtle);
-  --dialog-bg: var(--surface-base);
-  --dialog-border: var(--border-subtle);
-  /* Re-resolved where the console swaps the palette: a var() inside a custom
-     property resolves where the property is DECLARED, so every derived token
-     is restated at the swap element and picks up the violet set. */
-  --diff-chg-ink: var(--drift);
-  --diff-chg-bg: color-mix(in srgb, var(--drift) 9%, var(--surface-base));
-  --diff-del-ink: var(--danger);
-  --diff-add-ink: var(--verb-add);
-  --diff-add-bg: #e4f3e6;
-  --diff-del-bg: #fbe9e9;
-  --diff-add-word: #c2e5c8;
-  --diff-del-word: #f4cbcb;
-  --code-comment: color-mix(in srgb, var(--text-muted) 85%, var(--text-primary));
-  --code-punct: var(--text-secondary);
-  --managed-bar: var(--brand-action);
-  --match-ink: var(--brand-action-text);
-  --cell-instep: var(--text-muted);
-  --cell-pending: var(--diff-chg-ink);
-  --cell-pending-bg: var(--diff-chg-bg);
-  --cell-refused: var(--danger);
-  --cell-refused-bg: var(--danger-tint);
-  --cell-off: var(--border-control);
-  /* Section tabs: navigation, so the indicator is ink, deliberately NOT the
-     brand colour - "you are here" is not "you can act". Hover previews the
-     same affordance in the border's voice; counts are quiet neutral pills. */
-  --tab-ink: var(--text-primary);
-  --tab-muted: var(--text-secondary);
-  --tab-indicator: var(--text-primary);
-  --tab-indicator-hover: var(--border-control);
-  --tab-count-bg: var(--surface-inset);
-  --tab-count-ink: var(--text-secondary);
-
-  --switch-track-off: var(--surface-inset);
-  --switch-track-off-border: var(--border-strong);
-  --switch-track-on: var(--brand-action);
-  --tile-face: color-mix(in srgb, var(--surface-base) 92%, #ffffff);
-  --tile-border: var(--border-subtle);
-  --tile-well: color-mix(in srgb, var(--text-primary) 4.5%, var(--surface-inset));
-  --well-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
-  --sidebar-bg: #15121d;
-  --sidebar-border: #322b40;
-  --sidebar-text: #f5f2fa;
-  --sidebar-text-secondary: #cfc8dc;
-  --sidebar-text-muted: #aca4bb;
-  --sidebar-item-hover: #221d2e;
-  --sidebar-item-pressed: #2d263c;
-  --sidebar-item-active-text: #e4dbff;
-  /* Lifted from #352d49, for the reason the dark panel sidebar was: a pressed unselected row
-     landed 3.30 dE00 from the selected thumb. It now stops 5.25 short. */
-  --sidebar-thumb: #3d3550;
-  --sidebar-thumb-shadow: 0 1px 0 rgb(0 0 0 / 68%), 0 0 0 0.5px rgb(255 255 255 / 5%);
-  --sidebar-thumb-shadow-pressed: 0 0 0 0.5px rgb(255 255 255 / 5%);
-  /* Declared on the shell so both Root themes get them: this sidebar is dark in either. */
-  --sidebar-count-signal-bg: color-mix(in srgb, #a7c7f2 14%, transparent);
-  --sidebar-count-signal-ink: #a7c7f2;
-  --sidebar-popover-bg: #221d2f;
-  --sidebar-popover-border: #3f3656;
-  --sidebar-menu-text: #f5f2fa;
-  --sidebar-menu-muted: #aca4bb;
-  --sidebar-menu-hover: #2b2439;
-  --sidebar-menu-pressed: #372e4b;
-  /* Dark in either Root theme, like everything else declared on this shell. */
-  --sidebar-stop: var(--primitive-danger-dark);
-  --sidebar-stop-tint: var(--primitive-danger-dark-tint);
-  --sidebar-seg-track: #191524;
-  --sidebar-seg-thumb: #362e4b;
-  --sidebar-seg-border: #3f3656;
-  /* Declared on the shell so both Root themes get them: the Root sidebar is dark in either. */
-  --sidebar-seg-hover: color-mix(in srgb, black 36%, var(--sidebar-seg-track));
-  --sidebar-seg-pressed: color-mix(in srgb, black 66%, var(--sidebar-seg-track));
-  --sidebar-seg-shadow: 0 1px 3px rgb(0 0 0 / 46%), inset 0 0 0 0.5px rgb(255 255 255 / 14%);
   background: var(--canvas);
-}
-
-:root[data-theme='dark'] .app-shell.root-mode {
-  --canvas: #0f0d14;
-  --surface-base: #17131f;
-  --surface-raised: #1d1927;
-  --surface-inset: #231e2d;
-  --surface-control: #1b1724;
-  --border-subtle: #342d40;
-  --border-control: #4a405a;
-  --avatar-ring: rgb(255 255 255 / 22%);
-  --text-primary: #f4f1f8;
-  --text-secondary: #cbc3d4;
-  --text-muted: #9e95aa;
-  --interactive-hover: #211c2a;
-  --interactive-pressed-bg: #2b2436;
-  --focus: #b9a4ff;
-  --brand-action: #a78bfa;
-  --brand-action-hover: #b9a4ff;
-  /* Continues up the ramp, as in the dark panel. */
-  --brand-action-pressed: #cdbdff;
-  --control-bg-hover: color-mix(in srgb, #ffffff 6.7%, var(--control-bg));
-  --control-bg-pressed: color-mix(in srgb, #ffffff 11.9%, var(--control-bg));
-  --brand-action-tint: #2e2544;
-  --brand-action-text: #c4b5fd;
-  --on-brand-action: #1c1329;
-  --table-row-hover: color-mix(in srgb, #ffffff 6.7%, transparent);
-  --table-row-pressed: color-mix(in srgb, #ffffff 12.4%, transparent);
-  /* The Root shell keeps its own thumb rather than inheriting the panel's #2b3541: a blue-grey
-     thumb at hue 253 inside a violet shell at hue 300 reads as another product's control, the
-     same argument --brand-action is re-declared for above. */
-  --segment-thumb: #302b39;
-  --segment-hover: color-mix(in srgb, var(--canvas) 65%, var(--segment-track));
-  --segment-pressed: var(--canvas);
-  --tile-face: color-mix(in srgb, var(--surface-raised) 88%, #ffffff);
-  --tile-border: var(--border-control);
-  --tile-well: color-mix(in srgb, black 20%, var(--surface-base));
-  --well-shadow: inset 0 1px 3px rgb(0 0 0 / 55%), inset 0 -1px 0 rgb(255 255 255 / 5%);
-  --diff-add-bg: #14301f;
-  --diff-del-bg: #3c1f24;
-  --diff-add-word: #1f4c32;
-  --diff-del-word: #5c2e35;
 }
 
 .workspace {
@@ -1039,7 +190,7 @@ body {
   flex-direction: column;
   min-height: 100dvh;
   min-width: 0;
-  padding: var(--space-6) clamp(var(--space-4), 2.4vw, var(--space-8)) 0;
+  padding: var(--rhythm-pane-top-wide) clamp(var(--space-4), 2.4vw, var(--space-8)) 0;
 }
 
 .workspace-content,
@@ -1059,49 +210,16 @@ body {
   flex-direction: column;
 }
 
-@media (min-width: 48.0625rem) {
-  .workspace.table-scroll-view {
-    height: 100dvh;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  /* As tall as it needs to be, and no taller.
-     ----------------------------------------
-     A table used to stretch to the bottom of the window whatever it held, so four
-     rows sat above a field of empty ground with the footer parked under it. Sized
-     by its content it stops where the content stops, and the footer takes the
-     space that is left rather than the table taking it.
-
-     `flex: 0 1 auto` is what makes both halves true: no growing, so a short table
-     stays short, and shrinking with `min-height: 0`, so a long one gives way at
-     the point it would reach the footer and hands the overflow to the scroller
-     inside it. The footer never moves either way. */
-  /* The leftover room is an auto margin under the content, not one over the
-     footer. Putting it on the footer replaces the margin the footer already
-     carries, and an auto margin resolves to zero once the space is used up - so a
-     full table ended flush against the rule, losing the gap a short one still
-     had. Under the content it adds to that margin instead of standing in for it,
-     and the gap above the rule is the same whether the table fills the window or
-     holds one row. */
-  .workspace.table-scroll-view .workspace-content {
-    flex: 0 1 auto;
-    margin-bottom: auto;
-    min-height: 0;
-    overflow: hidden;
-  }
-}
-
 /* The wrapper every Root page is, and the one link the height chain was missing.
    ----------------------------------------------------------------------------
-   A table scrolls inside itself, which only works if every box between the window
-   and that scroller agrees to be no taller than the window. `.workspace-content`
-   says so, and each panel inside says so, but this element sat between them saying
-   nothing: an unstyled block is a flex item with `min-height: auto`, which means
-   "no smaller than my content", so it grew to the full height of the rows and
-   `.workspace-content` clipped whatever did not fit. On the audit history that was
-   the bottom third of the table, unreachable - the page could not scroll, because
-   nothing on it was overflowing anything that would offer a scrollbar.
+   Every box between the window and a scroller has to agree to be no taller than
+   the window. `.workspace-content` says so, and each panel inside says so, but
+   this element sat between them saying nothing: an unstyled block is a flex item
+   with `min-height: auto`, which means "no smaller than my content", so it grew
+   to the full height of the rows and `.workspace-content` clipped whatever did
+   not fit. On the audit history that was the bottom third of the list,
+   unreachable - the page could not scroll, because nothing on it was overflowing
+   anything that would offer a scrollbar.
 
    It is written here rather than in each page because it is one rule and there are
    eight pages wearing the class, which is how it came to be missing from all of
@@ -1117,10 +235,10 @@ body {
 }
 
 .skip-link {
-  background: var(--strip);
-  border: 1px solid var(--brand);
+  background: var(--surface-base);
+  border: 1px solid var(--focus);
   border-radius: var(--r-ctl);
-  color: var(--text);
+  color: var(--text-primary);
   font-size: var(--font-size-body);
   font-weight: 650;
   left: var(--space-4);
@@ -1129,7 +247,10 @@ body {
   top: var(--space-3);
   transform: translateY(calc(-100% - var(--space-6)));
   transition: transform var(--duration-fast) var(--ease-out);
-  z-index: var(--layer-dialog);
+  /* Over everything, which is what a skip link is for. At the dialog layer it sat
+     under a tooltip - the one control a keyboard reader reaches first, behind the
+     one thing that explains whatever it lands on. */
+  z-index: var(--layer-skip);
 }
 
 .skip-link:focus {
@@ -1138,7 +259,7 @@ body {
 
 .eyebrow {
   color: var(--text-muted);
-  font: 600 var(--font-size-compact) / 1.25 var(--sans);
+  font: 600 var(--font-size-compact) / var(--leading-compact) var(--sans);
   letter-spacing: 0.06em;
   margin: 0;
   text-transform: uppercase;
@@ -1150,7 +271,7 @@ body {
 }
 
 .dim {
-  color: var(--dim);
+  color: var(--text-muted);
 }
 
 .load-more-alert {
@@ -1192,8 +313,8 @@ body {
    draws it, so every card in the product sat flat and every table wrapper that
    wanted the lift had to ask for it again. */
 .plate {
-  background: var(--strip);
-  border: 1px solid var(--rule);
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-strip);
   box-shadow: var(--shadow-plate);
   margin-bottom: var(--space-4);
@@ -1201,7 +322,7 @@ body {
 }
 
 .plate-lead {
-  border-color: var(--rule);
+  border-color: var(--border-subtle);
 }
 
 /* The card a table is drawn on.
@@ -1211,272 +332,40 @@ body {
    toolbar above the table and the pagination below it. The card is the scroller
    in between, and five of the six tables were not drawing one: a background and
    nothing else, so the rows ran to the edge of the page with no keyline, no
-   corner and no lift, while the installation catalog alone had a border and the
+   corner and no lift, while the workspace catalog alone had a border and the
    approved design has all three.
 
    `overflow` is not `visible` here, which is what clips the header's corners to
    the radius; naming the x axis is enough, since the y axis follows it out of
    `visible` on its own. */
-/* The room a table is given, holding exactly one `.table-card`.
-   ------------------------------------------------------------
-   Four views wrote this box out for themselves, and all four drew a surface with
-   it - a background, a keyline and a corner - around a `.table-card` that draws
-   the same three. Two concentric rounded keylines a pixel apart is the double
-   border on the access and history tables. The card is the surface, as the
-   comment in every one of those views already said; this is only the room it
-   sits in, and what it contributes is the ability to shrink (`min-height: 0`, so
-   the card's scroller gets the height rather than the rows setting it), a
-   positioning context for the overlay a loading or empty table raises, and the
-   clip that keeps that overlay inside. */
-.table-region {
+/* The room a list is given.
+   ------------------------
+   Four views wrote this box out for themselves, and it is what lets the content
+   inside it shrink (`min-height: 0`, so a scroller within gets the height rather
+   than the rows setting it), a positioning context for the overlay a loading or
+   empty list raises, and the clip that keeps that overlay inside.
+
+   AND THE CLIP SCROLLS. `auto` clips exactly as `hidden` does, so the overlay is
+   still held inside; what it adds is the case where what sits in here is a plain
+   `.card` with no scroller of its own. There the `hidden` lost whatever outgrew
+   the region - 538px of audit history under the text spacing a reader may set
+   under 1.4.12 - and offered nothing to reach it with. */
+.list-region {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   position: relative;
 }
 
-.table-card {
-  background: var(--surface-base);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-surface);
-  box-shadow: var(--shadow-plate);
-  overflow-x: auto;
-}
-
-/* A cell keeps what it holds inside itself.
-   ----------------------------------------
-   Column widths are decided by the track, and a track is honoured whatever the
-   cell contains - so a value too long for its column does not widen anything,
-   it simply paints across the columns to its right and out through the end of
-   the row. `tests/browser/table-columns.test.ts` measures exactly this by giving
-   every cell a run longer than any value the service can produce, and it found
-   the same fault in five tables: a file state, a timestamp, a chip, a pull
-   request title and an audit summary, each drawn over its neighbours.
-
-   The per-cell treatment is still what a reader should get - the text element
-   itself constrained, so it ends in an ellipsis and says it was cut. This is the
-   floor under that: whatever is missed, or added later, is cut at the column
-   boundary rather than let out over the row.
-
-   One axis, which is the rule everywhere in this product: `overflow: hidden`
-   clips BOTH, and these cells hold text trimmed to its baseline whose descenders
-   are outside the box by construction - hiding the block axis shaves them off.
-   `clip` is the only value that can be set per axis, because a box hidden on one
-   and visible on the other resolves both to something that clips. */
-/*
- * A row you can press.
- * -------------------
- * One set of rules for every table that has them, because two tables grew this
- * separately and each had to rediscover the same two traps - see
- * `lib/table-row.ts`, which is the other half.
- *
- * The transform is composed HERE, from `--row-y`, so a virtualised row's offset
- * and a press scale can coexist. Written to the element's `style` instead, the
- * offset is an inline transform, nothing can extend it, and the scale is
- * silently dropped. Every rule below carries the same specificity, so order
- * decides and the states stack in the order they are written.
- */
-.data-row {
-  /* The resting ground lives here too, with the states. A component that sets it
-     instead wins by a hair - Svelte appends its scope class to the rule, which
-     lifts it above anything written here - and the states then never paint. */
-  background: var(--surface-base);
-  transform: translateY(var(--row-y, 0px));
-  transition: background-color var(--duration-fast) var(--ease-standard);
-}
-
-.data-row:hover,
-.data-row:has(:focus-visible) {
-  background: var(--table-row-hover);
-}
-
-/* A row is a wide surface, so it takes the smallest of the three press scales:
-   a full-width strip moving as far as a button reads as the table lurching. */
-.data-row.pressing {
-  background: var(--table-row-pressed);
-  transform: translateY(var(--row-y, 0px)) scale(var(--press-scale-surface));
-}
-
-.table-card :is(th, td) {
-  overflow-x: clip;
-  overflow-y: visible;
-}
-
-/*
- * The body every table draws the same way.
- * ---------------------------------------
- * Written here rather than inside `DataTable.svelte` for one reason, and it is
- * the reason the whole migration is shaped the way it is: a `<th>` or `<td>`
- * comes out of the CALLER's `cells` snippet, so it carries the caller's Svelte
- * scope class and not the component's. A rule inside `DataTable` cannot reach
- * its own cells. A global one can, and this is the only stylesheet that is one.
- *
- * Seven tables each wrote these five declarations by hand and four of them
- * disagreed by a pixel somewhere. `thead` is deliberately absent - `thead th`
- * further down already owns the band, and its padding is 0 so `.table-heading`
- * can carry the inset instead. Overriding it from here would fold the sort and
- * filter controls back out of the cell they ride in.
- *
- * A per-table rule outranks this by writing itself against the class the caller
- * passes in - `:global(.repositories .count-cell)` is two classes against one.
- */
-.data-table :is(tbody th, td) {
-  border-bottom: 1px solid var(--rule);
-  /* A knob with no value of its own, and deliberately so. Four of the seven tables
-     state `--font-size-meta` on their cells and three let them inherit, which is a
-     real difference on screen - so picking one here would be a design decision
-     wearing a refactor's clothes. Each table keeps what it draws today and says so
-     in one line. Unifying them is worth doing; it is worth doing where it can be
-     looked at. */
-  font-size: var(--table-cell-font-size, inherit);
-  /* Same again: `0.625rem 0.75rem` in the tables whose row height is derived from
-     it, `var(--space-2) var(--space-3)` in the rest. The default is the common
-     case, and a table with a stated row height overrides it. */
-  padding: var(--table-cell-pad-block, var(--space-2)) var(--table-cell-pad-inline, var(--space-3));
-  text-align: left;
-  vertical-align: middle;
-}
-
-/* A row header is a cell that happens to name its row, not a heading. */
-.data-table tbody th {
-  font-weight: inherit;
-}
-
-/*
- * The pinned table: the view fills the workspace, the header band stays put, and
- * only the rows scroll.
- * ---------------------------------------------------------------------------
- * Six of the seven tables wrote this same block, each behind its own copy of the
- * comment "matching the other table views" - which is what a shared behaviour
- * looks like when it has nowhere to live. The seventh is the queue, which is
- * short by construction and scrolls with the page.
- *
- * `display: block` on a section of a table takes its cells out of the table's own
- * column algorithm, which is why the rows below have to be told to be tables
- * again and to lay out fixed. The one thing that CANNOT move here is the column
- * widths: a fixed row-table needs explicit ones or thead and tbody stop lining
- * up, and what they should be is the one genuinely per-table fact in the whole
- * arrangement. Each caller states its own, anchored through the class it passes.
- */
-@media (min-width: 64.001rem) {
-  .data-table.pinned,
-  .data-table.pinned table {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  .data-table.pinned thead {
-    display: block;
-    flex: none;
-  }
-
-  /* The filler is what the reader sees below the last row - the ground of the
-     card rather than the ground of a row, so a table with three rows in it does
-     not look like a table with three rows and a blank one. */
-  .data-table.pinned tbody {
-    background: var(--table-filler-bg);
-    display: block;
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .data-table.pinned :is(thead, tbody) tr {
-    display: table;
-    table-layout: fixed;
-    width: 100%;
-  }
-
-  /* One class, so `.data-row`'s states still outrank it - two would kill hover in
-     every pinned table at once. */
-  .data-table.pinned tbody tr {
-    background: var(--surface-base);
-  }
-}
-
-/*
- * The stacked table: below the breakpoint a row becomes a card and each cell
- * carries its own label.
- * -------------------------------------------------------------------------
- * All six tables that have a mobile layout wrote this, and the label comes from
- * `data-label` on the cell - which is why that attribute is on every `<td>` in
- * every one of them and is not decoration. A cell without one stacks with a blank
- * label rather than none, so the attribute is part of writing a `cells` snippet.
- *
- * `!important` on the two the column widths fight over, and it is load-bearing: a
- * table that states `td:first-child { width: 28% }` outside a media query keeps
- * that width here, where a cell is a block and 28% of the card is not a column.
- * Two of the six had found this; the other four had column widths that happened to
- * live inside a `min-width` query and so never collided.
- */
-@media (max-width: 64rem) {
-  .data-table.stacked table {
-    min-width: 0;
-  }
-
-  .data-table.stacked thead {
-    display: none;
-  }
-
-  .data-table.stacked :is(tbody, tr, td) {
-    display: block;
-    width: 100% !important;
-  }
-
-  .data-table.stacked tbody tr {
-    border-bottom: 1px solid var(--rule);
-    padding: var(--space-3);
-  }
-
-  .data-table.stacked td {
-    align-items: center;
-    border: 0;
-    display: grid;
-    gap: var(--space-3);
-    grid-template-columns: 7rem minmax(0, 1fr);
-    padding: var(--space-2) 0;
-    text-align: left !important;
-  }
-
-  .data-table.stacked td::before {
-    color: var(--text-muted);
-    content: attr(data-label);
-    font: 650 var(--font-size-compact) / 1.2 var(--sans);
-  }
-
-  /* The empty row is one message, not a labelled field. */
-  .data-table.stacked .state-row td {
-    display: flex;
-    height: 12rem;
-    justify-content: center;
-  }
-
-  .data-table.stacked .state-row td::before {
-    content: none;
-  }
-}
-
-/* The label column is a fixed 7rem, which is affordable until it is not: at 320 it
-   left the value 90px and every name longer than "Ada Lovelace" was cut. The label
-   goes above the value rather than beside it. */
-@media (max-width: 22rem) {
-  .data-table.stacked td {
-    gap: var(--space-1);
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .plate-alarm {
-  border-color: var(--rule);
+  border-color: var(--border-subtle);
 }
 
 .plate-head {
   align-items: center;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-3);
@@ -1524,405 +413,73 @@ a[href] {
     border-color var(--duration-fast) var(--ease-standard),
     color var(--duration-fast) var(--ease-standard),
     transform var(--duration-press) var(--ease-standard),
+    translate var(--duration-press) var(--ease-standard),
     box-shadow var(--duration-press) var(--ease-standard);
   -webkit-tap-highlight-color: transparent;
 }
 
+/* A PRESS IS A GROUND, A CREASE AND A PIXEL, and it used to be those three plus a
+   scale. The scale was one token producing three unrelated effects: 0.98 on a 203px
+   row pulled the sides in 2.03px and the top and bottom 0.34px, which reads as a
+   horizontal squeeze rather than a recede, and on a 38px tile it was 0.38px in every
+   direction - under one device pixel, invisible. It also fought the sink it stood
+   beside: the sink puts the box 1px down while the scale pulls the top edge down 0.34
+   and the bottom edge UP 0.34, so the box shortened by 0.68px on the way in. */
 button:active:not(:disabled),
 a[href]:active {
-  background-image: linear-gradient(var(--press), var(--press));
-  transform: scale(var(--press-scale));
+  background-image: linear-gradient(var(--interactive-pressed), var(--interactive-pressed));
+  translate: 0 1px;
 }
 
-/* One column heading, for every table.
+/* THE SHELL IS PRESSED THE WAY EVERYTHING ELSE IS: the surface goes in.
    ------------------------------------------------------------------------
-   A heading is a cell, a row inside it, and either a word or a button holding
-   that word - with, in four columns, a filter trigger at the end. Six tables
-   drew this and six kept a copy: two names for the row, a `.sort-button` beside
-   the shared class carrying the other half of its reset, and five rules
-   addressed to a `.header-filter` class nothing has rendered since the popover
-   was shared. The whole pattern is here, so a seventh table gets it by writing
-   the markup rather than by remembering.
+   A press in this product is three things at once, and it takes all three to read as a
+   real surface being pushed rather than as a colour changing: the ground repaints, the
+   box sinks a pixel, and it takes the crease of a surface with something above it. An
+   object row does it, a choice card does it, and so does the
+   menu item inside this very sidebar - which is what made the rail and the tree the one
+   family in the app that answered a press with a flat repaint.
 
-   WHERE THE PADDING LIVES is the point of it. Polaris, Carbon and Ant Design
-   all arrived at the same answer after shipping the same bug: a heading that
-   tints under the pointer but only answers it over the words. The cell gives up
-   its padding to whatever fills it, so the target IS the cell and the words
-   still begin where the values under them do.
-   https://github.com/Shopify/polaris/pull/1273 */
-thead th {
-  /* Headings and body cells share the same per-table inline inset. A table that
-     asks for roomier rows must move the heading ink with them, or the columns
-     align geometrically while their contents read as a four-pixel step. */
-  --heading-pad-start: var(--table-cell-pad-inline, var(--space-3));
-  --heading-pad-end: var(--table-cell-pad-inline, var(--space-3));
-  --heading-filter-room: 0rem;
+   The two reasons this family used to be exempt do not survive being checked. A 1px
+   move was said to take the control's edge out from under the cursor and lose the
+   click: every other pressable surface in the app moves exactly that far and none of
+   them do. And the thumb under the tree was said to stay put while its row sank: it
+   does not have to - it is the surface actually selected, so it takes the same sink,
+   and the pair moves as one object.
 
-  padding: 0;
-  /* The containing block for the filter trigger, which rides over the sort
-     target rather than sitting beside it. */
-  position: relative;
-}
+   One rule for the whole family, and it has to be here rather than in either component:
+   a scoped rule carries its component's hash and outranks a shared one, so this was
+   written five times in two files and agreed in three of them.
 
-/* The band's height, here rather than in `DataTable`.
-   ---------------------------------------------------
-   `DataTable` used to state this in its own `<style>`, which reached only the
-   headings it renders itself from `columns` - and six of the seven tables pass a
-   `head` snippet instead, because their headings carry a sort button and a filter.
-   Those cells are the caller's markup and wear the caller's scope, so the rule
-   never landed on them: three tables set `--table-heading-height` believing it was
-   read, and it was not. The band was whatever its contents happened to be.
-
-   The cell floor above is in this file for the same reason, and this belongs beside
-   it. One class and two elements, so a table that genuinely needs another band
-   states `--table-heading-height` rather than out-specifying a rule. */
-.data-table thead th {
-  height: var(--table-heading-height, calc(2.5rem + 1px));
-  /* The band is the height above; the inset is `.table-heading`'s. A cell that also
-     padded vertically added its own to both. */
-  padding-block: 0;
-}
-
-/* The row inside the cell, with no inset of its own: it is the button that has
-   to carry that, or the button is inset from the very cell it stands for. */
-.table-heading {
-  align-items: center;
-  display: flex;
-  height: 100%;
-  min-width: 0;
-}
-
-.table-heading > :is(.table-sort-button, .table-heading-label) {
-  padding-inline: var(--heading-pad-start) calc(var(--heading-pad-end) + var(--heading-filter-room));
-}
-
-/* One line, in every heading of every table. A heading is a label for the column
-   under it, and a label that breaks becomes two lines of type where its
-   neighbours have one - the band grows to fit the tallest of them, so a single
-   wrapped word costs every heading in the table its rhythm. "System role" in the
-   Root console's access table was the one that broke, and it broke only at the
-   widths a narrower window gives it.
-
-   Nowrap rather than a width: in a table laid out automatically, an unbreakable
-   heading is a floor under its own column, so the column cannot be squeezed
-   below the word it is named by. Nothing is chosen by hand and nothing has to be
-   revisited when a column is renamed. */
-:is(.table-sort-button, .table-heading-label) {
-  white-space: nowrap;
-}
-
-.table-heading-label {
-  min-width: 0;
-  text-box: trim-both cap alphabetic;
-}
-
-/* The filter is a lid on the sort target, not a sibling taking a third of it.
-   The room it needs comes out of the button's end padding, so the arrow never
-   slides under the funnel; `margin-block: auto` against a filled block inset
-   centres a fixed-height box in the cell without a number in it. */
-thead th:has(.filter-trigger) {
-  --heading-filter-room: 2rem;
-}
-
-.table-heading > .filter-trigger {
-  inset-block: 0;
-  inset-inline-end: var(--heading-pad-end);
-  margin-block: auto;
-  position: absolute;
-}
-
-/* Hover mixes from ink rather than using --interactive-hover: that token is
-   near-identical to the header background it would sit on. */
-/* The heading's own hover, stated here rather than inherited from a blanket rule
-   over every button and link. That rule is gone: it washed things that should
-   not wash - a repository name inside a row that already washes - and it stacked
-   with any control that set a hover of its own, which is what made this heading
-   read too dark. Same ink and same strength as before, now only where it is
-   wanted.
-
-   Asked of the CELL, not of the button. The two are the same box, but the filter
-   trigger sits over the button without being inside it, so a pointer crossing the
-   funnel left the button's `:hover` and the whole heading dropped its tint - the
-   one gap in a target that is otherwise the full cell.
-
-   Except on the funnel itself, which lights alone. The tint says what the pointer
-   would act on, and on the funnel that is the menu, not the sort - so a heading
-   that lit up whole while the pointer sat on its filter was naming the wrong
-   control. Everywhere else in the cell, including the ground behind the funnel,
-   the heading is what would answer and the heading is what lights.
-
-   Each state is a stated COLOUR rather than a wash over the one before it - see
-   the four in `:root` - so the sorted column under a pointer has a colour of its
-   own rather than two alphas whose result nobody chose. */
-thead th[aria-sort] {
-  background-color: var(--heading-sorted-bg);
-}
-
-/* Only where there is something to press. A heading with no sort button answers
-   nothing, so a colour that follows the pointer across it is an offer the column
-   cannot keep - and four columns of a six-column table lit up for a press that
-   did nothing. */
-@media (hover: hover) {
-  thead th:has(.table-sort-button):hover:not(:has(.filter-trigger:hover)) {
-    background-color: var(--heading-hover-bg);
-  }
-
-  thead th[aria-sort]:hover:not(:has(.filter-trigger:hover)) {
-    background-color: var(--heading-sorted-hover-bg);
-  }
-}
-
-/* The press, on the cell for the same reason as the hover: the cell is the
-   target. `:active` matches an ancestor of the element being activated, so this
-   fires from a press anywhere in the heading - and not from the funnel, which
-   acknowledges its own press as the round control it is. */
-thead th:active:not(:has(.filter-trigger:active)):has(.table-sort-button) {
-  background-color: var(--heading-pressed-bg);
-}
-
-/* The button's own press wash would sit over the cell's colour and darken a
-   colour that was already chosen: the two boxes are the same box. The scale it
-   takes is left alone - that is the gesture, and the whole heading performs it. */
-.table-sort-button:active:not(:disabled) {
+   The veil is the one thing they still decline. These surfaces paint their own pressed
+   ground from the sidebar's palette, and the shared darkening laid over it is a second
+   press on top of the first. The crease comes from that palette too: `--pressed-inset`
+   is answered by the PAGE's theme, and this chrome is not on the page's theme - in the
+   Root console it is dark under a light page, so the page's crease arrived as a 12% ink
+   film on a dark ground and there was nothing to see. */
+:is(.rail-tile, .rail-ws, .side-fold, .side-search, .side-ws-mini, .tree-row, .tree-kid):active {
   background-image: none;
+  box-shadow: var(--sidebar-pressed-inset);
+  translate: 0 1px;
 }
 
-/* Colours rather than washes have to be told to move; a wash arrived with the
-   layer that painted it. Backgrounds only, so this stays a compositor job. */
-thead th {
-  transition: background-color var(--duration-fast) var(--ease-standard);
-}
-
-/* A heading does not light up. What answers the pointer is the arrow beside the
-   word - see `.sort-indicator` below - and the note above says why: a tinted
-   header slab jumps between columns, fails contrast at 12px in light mode, and
-   stays petrol inside the violet Root shell.
-
-   There were wash rules here and they only ever fired on the sorted column: a
-   component-scoped `background: transparent` on the button ties with a bare
-   `:hover` on specificity and came later, so the plain wash never landed and the
-   sorted column's higher-specificity one did. That accident IS the difference a
-   pointer ran into as it crossed the header row. Removing the reset made every
-   heading wash instead, which is the same fault the other way up. Neither is
-   what the deployed panel draws, and neither is what the design asks for. */
-thead th:hover:not(:has(.filter-trigger:hover)) .table-sort-button {
-  color: var(--heading-ink-active);
-}
-
-/* The sorted column's own heading.
-   ------------------------------------------------------------------------
-   The arrow says which way, and it says it to somebody who already knows tables
-   sort. What the WORD has to say is that this column is the one the rows are
-   arranged by - readable at a glance, by a reader who has never thought about
-   sorting and is only wondering why the list is in this order.
-
-   So it takes the brand ink the arrow takes, and the ramp's next weight up. Ink
-   alone was tried and is not enough at 11px uppercase, and it is the half that
-   fails first for a reader who cannot separate the two hues. A tinted header slab
-   is still out: it jumps between columns as the sort moves, fails contrast at
-   this size in light mode, and stays petrol inside the violet Root shell. */
-th[aria-sort='ascending'] .table-heading-label,
-th[aria-sort='descending'] .table-heading-label {
-  color: var(--brand-action-text);
-  font-weight: 900;
-}
-
-/* The arrow thickens with the word. At the heading's own stroke it read as the
-   same faint mark the unsorted columns show under a pointer, which is the thing
-   this pair exists to be louder than. */
-th[aria-sort='ascending'] .sort-indicator svg,
-th[aria-sort='descending'] .sort-indicator svg {
-  stroke-width: 3.25;
-}
-
-/* One hover for every heading, sorted or not.
-   -----------------------------------------
-   The sorted column used to take a brand-tinted wash at 10% where its
-   neighbours took a neutral one at 7% - a different colour AND a different
-   strength - so running a pointer along the header row changed shade as it
-   crossed the sorted column, which reads as a fault rather than as information.
-   What says a column is sorted is its arrow, which is the whole point of the
-   note above. The same holds for the press and the focus ring, which had brand
-   variants of their own.
-
-   The sorted column also carried `background-color: transparent`, which outranks
-   the plain `:hover` - two classes and an attribute against two classes - so
-   removing only the brand hover left the sorted heading with no hover at all.
-   There is no slab left for it to defend against: nothing gives these buttons a
-   ground except the three state rules here. */
-
-/*
- * The arrow in a sortable heading.
- * -------------------------------
- * At rest it belongs to the sorted column alone, and it points the way that
- * column is sorted. Under a pointer it becomes an offer instead: it shows the
- * direction the NEXT press would give, which is the question somebody reaching
- * for a header is actually asking. The cycle is a two-state toggle - ascending,
- * then descending, then ascending again - so the offer is always the opposite of
- * what is showing, and a column with no sort offers ascending.
- *
- * It trails the word. Leading it was tried - a pair of chevrons drawn always,
- * the sorted one lit, which is what AG Grid and Ant Design draw - and read as
- * clutter at this type size; Bart's call is the single arrow, after the word.
- *
- * One copy, here. Three tables had one each and they had drifted: one keyed off
- * `aria-sort` on the cell, one off classes on the indicator, one off both, with
- * two different transition timings between them - and a fourth drew the
- * rotationally-symmetric `sort` glyph and rotated it, which changed nothing.
- */
-.sort-indicator {
-  color: var(--text-muted);
-  display: grid;
-  opacity: 0;
-  place-items: center;
-  transition:
-    opacity var(--duration-fast) var(--ease-standard),
-    transform var(--duration-fast) var(--ease-standard);
-}
-
-/* An unsorted column says nothing until it is asked, and then only faintly: this
-   is an offer, not a state. Held in `:where()` so it stays weaker than the
-   sorted column's own arrow below - at full specificity it outranked it, and
-   hovering the sorted heading faded the very thing it was pointing with.
-
-   Asked of the BUTTON, unlike the tint below, which is asked of the cell. The
-   two questions are different: the tint says where the pointer is, and the cell
-   is where it is even when the funnel is under it; the arrow says what a press
-   would do, and a press on the funnel opens a menu. An arrow that turned over as
-   the pointer reached the filter was offering something that trigger does not
-   give. */
-.table-sort-button:where(:hover, :focus-visible) .sort-indicator {
-  opacity: 0.55;
-}
-
-th[aria-sort='ascending'] .sort-indicator,
-th[aria-sort='descending'] .sort-indicator {
-  color: var(--brand-action-text);
-  opacity: 1;
-}
-
-th[aria-sort='descending'] .sort-indicator {
-  transform: rotate(180deg);
-}
-
-/* The offer: turned the other way, because that is what pressing would do. It
-   turns rather than swaps, so the change reads as the same arrow moving. On the
-   button, for the reason above - the funnel is not what would turn it. */
-th[aria-sort='ascending'] .table-sort-button:where(:hover, :focus-visible) .sort-indicator {
-  transform: rotate(180deg);
-}
-
-th[aria-sort='descending'] .table-sort-button:where(:hover, :focus-visible) .sort-indicator {
-  transform: none;
-}
-
-.table-sort-button {
-  /* A header runs the width of its column, so it takes the surface figure. */
-  --press-scale: var(--press-scale-surface);
-
-  /* The WHOLE button reset, here rather than in each table. It was half here and
-     half in a `.sort-button` each table wrote for itself, so this class alone drew
-     a heading inside a UA border with its own font - the two tables that had the
-     other half looked right and the third did not. A sortable heading is one class
-     now.
-
-     `font` and the two the UA stylesheet resets rather than inherits: a form
-     control does not take `letter-spacing` or `text-transform` from its cell, so a
-     sortable heading stayed in sentence case while the ones beside it went
-     uppercase with the rest. */
-  align-items: center;
-  background: none;
-  border: 0;
-  color: inherit;
-  display: flex;
-  font: inherit;
-  gap: var(--space-2);
-  justify-content: flex-start;
-  letter-spacing: inherit;
-  min-width: 0;
-  padding: 0;
-  text-align: left;
-  text-transform: inherit;
-
-  /* The target is the whole cell, which is what makes the hover the same size in
-     every table. Measured before this, the queue's heading answered over 54% of
-     its cell's width and 35% of its height - the words and nothing else - while
-     the history table's covered all of it. The inset comes from the rule above,
-     not from the cell, so the words still begin where the values under them do
-     and the ground beside them still answers the pointer. */
-  flex: 1;
-  height: 100%;
-  width: 100%;
-}
-
-.table-sort-button:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--focus);
-  outline: 0;
-}
-
-/* What a table body says when it has no rows to show: nothing matched, nothing
-   has happened yet, or it could not be read. Three answers to one question, so
-   they are one shape - a mark, a line, a sentence and a way forward, with the
-   approved mock's air around them. They were two shapes, and the failure had no
-   mark at all, so a table that could not be read looked like a different product
-   from the same table with nothing in it. */
-.table-notice {
-  align-items: center;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  justify-content: center;
-  /* Narrower than the cell it sits in, so it has to place itself. Every caller
-     used to do this, which meant every caller could forget - and the queue did,
-     leaving its empty state flush against the first column while the cell it
-     filled was centred. Auto margins also absorb free space in a flex parent, so
-     the tables that centre by making the cell a flex container still agree. */
-  margin-inline: auto;
-  max-width: 30rem;
-  padding: var(--space-8) var(--space-4);
-  text-align: center;
-}
-
-/* Round and tinted, without a keyline: a rounded square with an inset fill reads
-   as a disabled control, which is the wrong thing to put at the centre of a
-   table with nothing in it. Its tone is the notice's own. */
-.table-notice-mark {
-  align-items: center;
-  background: var(--brand-action-tint);
-  border-radius: 50%;
-  color: var(--brand-action-text);
-  display: flex;
-  flex: none;
-  height: 2.75rem;
-  justify-content: center;
-  width: 2.75rem;
-}
-
-.table-notice-mark.alarmed {
-  background: var(--danger-tint);
-  color: var(--danger);
-}
-
-.table-notice > strong {
-  color: var(--text-primary);
-  font-size: var(--font-size-card-title);
-  line-height: 1.5;
-}
-
-.table-notice > span {
-  color: var(--text-soft);
-  font-size: var(--font-size-meta);
-  line-height: 1.5;
-}
+/* What a collection says when it has nothing to show used to be `.table-notice`
+   here: a centred column under a 2.75rem tinted disc, capped at 30rem, sized and
+   spaced unlike anything else answering the same question. It is `.state-panel`
+   now - the one recipe - so the three states a collection can be in (nothing
+   matched, nothing yet, could not be read) differ in their words and their tone
+   and in nothing else. The disc went with it: a magnifying glass over a list that
+   was never searched says a query came up dry when nothing was ever asked. */
 
 /* One square icon-only control: a row's quick action, a row's menu trigger, a
    column's filter. Three components drew their own and disagreed on all three of
    size, ink and press.
 
-   It is 1.75rem because that is what the filter triggers in the same header row
-   already are, and because the action column is sized for it: a 2.5rem trigger
-   overflowed its cell's own padding and sat 12px proud of every other column's
-   right edge, in the Queue, Recent, Access and Installations tables alike.
+   It stands on the quiet tier because that is what the filter triggers in the
+   same header row already are, and because the action column is sized for it: a
+   2.5rem trigger overflowed its cell's own padding and sat 12px proud of every
+   other column's right edge, in the Queue, Recent, Access and Workspaces
+   tables alike.
 
    The states are LAYERS rather than fills. This button sits inside a row that
    hovers underneath it, so a flat colour either matches the row's own hover or
@@ -1938,9 +495,9 @@ th[aria-sort='descending'] .table-sort-button:where(:hover, :focus-visible) .sor
   cursor: pointer;
   display: inline-flex;
   flex: none;
-  height: 1.75rem;
+  height: var(--tier-quiet);
   justify-content: center;
-  line-height: 1;
+  line-height: var(--leading-flat);
   padding: 0;
   /* So a badge can ride the corner - the filter trigger's count does. Stated
      here rather than in each caller: a component that positions ITSELF cannot be
@@ -1954,7 +511,7 @@ th[aria-sort='descending'] .table-sort-button:where(:hover, :focus-visible) .sor
     color var(--duration-fast) var(--ease-out),
     transform var(--duration-press) var(--ease-standard);
   user-select: none;
-  width: 1.75rem;
+  width: var(--tier-quiet);
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -1966,11 +523,9 @@ th[aria-sort='descending'] .table-sort-button:where(:hover, :focus-visible) .sor
   color: var(--text-primary);
 }
 
-/* The disc scale, like every other round-ish target of this size. */
 .icon-button:active:not(:disabled) {
-  background-image: linear-gradient(var(--press), var(--press));
+  background-image: linear-gradient(var(--interactive-pressed), var(--interactive-pressed));
   color: var(--text-primary);
-  transform: scale(var(--press-scale-disc));
 }
 
 .icon-button:disabled {
@@ -2008,12 +563,16 @@ input[type='radio']:not(:disabled) {
 
 .btn {
   align-items: center;
-  background: var(--strip-lift);
+  background: var(--surface-raised);
   border: 1px solid var(--control-border);
   border-radius: var(--r-ctl);
-  color: var(--text);
+  color: var(--text-primary);
   display: inline-flex;
-  font: 500 var(--font-size-control) / 1 var(--sans);
+  /* As wide as its label by default - see the note above `.chip`. A button that should
+     fill its container is a decision the call site makes, by giving it a width; nothing
+     in this app relied on the stretch, which is why the default can be the safe one. */
+  inline-size: fit-content;
+  font: 500 var(--font-size-control) / var(--leading-flat) var(--sans);
   gap: var(--space-2);
   /* Every control in the content panes is 34px (the mock's --ctl-h); contexts
      that need the tall variant opt in through --local-control-height. */
@@ -2041,9 +600,9 @@ input[type='radio']:not(:disabled) {
 }
 
 .btn:active:not(:disabled) {
-  background-image: linear-gradient(var(--press), var(--press));
+  background-image: linear-gradient(var(--interactive-pressed), var(--interactive-pressed));
+  box-shadow: var(--pressed-inset);
   filter: none;
-  transform: scale(var(--press-scale));
 }
 
 .btn:disabled,
@@ -2054,9 +613,9 @@ select:disabled {
 }
 
 .btn-signal {
-  background: var(--admin);
-  border-color: var(--admin);
-  color: var(--on-admin);
+  background: var(--brand-action);
+  border-color: var(--brand-action);
+  color: var(--on-brand-action);
 }
 
 .btn-signal:hover:not(:disabled) {
@@ -2082,7 +641,7 @@ select:disabled {
 }
 
 .btn-ghost:active:not(:disabled) {
-  background-image: linear-gradient(var(--press), var(--press));
+  background-image: linear-gradient(var(--interactive-pressed), var(--interactive-pressed));
 }
 
 .btn-stop {
@@ -2097,12 +656,12 @@ select:disabled {
 }
 
 .btn-stop:active:not(:disabled) {
-  background-image: linear-gradient(var(--press), var(--press));
+  background-image: linear-gradient(var(--interactive-pressed), var(--interactive-pressed));
 }
 
 /* The console's own action: tinted with whatever `--brand-action` is where it is
    drawn, so it reads as the Root console's rather than the panel's.
-   Two class names in `RootInstallationView` carried this, one of them on a control
+   Two class names in `RootWorkspaceView` carried this, one of them on a control
    inside a portalled dialog - which leaves the component's DOM, so nothing there can
    reach it by descent. A tone is the only home it can have. */
 .btn-brand {
@@ -2132,13 +691,13 @@ select:disabled {
 .btn-quiet {
   background: transparent;
   border-color: transparent;
-  color: var(--dim);
+  color: var(--text-muted);
 }
 
 /* No flat fill: --strip-lift is 0.5 dE00 from the surface this sits on, so the hover was not
    visible at all. The overlay carries it, on whatever ground the button happens to be on. */
 .btn-quiet:hover:not(:disabled) {
-  color: var(--text);
+  color: var(--text-primary);
   filter: none;
 }
 
@@ -2163,14 +722,29 @@ select:disabled {
   row-gap: 2px;
 }
 
+/*
+  A mark is as wide as what it says, wherever it is put.
+  ------------------------------------------------------
+  `display: inline-flex` states that on its own everywhere EXCEPT inside a flex or
+  grid parent, which is most of this app: a flex item's display is blockified to
+  `flex`, and a cross size left `auto` is then exactly what `align-items: stretch`
+  acts on. So a pill dropped into a column came out the full width of the column with
+  its two words at the left end - the catalogue shows it because a story stands
+  directly in the content column, while the app's own rows are horizontal and hide it.
+
+  An explicit inline size is not `auto`, so there is nothing left to stretch. It says
+  the same thing as `inline-flex` and it says it in the one case that was going wrong,
+  which is why both are written rather than one.
+*/
 .chip {
   align-items: center;
   border-radius: var(--r-chip);
+  inline-size: fit-content;
   /* Self-keyed keyline: mixed from the chip's own foreground, so the fill shape
      stays visible on any surface (tint fills measure ~1:1 against inset cards). */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentcolor 22%, transparent);
   display: inline-flex;
-  font: 600 var(--font-size-compact) / 1 var(--sans);
+  font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
   gap: 0.35rem;
   /* A declared height, not an outcome of padding: a chip stood as tall as
      whatever it happened to hold, and none of those heights was whole. */
@@ -2185,9 +759,243 @@ select:disabled {
   padding-inline: 0.45rem;
 }
 
+/*
+  A PILL IS NOT A CHIP. A chip is a *value* - a label name, a pattern, a count - so it
+  is a rounded rect with a keyline and it can be removed. A pill is a *standing*: the
+  role somebody holds, the state a thing is in. It is fully round, it carries no
+  keyline, and there is nothing to press.
+
+  The two shapes have to stay apart, which is what `--r-chip` (6px) against
+  `--radius-chip` (999px) is for. A pill's bare form has no fill at all: a role beside
+  a name is a word, and a filled box on every row would make the one row whose STATE is
+  filled read like all the others.
+*/
+.pill {
+  align-items: center;
+  border-radius: var(--radius-chip);
+  display: inline-flex;
+  font: 600 var(--font-size-micro) / var(--leading-flat) var(--sans);
+  gap: 0.25rem;
+  inline-size: fit-content;
+  min-block-size: var(--control-height-chip-small);
+  padding-inline: var(--space-2);
+  white-space: nowrap;
+}
+
+/* A flat leading says "one line", so the voice has to say it too: a pill that wraps
+   puts two 11px lines on 11px of leading inside a 20px box, touching. */
+.pill-label {
+  display: block;
+  text-box: trim-both cap alphabetic;
+}
+
+.pill-role {
+  background: var(--role-tint);
+  color: var(--role-ink);
+}
+
+.pill-success {
+  background: var(--success-tint);
+  color: var(--success);
+}
+
+.pill-warning {
+  background: var(--warning-tint);
+  color: var(--warning);
+}
+
+.pill-danger {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+.pill-info {
+  background: var(--info-tint);
+  color: var(--info);
+}
+
+.pill-neutral {
+  background: var(--neutral-tint);
+  color: var(--text-secondary);
+}
+
+/*
+  A RADIO GROUP WHOSE OPTIONS EACH NEED A SENTENCE. One decision, N answers, each
+  saying what it does - so nothing has to be tried to find out.
+
+  The group is one connected surface with 2px gutters rather than N separate cards:
+  separated cards read as N decisions, and the whole point is that these are mutually
+  exclusive answers to one question. The chosen card is tint, brand ink and the radio
+  mark together, never a one-off accent bar.
+*/
+.choice-cards {
+  /* The outline and the gutters already draw the group. Using the control surface
+     directly keeps disabled copy above 4.5:1 on light, instead of darkening its
+     ground underneath muted ink. */
+  background: var(--surface-control);
+  border-radius: calc(var(--r-ctl) + 2px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 18%, transparent),
+    0 1px 2px color-mix(in srgb, var(--shadow-color) 12%, transparent);
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  overflow: clip;
+  padding: 2px;
+}
+
+/* One question, asked down the page: a dialog reads its answers in a column. */
+.choice-cards.ask-cards {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 52rem) {
+  .choice-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.choice-card {
+  /* Centred, not baseline: the dot is a badge beside the title, and the stretch
+     default let the first row land on a fraction. Rows pack to the top - stretched
+     tracks floated one-line descriptions mid-card. */
+  align-content: start;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  display: grid;
+  gap: 0 var(--space-3);
+  grid-template-columns: auto 1fr;
+  min-block-size: 72px;
+  padding: var(--space-3) var(--space-4);
+  position: relative;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    translate var(--duration-press) var(--ease-standard);
+}
+
+.choice-card:has(input:not(:disabled)):hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.choice-card:has(input:not(:disabled)):active {
+  background: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  box-shadow: var(--pressed-inset);
+  translate: 0 1px;
+}
+
+.choice-card input {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.choice-dot {
+  /* A whole ring on a whole box - the old 1.5px stroke and its 1.6px nudge both
+     rasterised soft, and centring in the row replaced the nudge. */
+  background: var(--surface-base);
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  block-size: 16px;
+  inline-size: 16px;
+  position: relative;
+}
+
+/* The chosen state derives from the checked input itself. `.is-chosen` is the same
+   state written by a caller that drives its own selection, and both are named here so
+   the two can never drift apart. */
+.choice-card:has(input:checked),
+.choice-card.is-chosen {
+  background: color-mix(in oklab, var(--brand-action) 25%, var(--surface-base));
+  box-shadow:
+    0 1px 3px color-mix(in srgb, var(--shadow-color) 52%, transparent),
+    inset 0 0 0 0.5px color-mix(in srgb, var(--brand-action) 28%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-base) 64%, transparent);
+  color: var(--text-primary);
+}
+
+.choice-card:has(input:checked):hover,
+.choice-card.is-chosen:hover {
+  background: color-mix(in oklab, var(--brand-action) 29%, var(--surface-base));
+}
+
+.choice-card:has(input:checked):active,
+.choice-card.is-chosen:active {
+  background: color-mix(in oklab, var(--brand-action) 29%, var(--surface-base));
+  box-shadow: var(--pressed-inset);
+}
+
+.choice-card:has(input:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-inset);
+}
+
+.choice-card:has(input:checked) .choice-dot,
+.choice-card.is-chosen .choice-dot {
+  background: var(--surface-base);
+  border-color: var(--brand-action);
+}
+
+.choice-card:has(input:checked) .choice-dot::after,
+.choice-card.is-chosen .choice-dot::after {
+  background: var(--brand-action);
+  border-radius: 50%;
+  content: '';
+  inset: 3px;
+  position: absolute;
+}
+
+/* Disabled is really disabled: no pointer, no wash, no dip - and the copy stays
+   readable in the muted ink. */
+.choice-card:has(input:disabled) {
+  background: transparent;
+  cursor: default;
+}
+
+.choice-card:has(input:disabled) :is(.choice-title, .choice-why) {
+  color: var(--text-muted);
+}
+
+.choice-card:has(input:disabled) .choice-dot {
+  border-color: var(--border-subtle);
+}
+
+.choice-card:has(input:disabled):active {
+  box-shadow: none;
+  translate: none;
+}
+
+.choice-title {
+  font-size: var(--font-size-meta);
+  font-weight: 650;
+  line-height: var(--leading-tight);
+  text-box: trim-both cap alphabetic;
+  text-wrap: pretty;
+}
+
+/* One line of its own text, less the 2.8px the card's centred tracks put below the
+   title's ink. The slack is structural, so it is a number; the line is derived, so it
+   follows the scale. */
+.choice-why {
+  color: var(--text-secondary);
+  font-size: var(--font-size-compact);
+  grid-column: 2;
+  line-height: var(--leading-compact);
+  margin-block-start: calc(var(--leading-compact) - 1cap - 2.8px);
+  text-wrap: pretty;
+}
+
+.choice-card:has(input:checked) .choice-title,
+.choice-card.is-chosen .choice-title {
+  color: var(--brand-action-text);
+}
+
 .chip-label {
   letter-spacing: 0;
-  line-height: 1;
+  line-height: var(--leading-flat);
   text-box: trim-both cap alphabetic;
 }
 
@@ -2213,38 +1021,38 @@ select:disabled {
 
 .chip-neutral {
   background: var(--neutral-tint);
-  color: var(--text-soft);
+  color: var(--text-secondary);
 }
 
 .chip-neutral .chip-dot {
-  background: var(--dim);
+  background: var(--text-muted);
 }
 
 .chip-clear {
-  background: var(--clear-tint);
-  color: var(--clear);
+  background: var(--success-tint);
+  color: var(--success);
 }
 
 .chip-clear .chip-dot {
-  background: var(--clear);
+  background: var(--success);
 }
 
 .chip-signal {
-  background: var(--signal-tint);
-  color: var(--signal);
+  background: var(--info-tint);
+  color: var(--info);
 }
 
 .chip-signal .chip-dot {
-  background: var(--signal);
+  background: var(--info);
 }
 
 .chip-accent {
-  background: var(--accent-tint);
-  color: var(--accent);
+  background: var(--brand-action-tint);
+  color: var(--brand-action);
 }
 
 .chip-accent .chip-dot {
-  background: var(--accent);
+  background: var(--brand-action);
 }
 
 .chip-warning {
@@ -2257,12 +1065,12 @@ select:disabled {
 }
 
 .chip-stop {
-  background: var(--stop-tint);
-  color: var(--stop);
+  background: var(--danger-tint);
+  color: var(--danger);
 }
 
 .chip-stop .chip-dot {
-  background: var(--stop);
+  background: var(--danger);
 }
 
 /* Absence, drawn as absence: no fill and a dashed edge where every other chip
@@ -2272,13 +1080,13 @@ select:disabled {
 .chip-absent {
   background: transparent;
   box-shadow: none;
-  color: var(--dim);
+  color: var(--text-muted);
   outline: 1px dashed color-mix(in srgb, currentcolor 42%, transparent);
   outline-offset: -1px;
 }
 
 .chip-absent .chip-dot {
-  background: var(--dim);
+  background: var(--text-muted);
 }
 
 /* The panel has no links to speak of - it is built from buttons - so this is a
@@ -2291,6 +1099,10 @@ select:disabled {
 .link {
   border-radius: 2px;
   color: var(--brand-action-text);
+  /* Width does not apply to a non-replaced inline box, so this changes nothing in the
+     running text a link normally sits in. It is here for the one case where an anchor
+     becomes a flex item and is blockified - see the note above `.chip`. */
+  inline-size: fit-content;
   font-weight: 600;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentcolor 35%, transparent);
@@ -2310,8 +1122,8 @@ select:disabled {
 }
 
 .link:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
 }
 
 /* Sized by whoever renders it, through a custom property.
@@ -2340,7 +1152,7 @@ select:disabled {
 
 /* A workspace is drawn square, a person round. GitHub's own distinction, and the
    panel already keeps it in the rounded square the Root console gives an
-   installation's monogram — this puts the same shape on the avatar itself, so
+   workspace's monogram — this puts the same shape on the avatar itself, so
    the two can stand side by side with no labels and still say which is which.
 
    Proportional rather than the flat control radius: the same 8px reads as a
@@ -2359,22 +1171,25 @@ select:disabled {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentcolor 28%, transparent);
   color: var(--brand-action-text);
   display: inline-flex;
-  font: 700 var(--avatar-font, calc(var(--avatar-size) * 0.36)) / 1 var(--sans);
+  font: 700 var(--avatar-font, calc(var(--avatar-size) * 0.36)) / var(--leading-flat) var(--sans);
   justify-content: center;
 }
 
 .text-input,
 .select-input {
-  background-color: var(--control-surface);
+  background-color: var(--control-bg);
   border: 1px solid var(--control-border);
   border-radius: var(--r-ctl);
-  color: var(--text);
+  color: var(--text-primary);
   font-size: var(--font-size-meta);
   height: var(--local-control-height, var(--control-height-compact));
-  /* Not 1: at 13px that is a line box shorter than the face it holds, and a select clips to its
-     box, so the tail of a "y" in "7 days" was cut off. The control has a fixed height and the
-     engine centres the value in it, so the leading is free to be what the font asks for. */
-  line-height: normal;
+  /* Not flat: at 13px that is a line box shorter than the face it holds, and a select
+     clips to its box, so the tail of a "y" in "7 days" was cut off. The meta tier is
+     the scale's answer for 13px prose and clears the descender with room to spare -
+     `normal` cleared it too, and is the font's own fractional metric, which is the one
+     thing the leading law exists to keep off the page. The control has a fixed height
+     and the engine centres the value in it, so the extra leading costs nothing. */
+  line-height: var(--leading-meta);
   padding: 0 0.625rem;
   transition:
     background-color var(--duration-fast) var(--ease-out),
@@ -2387,12 +1202,16 @@ select:disabled {
 }
 
 .btn:focus-visible,
+/* A field's own boundary yields to the ring rather than standing beside it: the border
+   takes the focus colour and the ring sits flush on it, which is the third of the law's
+   three offsets. It was a `box-shadow`, and three fields inside clipping cards were
+   losing it entirely. */
 .text-input:focus-visible,
 .select-input:focus-visible,
 select:focus-visible {
   border-color: var(--focus);
-  box-shadow: inset 0 0 0 1px var(--focus);
-  outline: 0;
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-flush);
 }
 
 .select-input {
@@ -2415,7 +1234,7 @@ select:focus-visible {
 }
 
 .select-wrap > svg {
-  color: var(--dim);
+  color: var(--text-muted);
   pointer-events: none;
   position: absolute;
   right: 0.5rem;
@@ -2434,7 +1253,47 @@ select:focus-visible {
 }
 
 .text-input::placeholder {
-  color: var(--dim);
+  color: var(--text-muted);
+}
+
+/* WHAT A PLACE SAYS WHEN IT HOLDS NOTHING, and the one shape it says it in.
+   A list with nothing in it, a search that matched nothing, a pane a reader has no
+   access to: all of them are a sentence in a panel rather than a page redrawn. Its
+   strong opener names the state and the rest of the line says what to do about it. */
+.state-panel {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-ctl);
+  color: var(--text-secondary);
+  display: grid;
+  font-size: var(--font-size-meta);
+  gap: var(--space-3);
+  justify-items: start;
+  line-height: var(--leading-meta);
+  padding: var(--space-4);
+}
+
+.state-panel strong {
+  color: var(--text-primary);
+}
+
+.state-panel.is-error {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.state-panel.is-error strong {
+  color: var(--danger);
+}
+
+.state-panel.is-warn {
+  border-color: color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+/* A time is one word however many words it holds. "in about 4 minutes" broken
+   across two lines reads as two facts, and the break lands wherever the column
+   happens to end - so the element that carries a time never wraps inside itself. */
+time {
+  white-space: nowrap;
 }
 
 /* Plain monospace, no filled chrome. The mock never boxes a bare <code>; where a
@@ -2443,7 +1302,7 @@ select:focus-visible {
 code {
   /* 1.5, not 1.4: inline code sits inside body copy, and a shorter line box than
      its surrounding text pulls the run off the shared baseline grid. */
-  font: 0.8125rem/1.5 var(--mono);
+  font: 0.8125rem/var(--leading-meta) var(--mono);
   max-width: 100%;
 }
 
@@ -2453,7 +1312,7 @@ code {
    per-form - where the message sits in a grid, how far it stands off the field
    above it - the caller still says, and only that. */
 .form-error {
-  color: var(--stop);
+  color: var(--danger);
   font-size: var(--font-size-meta);
   margin: 0;
 }
@@ -2465,7 +1324,7 @@ code {
    overrides the one rule locally. */
 .form-lead,
 .form-note {
-  color: var(--dim);
+  color: var(--text-muted);
   font-size: var(--font-size-meta);
   margin: 0;
   max-width: 60ch;
@@ -2544,7 +1403,7 @@ code {
 /* Cap-trimmed text: the box shrinks to cap..baseline so flex centers INK against
    icons and dots, not the glyph box (which carries asymmetric leading). */
 .cap-trim {
-  line-height: 1;
+  line-height: var(--leading-flat);
   text-box: trim-both cap alphabetic;
 }
 
@@ -2591,122 +1450,25 @@ code {
 
 /* Two labels that are always a word beside a mark, wherever they are used.
    ------------------------------------------------------------------------
-   A sortable column heading is the one place this cannot be left to each table:
-   five components draw the same control - a word beside a sort mark - and each
-   keeps its own copy of the rule, thirty-nine of them in all. Trimmed here once,
-   so a sixth table gets it by writing the same markup rather than by
-   remembering.
-
-   The word is what has to give: the mark and any filter trigger beside it are
-   boxes and already centre on each other, and it was the label landing 0.67px
-   above them in every table in the console. A heading with no sort control asks
-   for `.band-trim` itself - there were two, spelled two different ways, which is
-   the argument against matching on a container's name here. */
-.table-sort-button > span,
+   The word is what has to give: a mark beside it is a box and centres on its
+   own, and it was the label landing 0.67px above them at fifty-four sites. A
+   label with no control around it asks for `.band-trim` itself - there were two,
+   spelled two different ways, which is the argument against matching on a
+   container's name here. */
 .button-label {
   text-box: trim-both cap alphabetic;
 }
 
-/* One column heading, for all six tables.
-   ------------------------------------------------------------------------
-   Each of them kept its own copy of this and the copies had drifted: two inks
-   (`--dim` in four, `--text-muted` in one), three line-heights, and a weight of
-   650 that is not a weight anything else in the product uses. Uppercase micro at
-   700 is what the approved design draws, and it is what tells a heading apart
-   from the row under it without a second colour - so the ink can be the stronger
-   `--text-soft` rather than the muted one it takes to make sentence case read as
-   a label.
-
-   Height stays with each table. `.history-table` puts its 2.5rem on the layout
-   inside the cell rather than on the cell, so its rule sits under the band
-   instead of inside it, and a height here would fold that back in.
-
-   The trim is safe on the whole header row because a heading holds either bare
-   words or a control: a cell whose content is a block or a flex row has no line
-   boxes of its own, so it is a no-op there. It is NOT safe on `tbody`, where a
-   cell can hold anything - tried, and it threw the body rows 5.41px apart. */
-thead th {
-  /* The shell's own hue at rest, not a grey - see the five grounds and two inks
-     in `:root`. A header band is the one strip of a table that is always the same
-     thing, so it is where a console can say which console it is without saying it
-     in words. */
-  background: var(--heading-bg);
-  /* The rule under the header band, stated here so every table has it and has the
-     same one. Some tables drew it from a `th, td` rule of their own and some drew
-     none at all - the queue's header sat straight on its first row with nothing
-     between them. */
-  border-bottom: 1px solid var(--rule);
-  color: var(--heading-text);
-  font: 700 var(--font-size-micro) / 1 var(--sans);
-  letter-spacing: 0.08em;
-  text-align: left;
-  text-box: trim-both cap alphabetic;
-  text-transform: uppercase;
-}
-
-/* The marks in the band take the quieter of the two inks: the funnel, the help
-   tip, the sort arrow at rest. They were `--text-muted`, which is a grey, and a
-   grey control on a coloured band reads as a control belonging to something
-   else. */
-thead th .icon-button,
-thead th .sort-indicator {
-  color: var(--heading-mark);
-}
-
-/* And a funnel being touched comes to the same forward ink the heading's word
-   does, on the same ground the heading would have taken - so pressing the filter
-   and pressing the heading are two halves of one control rather than a coloured
-   cell with a grey square sitting in it. The shorthand clears the grey wash
-   `.icon-button` paints for itself; a filter that is ON keeps its own fill,
-   which is stated in `FilterMenu` and outranks this. */
-thead th .icon-button:where(:hover, [aria-expanded='true'], [data-state='open']):not(:disabled) {
-  background: var(--heading-hover-bg);
-  color: var(--heading-ink-active);
-}
-
-thead th .icon-button:active:not(:disabled) {
-  background: var(--heading-pressed-bg);
-  color: var(--heading-ink-active);
-}
-
-/* A cell centres its CONTENT BOX, since `vertical-align: middle` is what a table
-   has instead of `align-items`. So a cell is only centred when its content box
-   is the thing a reader sees, and there are exactly two ways it is not.
-   ------------------------------------------------------------------------
-   One: an INLINE chip does not centre in the cell at all. It joins the cell's
-   inline formatting context and is placed against the row's own strut, so where
-   it lands depends on the chip's baseline - which for an inline-flex box comes
-   from its last flex item, and therefore moves when a chip gains a dot. That is
-   why the role chip and the status chip beside it, identical in height, sat
-   0.83px and 1.56px below the avatar in the same row. Block-level, it centres
-   like everything else and there is no strut left to argue with. */
-:is(td, th) > .chip,
-:is(td, th) > :has(> .chip:only-child) {
-  display: flex;
-  width: fit-content;
-}
-
-/* The second selector above is the same chip one wrapper down. A cell often holds
-   its chip inside a `<span title>` carrying the row's explanation, and a rule that
-   only reached the direct child left two columns of the installation catalog
-   0.66px adrift while the columns beside them were exact.
-   ------------------------------------------------------------------------
-   Two: the words in a cell carry their leading with them, so the content box is
-   taller than the band and centring it puts the words low. `.band-trim` is the
-   answer, as everywhere else - it only needs blockifying first, because an
-   inline box has no line boxes of its own to trim. */
-:is(td, th) > .band-trim {
-  display: block;
-}
-
 /* Non-interactive status: short, round, borderless — never the bordered-control
    silhouette, so nothing next to a button reads as pressable. */
+/* As wide as what it says - see the note above `.chip`. */
 .status-pill {
   align-items: center;
+  inline-size: fit-content;
   /* The inset surface, not the brand tint: this says what is true, not what can
      be pressed, and a brand-coloured pill beside a brand-coloured button reads as
      a second control. */
-  background: var(--well);
+  background: var(--surface-inset);
   border-radius: var(--radius-chip);
   /* Mixed from the pill's own foreground, which is the answer the chips already
      carry and works on any ground without a per-palette value. Its fill measures
@@ -2714,12 +1476,12 @@ thead th .icon-button:active:not(:disabled) {
      one - under a just-noticeable difference, so without a keyline the pill has
      no shape at all there. */
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentcolor 22%, transparent);
-  color: var(--text-soft);
+  color: var(--text-secondary);
   display: inline-flex;
   flex: none;
-  font: 700 var(--font-size-micro) / 1 var(--sans);
+  font: 700 var(--font-size-micro) / var(--leading-flat) var(--sans);
   gap: 0.4rem;
-  height: 1.5rem;
+  height: var(--status-pill-line);
   letter-spacing: 0.06em;
   padding: 0 0.6rem;
   text-transform: uppercase;
@@ -2766,7 +1528,7 @@ thead th .icon-button:active:not(:disabled) {
 }
 
 .status-pill .status-pill-dot.live {
-  animation: live-pulse 2.6s ease-out infinite;
+  animation: live-pulse var(--rhythm-live) var(--ease-standard) infinite;
 }
 
 /* One pulse for every placeholder in the panel.
@@ -2796,22 +1558,18 @@ thead th .icon-button:active:not(:disabled) {
   }
 }
 
-@media (max-width: 48rem) {
-  /* The rail stays at every width - it is the way back. The drawer already
-     owns the pages column here; the shell keeps its two remaining tracks. */
+@media (max-width: 47.9375rem) {
+  /* The bar above it is 56px, and the shell's own min-height already accounts for it -
+     see `.app-shell`. This is the pane inside that shell. */
   .workspace {
-    min-height: calc(100dvh - 3.75rem);
+    min-height: 0;
     padding-top: var(--space-4);
   }
 }
 
 @media (max-width: 38rem) {
-  .shell {
-    padding: 1rem 0.625rem 2rem;
-  }
-
   .workspace {
-    padding: var(--space-3) var(--space-3) 0;
+    padding: var(--rhythm-pane-top-compact) var(--space-3) 0;
   }
 
   .workspace > .foot {
@@ -2822,5 +1580,1823 @@ thead th .icon-button:active:not(:disabled) {
   .plate-body {
     padding-left: 0.875rem;
     padding-right: 0.875rem;
+  }
+}
+
+/* ============================================================
+   A STATE IS A GROUND, AND NOTHING ELSE IS ADDED TO IT
+
+   This is where a law used to be. A row tinted under the pointer, and every
+   pill standing on it borrowed a hairline of its own ink for as long as the
+   state lasted - three lists of container classes, two shares, and an outline
+   on four object families - so that an object "balanced against the resting
+   surface" would not lose its silhouette.
+
+   Measured, no object had one to lose. A `.pill` renders at 1.00-1.13 against
+   the ground it stands on and a `.tab-count` at 1.02: they are text, not
+   shapes, and the ground moving under them changes nothing about them. The one
+   pill with a fill of its own read 6.06 against that fill at rest and 6.06 on
+   a hovered row - the row's tint never reaches the ink at all.
+
+   The standard asks for none of it either. WCAG 2.2 SC 1.4.11 says an
+   author-supplied hover treatment is supplemental and "not required to
+   identify" the state, because the pointer's own position identifies it; that
+   the criterion "does not define any requirement for the difference in
+   contrast between the two states"; and that a control with visible content
+   needs no boundary at all. The one thing it does ask is that a hover must not
+   cause a component to LOSE sufficient contrast - which is a thing to measure,
+   not a border to add. So a state here is a ground change, which is what
+   Material's state layers and every system like them are.
+
+   The one object the law could have been for is a colour swatch, whose fill IS
+   the information and which had no line of its own: it reads 1.31 against its
+   ground at REST. A hover-only hairline never fixed that, because the problem
+   was never a state. It carries a permanent ring now, beside its own rule.
+   ============================================================ */
+
+/* A SWATCH IS THE ONE OBJECT WHOSE FILL IS THE INFORMATION, so it is the one
+   that needs a line, and it needs it at rest rather than under a pointer. Five
+   of them measured 1.31 to 4.83 against the ground they stand on; the palest
+   is a disc a reader cannot find. Mixed from the swatch's own colour so a dark
+   one is ringed darker and a pale one is ringed against the surface, and drawn
+   as an inset shadow rather than a border so the disc keeps its 12px. */
+.label-swatch {
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--swatch, currentcolor) 45%, var(--text-primary));
+}
+
+/* A CONTROL WITH A RING OF ITS OWN ANSWERS THE POINTER ITSELF, and the row it
+   stands in does not answer for it. A switch track, a selection mark, a choice
+   dot and a check box each stepped their own line one notch whenever any of
+   twenty container classes was hovered - so a pointer anywhere in a row lit a
+   control the pointer was not on. Each of these has a `:hover` of its own for
+   the case where the pointer IS on it, which is the case that means something. */
+
+/* ---------- The content vocabulary: cards, and the rows inside them ----------
+
+   Written once, here, because the design draws every list the same way and the app
+   had drawn it eight times - a `.card` in one component, an `.object-row` in another,
+   each with its own padding, its own separator and its own hover. What that produced
+   is what a reader sees: two lists on two pages that are the same list, and are not
+   the same shape. A component may still narrow one of these for what only it has; it
+   may not restate the shape. */
+.card {
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-strip);
+  padding: var(--rhythm-surface-pad);
+}
+
+/* HOW FAR APART CARDS SIT, SAID ONCE, BY THE THING THAT STACKS THEM.
+   A gap and not a margin on the card: a margin is a property of one card that has
+   to be CANCELLED wherever anything else already spaces it, and every way this
+   number went wrong was somebody meeting one of those cancellations - a
+   `block-gap-top` invented at 24px on one page, the rule copied into three scoped
+   styles, one container spacing at 24 where the rest of the panel used 16, and
+   margins that do not collapse inside a grid and so simply added. A gap belongs to
+   the container, applies to everything it holds, and cannot double.
+   `.view-frame` is one, so a page that lays its cards out directly needs nothing. */
+.card-stack,
+.view-frame {
+  display: grid;
+  gap: var(--rhythm-card-gap);
+  /* AND IT SAYS SO, for the one child that has to know. A page head's exit is a
+     distance to the thing under it, and where the container already gives part of
+     it the head owes only the rest - so the head subtracts whatever this says and
+     a container that spaces nothing says nothing. Declared by the container rather
+     than listed in the head, because the head cannot ask what its parent does and a
+     list of parent class names is a list that goes stale: Service settings and
+     Workspace settings both space their children and neither is `.view-frame`, so
+     a rule written against that one name stood their heads 40px off the page. */
+  --head-exit-gap: var(--rhythm-card-gap);
+}
+
+/* A GRID ITEM'S AUTOMATIC MINIMUM IS ITS CONTENT, and a card holding something that
+   scrolls has content as wide as the file inside it. Without this the stack's track
+   grew to the widest line of a rendered template - 594px of JSON on a 320px phone -
+   and Chrome answers a page it cannot fit by zooming the whole thing out. The card
+   is what scrolls, not the page.
+
+   SAID OF THE CARD AS WELL AS OF THE TWO CONTAINERS, because it is a fact about the
+   card: it is a block of content inside a column and must never be what decides that
+   column's width. Written only for `.card-stack` and `.view-frame`, a page that laid
+   its cards out in a grid of its own got none of it - Service settings is one, and at
+   320px its widest setting row took the column to 427 and Chrome drew the page at 73%. */
+.card-stack > *,
+.view-frame > *,
+.card {
+  min-inline-size: 0;
+}
+
+/* A phone gives the frame less room, so the card keeps less for itself. Six pages
+   said this in six scoped copies of one property of one card. */
+@media (max-width: 36rem) {
+  .card {
+    padding: var(--rhythm-surface-pad-compact);
+  }
+}
+
+/* THE CARD THAT HOLDS THE ONE ACT THERE IS NO WAY BACK FROM. Its frame carries a
+   trace of the danger colour and its heading carries the colour itself - enough for
+   the eye to find it while scrolling, and not so much that a page ends in alarm. The
+   act inside is an ordinary quiet-stop button: the card is what says which room this
+   is, so the button does not have to shout it a second time. */
+.danger-zone {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border-subtle));
+}
+
+/* THE PAUSE CONTROL IS A ROW, not a stack: one sentence about the running service and
+   the one act on it, side by side. Here rather than in `RootSettings` for the reason
+   `.danger-zone` is - the class is worn by `Card`'s root element, which never carries a
+   caller's scope class, so the rule matched nothing and the button sat directly under
+   the sentence's last line with no space at all between them. */
+.emergency-card {
+  align-items: center;
+  display: flex;
+  gap: var(--space-5);
+  justify-content: space-between;
+  /* AND IT IS NOT A SETTINGS CARD. Everything else on this page is a group of values a
+     reader edits and saves together; this one acts on the running service the moment it
+     is pressed, and it read as the first settings card because it wore the same ground.
+     So it is set INTO the page where the others stand on it - a difference of depth
+     rather than of hue.
+
+     THE FRAME CARRIES IT, NOT THE FILL, and that is a measured result rather than a
+     preference. A tone had to be a hue, and every hue here either means something
+     already or belongs to one palette - tinted with the info primitive it came out a
+     cool grey-blue on the console's violet ground. Moving it to the inset surface fixed
+     the hue and broke two things a card this size cannot afford: the note fell from 5.21
+     to 4.59 against its ground, and the running pill's own fill landed at 1.06 - no
+     separation at all, so the badge had only its keyline left to be a shape with.
+
+     A firmer rule and a plate's lift say the same thing and cost neither: every ratio in
+     the card is the one it was tuned at, because the ground did not move. The paused
+     state still takes the warning tone, because there it is not decoration - it is what
+     the card is saying.
+
+     The rule is the palette's firm one, two steps along its own ramp from the subtle
+     rule the settings cards take. `--border-strong` is firmer still and comes out grey:
+     it is mixed from the ink, and the console's ink is nearly neutral, so the one card
+     meant to belong to that page was the one wearing none of its colour. */
+  border-color: var(--border-firm);
+  box-shadow: var(--shadow-plate);
+}
+
+.emergency-card.paused {
+  background: color-mix(in srgb, var(--warning) 7%, var(--surface-base));
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border-subtle));
+}
+
+.danger-zone .card-title {
+  color: var(--danger);
+}
+
+/* A card that is NOTHING BUT ROWS: the rows' own block padding is the card's edge
+   whitespace, so unswallowed it doubles onto the card's 20px and the top and bottom
+   read heavier than the sides. Three pages each carried a copy. */
+.card > :is(.setting-rows, .policy-rows):only-child {
+  margin-block: calc(var(--row-pad-default) * -1);
+}
+
+/* A card title is a heading, and a heading carries the browser's own margin until
+   something says otherwise. Six pages said it themselves, each in a scoped copy of this
+   whole rule; the ones that did not - a card head measured 41px against the 13 it is -
+   sat a title in three times the room its own line asks for. */
+.card-title {
+  font-size: var(--font-size-card-title);
+  font-weight: 600;
+  /* A TITLE'S LEADING, not the body's. The trim means one line looks the same either
+     way, so this only shows when a title wraps - and then a heading set on the body's
+     leading closes up against itself while everything it sits above stays open. The
+     sheet names a leading for titles; this was the one title reading the body's. */
+  line-height: var(--leading-title);
+  margin: 0;
+  min-block-size: var(--card-head-line);
+  text-box: trim-both cap alphabetic;
+  text-wrap: balance;
+}
+
+/* A card heading is a semantic line box, whatever rides beside the title: the grid
+   keeps everything on ONE row, and taller controls bleed symmetrically instead of
+   growing the head - so title-to-first-row ink never depends on which adornments the
+   card happens to carry. */
+/* A HEAD IS A ROW THAT CAN BREAK, and it has to be: a column grid cannot, at any width.
+   Three companions beside a title - a count, the act that clears it, the way into the
+   page - are 250px of auto tracks, and on a 320px phone the head took the card to 351
+   and Chrome drew the whole page at 91%.
+
+   Flex rather than a breakpoint, and for the reason the setting row states as its third
+   clause: a line that cannot hold its contents breaks, which is what stacking means. No
+   class, no query, no width to have chosen. Wide enough, this lays out exactly as the
+   grid did - the title takes the room and the companions sit at the end. */
+.card-head {
+  align-items: center;
+  column-gap: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  margin-block-end: var(--rhythm-card-head-body);
+  min-block-size: var(--card-head-line);
+  /* What a broken line stands off the one above it - the ink gap, both sides trimmed. */
+  row-gap: var(--space-2);
+}
+
+/* The title takes the room, and `min-inline-size: 0` lets it give the room back rather
+   than hold the line open at its longest word. Every companion keeps flex's own default,
+   which shrinks it to its min-content and no further: a button's is its label, because a
+   button does not wrap, and a note's is its longest word, because prose does. Pinning
+   them at `flex: none` instead read as correct and took the Root overview to 488px on a
+   phone - a card note is a companion here, and a sentence that may not shrink is a
+   sentence drawn at the width of the whole sentence. */
+.card-head > .card-title {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+/* WHAT STANDS BESIDE A HEADING DOES NOT SET THE HEADING'S HEIGHT.
+   ------------------------------------------------------------------------
+   A heading's box is its text's cap box, and the air above a heading is measured to the
+   WORDS. Left alone, a companion taller than the line grows it and the card's own frame
+   is spent on the companion instead: a 24px status pill beside a 13px heading put the
+   card's 20px of air above the badge and the words 27px down, and a reader sees one
+   heading in a column of cards sitting lower than the rest.
+
+   So every companion sheds the difference at both ends, and it is stated here for every
+   head in the product rather than per head: two rules knew about `.card-head` alone, so
+   a group head or a card that built its own heading row got none of it. Adding a family
+   is one line here; adding a heading is none at all.
+
+   `--head-line` is the heading's own cap, and it is a variable because it is a fact
+   about that heading's type rather than one number for all of them: a head set a step
+   smaller has a smaller cap, and forcing its box to the card title's line gives the box
+   a pixel it cannot fill - which, since a block box fills from the top, puts the words
+   half a pixel above their own centre. The default is the card head's, so a heading that
+   uses the card's type says nothing. */
+:is(.card-head, .group-head, .emergency-heading) > .btn {
+  margin-block: calc((var(--head-line, var(--card-head-line)) - var(--control-height-compact)) / 2);
+}
+
+:is(.card-head, .group-head, .emergency-heading) > .status-pill {
+  margin-block: calc((var(--head-line, var(--card-head-line)) - var(--status-pill-line)) / 2);
+}
+
+:is(.card-head, .group-head, .emergency-heading) > .switch {
+  margin-block: calc((var(--head-line, var(--card-head-line)) - var(--touch-target)) / 2);
+}
+
+/* A CARD'S NOTE IS ITS TITLE'S SECOND LINE, not the card's body.
+   ------------------------------------------------------------------------
+   It stood the head-to-BODY distance under the heading, where every other
+   title-and-description pair in the product sits one line of the description's own
+   leading apart - so a card's own description read as the first thing IN the card
+   rather than as part of what the card is called. The head gives up its margin when a
+   note follows it, and the note carries the copy gap above and the head-to-body
+   distance below, which is now the distance to the body it actually introduces.
+
+   One rule, because six components each carried their own and they disagreed: four at
+   8px below and one at 12, four measured to 60ch and one to 72, one with no measure at
+   all. The same sentence under two cards was two different sentences. */
+.card-head:has(+ .group-note) {
+  margin-block-end: 0;
+}
+
+.group-note {
+  color: var(--text-muted);
+  font-size: var(--font-size-compact);
+  line-height: var(--leading-compact);
+  margin-block: calc(var(--leading-compact) - 1cap) var(--rhythm-card-head-body);
+  /* NO measure. The card is the measure: a note is one line about the card it opens, and
+     capped at 60ch inside a 1080px card it broke a sentence that fits in one line across
+     two - which reads as a paragraph that ran out of room rather than as a subtitle. The
+     copies this replaced each carried one, and no two agreed. */
+  text-box: trim-both cap alphabetic;
+  text-wrap: pretty;
+}
+
+/* A standing said beside the title bleeds the same way a control does. Left to grow the
+   head, one card's title-to-first-row distance depended on whether that card happened to
+   carry a pill - 20px of head against every other card's 13. */
+:is(.card-head, .group-head, .emergency-heading) > :is(.pill, .tab-count, .rail-badge) {
+  margin-block: calc((var(--head-line, var(--card-head-line)) - var(--tier-mark)) / 2);
+}
+
+/* ---------- A card that opens ----------
+
+   For what a reader rarely changes and should still be able to reach: the card is shut,
+   its head says what is inside without opening it, and opening it happens in place. A
+   `<details>`, so the browser owns the state, the keyboard and the accessibility of it. */
+.fold {
+  border-radius: var(--r-ctl);
+}
+
+.fold summary {
+  align-items: center;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--font-size-meta);
+  gap: var(--space-2);
+  /* Declared whole, not derived from padding. */
+  min-block-size: 36px;
+  padding: 0 var(--space-3);
+}
+
+.fold summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold summary:hover {
+  background: var(--row-hover);
+}
+
+.fold summary svg {
+  block-size: var(--icon-xs);
+  color: var(--text-muted);
+  inline-size: var(--icon-xs);
+  transition: rotate var(--duration-fast) var(--ease-standard);
+}
+
+.fold[open] summary svg {
+  rotate: 90deg;
+}
+
+/* Ink-true like every other voice: untrimmed, its 23px line box - not the 36px the head
+   declares - was what set a shut card's height, and the strip measured 39. */
+.fold-scent {
+  color: var(--text-muted);
+  font-size: var(--font-size-compact);
+  min-block-size: 9px;
+  text-box: trim-both cap alphabetic;
+}
+
+/* A whole card that folds: the head bleeds into the card's own frame, so a shut card is a
+   strip rather than a card with a strip inside it. */
+.card.fold {
+  border-radius: var(--r-strip);
+}
+
+.card.fold > summary {
+  border-radius: 6px;
+  gap: var(--space-2);
+  margin: calc(var(--space-2) * -1);
+  padding: var(--space-2);
+}
+
+.card.fold > summary .card-title {
+  min-block-size: 0;
+}
+
+.card.fold > summary .fold-scent {
+  margin-inline-start: auto;
+}
+
+/* A quiet qualifier on the card head's own line - prose, so a verdict card keeps its
+   freshness beside its sentence. */
+.card-note {
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  margin-inline-start: auto;
+  text-align: end;
+}
+
+/* A VERDICT CARD'S HEAD IS A COLUMN. The count is the sentence a reader came for
+   and the note under it qualifies that sentence - set beside it and pushed to the
+   far edge, it reads as a second, unrelated fact, and at 375px the count wrapped
+   to four lines with the note drawn across them.
+
+   Said in the terms the head is laid out in, which are flex now and were grid: written
+   as `grid-auto-flow: row` this went inert the moment the head became a row that can
+   break, and two of the three verdict cards silently went back to one line - the third
+   kept working only because it had a scoped copy of this rule, which is what hid it. */
+.card-head.verdict-head {
+  align-items: start;
+  flex-direction: column;
+  row-gap: var(--row-copy-gap);
+}
+
+.verdict-head .card-note {
+  margin-inline-start: 0;
+  text-align: start;
+}
+
+/* The freshness inside a verdict's note steps up one weight: it is the only part of that
+   line a reader is actually reading. */
+.verdict-head .card-note strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* The changed half of a verdict - "2 items" - in the ink that means a difference. */
+.card-title .is-drift {
+  color: var(--diff-chg-ink);
+}
+
+/* A refusal's sentence stays in the quiet voice: the mark beside it already says
+   something is wrong, and a red sentence under a red mark says it twice. */
+.object-sum.is-refused {
+  color: var(--text-secondary);
+}
+
+.object-list {
+  display: grid;
+}
+
+/* The list hands its last row's padding back so the last ink closes on the card's own
+   frame - but ONLY when it is holding a row. Unconditional, the pull survives an empty
+   list and eats the card's bottom frame instead: a shed is a correction to something
+   that is there. */
+.object-list:has(> li:not([hidden]) > .object-row:not([hidden])),
+.object-list:has(> .object-row:not([hidden])) {
+  margin-block-end: calc(var(--row-pad-default) * -1);
+}
+
+/* The list is a real list: ul + li, the li transparent to layout so the grid still
+   owns the rows. */
+ul.object-list {
+  list-style: none;
+  margin-block-start: 0;
+  padding-inline-start: 0;
+}
+
+.object-list > li {
+  display: contents;
+}
+
+/* ---------- Exact times: visible relative, exact one press away ----------
+   The time renders exactly like the text it replaced - no inflated box, so a
+   pill it sits inside keeps its geometry and the dotted affordance rides the
+   words. The hit area is a hit-only pseudo overlay: it catches the press
+   without touching layout. */
+time[data-exact] {
+  cursor: pointer;
+  position: relative;
+  text-decoration: underline dotted color-mix(in srgb, var(--text-muted) 55%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* The interactive CHILD carries the hover - the static row around it does not. */
+time[data-exact]:hover {
+  color: var(--text-secondary);
+  text-decoration-color: var(--text-secondary);
+}
+
+time[data-exact]::after {
+  content: '';
+  inset: -8px -6px;
+  position: absolute;
+}
+
+/* Showing the whole instant, the affordance has done its job and stands down.
+   The `nowrap` a surface put on the relative reading stands down too: "2 days
+   ago" must not break, but the whole instant is twice as long and a column
+   sized for the short one clipped it - which loses the reader exactly what
+   they pressed for. */
+time[data-exact].is-exact {
+  color: var(--text-secondary);
+  text-decoration-color: transparent;
+  white-space: normal;
+}
+
+time[data-exact]:focus-visible {
+  border-radius: 3px;
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* ---------- The row's verdict mark ----------
+   What one row's standing is, worn at the row's end: a count of what would
+   change, a refusal, or the quiet tick of being in step. Four surfaces draw it
+   - the sync board, two of its lists and the workspace overview - and each
+   used to carry its own copy of these five rules. */
+.mx-mark {
+  align-items: center;
+  block-size: var(--tier-mark);
+  border-radius: var(--r-chip);
+  box-sizing: border-box;
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: var(--font-size-micro);
+  font-variant-numeric: tabular-nums;
+  gap: 0.25rem;
+  line-height: var(--leading-flat);
+  padding: 0 0.5rem;
+}
+
+.mx-mark .t {
+  display: block;
+  text-box: trim-both cap alphabetic;
+}
+
+/* On the board an in-step cell is the quiet norm; on a list row the same mark
+   is the row's whole verdict, standing beside a worded pending pill - here it
+   earns the success ink. */
+.mx-instep {
+  color: var(--success);
+}
+
+.mx-pending {
+  background: var(--cell-pending-bg);
+  border: 1px solid color-mix(in srgb, var(--cell-pending) 38%, transparent);
+  color: var(--cell-pending);
+  font-weight: 500;
+}
+
+.mx-refused {
+  background: var(--cell-refused-bg);
+  border: 1px solid color-mix(in srgb, var(--cell-refused) 38%, transparent);
+  color: var(--cell-refused);
+  font-weight: 500;
+}
+
+.object-row {
+  align-items: center;
+  border-radius: var(--r-ctl);
+  /* A row that opens something is an anchor, and an anchor without this wears
+     the browser's own link blue - the row is the affordance here, not the
+     colour of the words inside it. */
+  color: var(--text-primary);
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: 1fr auto;
+  margin-inline: calc(var(--space-3) * -1);
+  /* The bottom takes the hairline's pixel on top of the padding, so the ink stands
+     the same 12 off the line below it as off the line above - see `--row-hairline`. */
+  padding: var(--row-pad-default) var(--space-3) calc(var(--row-pad-default) + var(--row-hairline));
+  position: relative;
+  text-decoration: none;
+}
+
+/* A row answers the pointer with paint and a one-pixel sink, so it eases the way every
+   other pressable surface does. The law on `button:not(:disabled)` above cannot reach
+   it: a row that opens something is a div with the button UNDER it, so its hover and
+   its press were arriving instantly while every control beside them eased. `translate`
+   rather than `transform`, because that is the property the sink sets. */
+.object-row {
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard),
+    translate var(--duration-press) var(--ease-standard),
+    box-shadow var(--duration-press) var(--ease-standard);
+}
+
+/* Only a row that IS an action - a link or a button - answers the pointer. A static
+   log row holding at most a child control stays still: lift and press on it promised
+   an opening that never came. */
+:is(a, button).object-row:hover {
+  background: var(--row-hover);
+}
+
+:is(a, button).object-row:active {
+  background: var(--row-pressed);
+  box-shadow: var(--pressed-inset);
+  translate: 0 1px;
+}
+
+/* A row whose whole ground opens something, with a control still live inside it: the
+   hit is a layer under the content rather than a wrapper around it, so the switch is
+   pressable and everything else is the link. */
+.object-row:has(.row-hit:hover) {
+  background: var(--row-hover);
+}
+
+.object-row:has(.row-hit:active) {
+  background: var(--row-pressed);
+  box-shadow: var(--pressed-inset);
+  translate: 0 1px;
+}
+
+.object-row:has(.row-hit:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-inset);
+}
+
+/* A ROW IS PRESSED THE ROW'S WAY, never the button's.
+   The press law on `button:not(:disabled), a[href]` paints a pressed veil and scales
+   what is held. Both are wrong here and were plainly visible: the hit is `inset: 0`
+   over the whole row, so its veil laid a second 16% darkening over the row's own
+   10.9% pressed ground, and the 0.98 scale shrank that dark rectangle inside the row's
+   own edges while the row itself sank 1px. A row's press is the sink, the inset and
+   the pressed ground - stated once, by the row. */
+:is(a, button).object-row:active,
+.object-row .row-hit:active {
+  background-image: none;
+  transform: none;
+}
+
+/* The hit is a layer, never a control with a look of its own. It is drawn as a button
+   where what it opens is a dialog rather than an address, and a bare button brings a
+   border and a ground with it - which read as a box around the row. */
+.row-hit {
+  background: none;
+  border: 0;
+  border-radius: inherit;
+  inset: 0;
+  padding: 0;
+  position: absolute;
+  z-index: 1;
+}
+
+.object-row > :not(.row-hit) {
+  position: relative;
+  z-index: 2;
+}
+
+.object-row:has(.row-hit) > :is(.object-main, .object-side) {
+  pointer-events: none;
+}
+
+.object-row:has(.row-hit) :is(.switch, button, a):not(.row-hit) {
+  pointer-events: auto;
+  position: relative;
+  z-index: 3;
+}
+
+.object-row:not(:last-child)::after,
+.object-list > li:not(:last-child) > .object-row::after {
+  background: var(--border-subtle);
+  block-size: 1px;
+  bottom: 0;
+  content: '';
+  inset-inline: var(--space-3);
+  position: absolute;
+}
+
+.object-list > li:last-child > .object-row::after {
+  content: none;
+}
+
+/* The hover pill has rounded corners; a hairline crossing its edge reads as a crack
+   in it. The hovered row hides its own separator and its neighbour's - BOTH edges of
+   the pill, or the ground reads as sitting on a line at one end and floating at the
+   other. Anchored through the list, because the structural rule that draws the line
+   is one class deeper and declared later. */
+.object-list > li > :is(a, button).object-row:hover::after,
+.object-list > :is(a, button).object-row:hover::after,
+:is(a, button).object-row:hover::after,
+.object-row:has(+ :is(a, button).object-row:hover)::after,
+.object-list > li:has(+ li > :is(a, button).object-row:hover) > .object-row::after,
+.object-list > li > .object-row:has(.row-hit:hover)::after,
+.object-row:has(.row-hit:hover)::after,
+.object-list > li:has(+ li > .object-row .row-hit:hover) > .object-row::after {
+  background: transparent;
+}
+
+/* A whole row that is the button opening it; the chevron says which way. */
+button.object-row {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  inline-size: calc(100% + (var(--space-3) * 2));
+  text-align: start;
+}
+
+/* THE NAME ROW IS THE NAME'S OWN CAP, AND THE BADGES BLEED. A declared line put slack
+   over the name's cap that two other rules then had to subtract back out - and both
+   corrections were wrong the moment the name wrapped. The row is exactly the name's
+   cap tall whether or not a pill sits in it. `--object-name-slack` is REGISTERED,
+   which is what makes this possible: an unregistered custom property substitutes its
+   text and resolves `1cap` against whichever element uses it, so the pill would have
+   measured its own cap. */
+@property --object-name-slack {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
+}
+
+/* AN AUTO TRACK IS AS WIDE AS ITS WIDEST LINE, and `min-inline-size: 0` does not
+   stop it: that governs what the box may shrink to, while the track is sized
+   `minmax(auto, max-content)` and only an `fr` is capped by the space there is. So a
+   long enough name - GitHub allows a hundred characters, and a pull request title is
+   longer - drew the sentence straight over the control beside it. Stated as one
+   column that may not exceed its container. */
+.object-main {
+  display: grid;
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: 0;
+}
+
+/* THE COPY-RHYTHM LAW, WHICH IS 8px RENDERED - see `--row-copy-gap`. Both boxes here
+   are trimmed to their ink, so the declared margin IS the rendered gap and the law can
+   be named rather than derived: `calc(var(--leading-meta) - 1cap)` resolved 10.31px and
+   set every object row 2.31px looser than every setting row on the same page.
+   `.sum-swap` is the same slot with two readings crossing inside it, so the rhythm is
+   named on the slot rather than on whichever of them is currently drawn. */
+.object-main > :is(.object-sum, .sum-swap) {
+  font-size: var(--font-size-meta);
+  margin-block-start: var(--row-copy-gap);
+}
+
+/* THE ROW GIVES WAY BEFORE THE PAGE DOES. A name and its standings are one line until
+   there is no room for one, and then they are two - a phone is 320px wide and a pill
+   never breaks, so without this the widest name row set the document's width and the
+   browser zoomed the whole page out to fit it. */
+.object-name-row {
+  --object-name-slack: calc((var(--object-name-line) - 1cap) / 2);
+
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-size-meta);
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.object-name-row > :not(.object-name, .file-path, .mono-title) {
+  margin-block: calc(var(--object-name-slack) * -1);
+}
+
+/* A BADGE BLEEDS INTO THE COPY GAP, SO IT MAY NOT BLEED MORE THAN HALF OF IT.
+   At the shared 20px control height a badge stands 5.16px past the name's cap on
+   each side, and the copy gap under it is 8px - so the badge came within 2.84px of
+   the sentence while sitting 6.84px under the row's top edge, which reads as a
+   badge falling into the line below it.
+
+   Two laws meet here and neither gives: a name row is the name's own cap tall so a
+   badge cannot change the row's height, and the copy gap is 8px of ink. What is
+   left is the badge's own size, and only inside a copy pair: cap plus the gap,
+   which puts its bleed at exactly half the gap. The badge then stands 8px under
+   the row's edge and 4px above the sentence, and every number in that row is one
+   a law names. Everywhere else a badge is the control height it always was.
+
+   Said of everything that bleeds rather than of one class: a pill declares its
+   height as a floor and a matrix mark declares one outright, and both stand in
+   these rows. The set is the bleed rule's own - the name and the objects set
+   inside the line are not badges beside it. */
+.object-main > .object-name-row > :not(.object-name, .file-path, .mono-title) {
+  --badge-in-a-pair: calc(
+    var(--object-name-line) - (var(--object-name-slack) * 2) + var(--row-copy-gap)
+  );
+
+  min-block-size: var(--badge-in-a-pair);
+}
+
+/* A mark states `block-size`, so a floor cannot reach it. Only where it is already
+   the tier's own height: a taller thing in a name row is a control, not a badge. */
+.object-main > .object-name-row > .mx-mark {
+  block-size: var(--badge-in-a-pair);
+}
+
+.object-name {
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  /* A name breaks rather than pushing the page wider. Anything else here - a repository
+     path, a file - already breaks the same way; this is the one rule for all of them. */
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  text-box: trim-both cap alphabetic;
+}
+
+/* TRIMMED, like every other voice. It was the one prose line in a row family that
+   reported its ascender and descender instead of its cap and baseline, so every card
+   closing on an object list ended well above the frame its title's cap opened
+   against. */
+.object-sum {
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  line-height: var(--leading-meta);
+  /* Breaks like the name above it. Without this a sentence carrying one long
+     unbreakable run - a repository path, a reason from GitHub - kept going past the
+     row, and the time at its end, which never breaks by law, went with it. */
+  overflow-wrap: anywhere;
+  text-box: trim-both cap alphabetic;
+}
+
+.object-sum code {
+  line-height: var(--leading-flat);
+}
+
+/* A VALUE INSIDE A SENTENCE BREAKS WITH IT. A repository, a path or a key set in the
+   mono voice is part of the line it stands in, and the longest of them is longer than
+   any row is wide - so one that refused to break drew itself over whatever the row
+   carries at its end. The atoms that must never break say so for themselves, with
+   `.nowrap-atom` or by being a time. */
+:is(.object-name, .object-sum, .setting-name, .setting-why) code,
+:is(.object-name, .object-sum, .setting-name, .setting-why) .file-path {
+  overflow-wrap: anywhere;
+}
+
+/* AN ATOM IS ONE WORD, however many words it holds: "in about 4 minutes", "84.7 MB",
+   "public :8080". The same law a `<time>` already has, for the runs that are not
+   times - and it had none at all here, so the class the mock states was carried into
+   the app as markup with nothing behind it.
+
+   Trimmed, like every other voice. A nested run keeps its own leading, so an untrimmed
+   one reports a box 3px taller than the line it sits in - which is what put two rows
+   of Service health 2.5px off their own centre. */
+.nowrap-atom,
+:is(.setting-fact, .object-sum, .setting-why) code {
+  text-box: trim-both cap alphabetic;
+}
+
+.nowrap-atom {
+  white-space: nowrap;
+}
+
+/* A path, a repository, a file - the object a sentence is about, set in the mono voice
+   INSIDE the line rather than parked in a column of its own. Excluded from the name
+   row's badge bleed above, because it is part of the name rather than a badge beside
+   it. */
+.file-path {
+  font-family: var(--mono);
+  font-size: var(--font-size-compact);
+  font-weight: 500;
+  text-box: trim-both cap alphabetic;
+}
+
+/* THE DAY IS A HEADING, NOT A COLUMN. That is how a reader asks for it - "what
+   happened today" - and it is what lets the row spend its width on the sentence. */
+.day-head {
+  color: var(--text-muted);
+  font-size: var(--font-size-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  line-height: var(--leading-tight);
+  margin-block: var(--space-5) var(--space-2);
+  text-box: trim-both cap alphabetic;
+  text-transform: uppercase;
+}
+
+/* The first day opens against the card's own frame, which the card's padding already
+   set. */
+.card > .day-head:first-child {
+  margin-block-start: 0;
+}
+
+/* Actions wrap as WHOLE controls when the row runs out of room - words never wrap
+   inside a button. */
+.object-side {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+/* The toolbar over a list: the search leads and the segments sit beside it, 12px
+   apart - never split across the page with a dead gap between. */
+.filter-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-block-end: var(--rhythm-toolbar-surface);
+}
+
+/* WHERE THE FRAME IS THE PARENT ITS GAP ALREADY SAID THIS, and the two added up:
+   32px under every search bar that is a child of the frame, where the drawing has
+   16. Said as a stand-down rather than by deleting the margin, because a toolbar
+   inside a plate has no frame gap under it at all - dropped outright, the
+   repositories search closed onto the list it filters. One distance, declared
+   once, claimed by whichever of the two is actually spacing the pair.
+
+   Only `.filter-bar` needs saying here. The two bars a component draws are always
+   the frame's own children and simply carry no margin: a scoped rule TIES with
+   this one on specificity and wins on source order, so a stand-down written for
+   them would not have reached them. */
+.view-frame > .filter-bar {
+  margin-block-end: 0;
+}
+
+/* THE END OF A TOOLBAR IS A ROW, like the rest of it. Every caller puts more than one
+   thing here - a live status beside a tools menu, a receipt beside a filter - and a
+   bare span is a block, so the second control stacked under the first and the bar
+   stood two rows tall to hold one line of controls. */
+.filter-bar .push-end {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+/* A head that exits onto a toolbar rather than onto a surface. Less the stack's own
+   gap, which already gives part of the distance. */
+.page-head:has(+ .filter-bar) {
+  margin-block-end: calc(var(--rhythm-head-toolbar) - var(--rhythm-card-gap));
+}
+
+/* What a list says about itself once it has finished: how much of it is shown, and
+   the way to more. */
+.list-foot {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--font-size-meta);
+  gap: var(--space-3);
+  justify-content: space-between;
+  line-height: var(--leading-meta);
+  margin-block-start: var(--rhythm-card-foot-band);
+}
+
+/* A BAND IS A DISTANCE FROM SOMETHING. With no rows above it the footer is the card's
+   only line, and the band becomes a stretch of nothing over it. */
+.card:not(:has(.object-row)) .list-foot {
+  margin-block-start: 0;
+}
+
+/* A CONTROL AT A CARD'S END STANDS ON THE TEXT LINE, NOT ON THE FRAME: a card opens
+   with a cap against its padding and closes with a baseline against it, and a button
+   is taller than the word inside it. */
+.list-foot .btn {
+  margin-block: calc((var(--control-height-compact) - var(--leading-meta)) / -2);
+}
+
+/* ---------- The setting row: a sentence on one side, its controls on the other ----------
+
+   Eleven components drew this row and seven of them wrote the whole law out again, as a
+   grid of `minmax(--setting-say-min, 1fr) auto auto` with no cap on the controls at all -
+   so a chip cluster took 58% of a row beside a sentence that had already run out of room,
+   which is the one thing the law forbids.
+
+   THE LAW, and every clause is one term:
+
+   1. Neither side takes more than half the row. Where both want more, both get half and
+      each breaks its own contents. `max-inline-size: 50cqi`.
+   2. UNLESS a control cannot be drawn narrower than half - then it keeps that minimum and
+      the sentence gives up the difference. `min-inline-size: min-content`, which needs no
+      condition written for it: a minimum beats a maximum in CSS.
+   3. UNLESS that would leave the sentence under a width it reads at - then the sentence
+      takes the line and the controls take the next one. `flex-wrap` IS clause 3: a line
+      that cannot hold both minimums breaks, which is what stacking means. No class, no
+      measurement, no moment to apply it at.
+   4. And controls known in advance never to belong beside a sentence - a checklist - are
+      AUTHORED as two lines rather than computed into them.
+
+   TWO WAYS TO WRITE THE HALF WRONG, BOTH SILENT. `max(50%, min-content)` reads exactly
+   like clauses 1 and 2 together and is invalid, because `min-content` is not a length -
+   the declaration is dropped and there is no cap at all. And a bare percentage does not
+   break the line where the law says: a flex line breaks on each item's hypothetical size,
+   which is its basis clamped by its min and max, and a percentage maximum is
+   indeterminate at that moment. `50cqi` against the row's own containment is half as a
+   DEFINITE length, resolved before anything inside the row is laid out. A fixed length
+   there is wrong for a third reason - it becomes a second, tighter law the moment the row
+   is wider than it. Half is the law; nothing else caps this. */
+.setting-rows,
+.policy-rows {
+  display: grid;
+}
+
+/* A card closes on its own 20px frame whatever stands last in it. A row's 12px block
+   padding is ink-to-hairline distance INSIDE the list; on the card's edge it stacks onto
+   the card's padding, and every settings card ran 12px heavier below than above. The list
+   sheds it at whichever edge it is the card's own - which is what `.object-list` already
+   does. */
+/* A LONE ROW IS A LIST OF ONE, and sheds the same padding. Written for the list
+   wrappers only, a card whose whole body is a single row kept the 12px - so the
+   Formatting card stood 12px deeper below its one row than the Runtime card above it
+   stood below its three. */
+.card > :is(.setting-rows, .policy-rows, .setting-row, .policy-row):first-child {
+  margin-block-start: calc(var(--row-pad-default) * -1);
+}
+
+.card > :is(.setting-rows, .policy-rows, .setting-row, .policy-row):last-child {
+  margin-block-end: calc(var(--row-pad-default) * -1);
+}
+
+.setting-row,
+.policy-row {
+  align-items: center;
+  border-radius: var(--r-ctl);
+  column-gap: var(--space-4);
+  /* The row is its own query container, which is what lets the value's half be written as
+     a definite length rather than a percentage the flex line-break step ignores. */
+  container-type: inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  /* THE TWO SIDES TAKE THE TWO ENDS, and a side alone on a line takes the start. One
+     declaration doing what a margin plus a breakpoint used to do badly:
+     `margin-inline-start: auto` on the value pins it right even when it has wrapped onto
+     its own line, so a phone block had to unpin it - and that block then reached every row
+     in its range, including the ones that had not stacked. */
+  justify-content: space-between;
+  /* The halo hangs outside the text column, so row text keeps the card head's left edge. */
+  margin-inline: calc(var(--space-2) * -1);
+  /* 12px block padding: with trimmed text the padding IS the ink-to-hairline distance, and
+     8px put descenders against the separator. The floor is the touch target, which a
+     switch-only row lands on exactly (20 + 12 + 12); text rows clear it. The bottom
+     takes the hairline's own pixel on top of that, or the padding is the distance on
+     one side and a pixel less on the other - see `--row-hairline`. */
+  min-block-size: var(--touch-target);
+  padding: var(--row-pad-default) var(--space-2) calc(var(--row-pad-default) + var(--row-hairline));
+  position: relative;
+  /* The distance a stacked row's controls stand off its sentence. Both sides are ink-
+     trimmed, so this is the ink gap - without it the seg sat on the descenders of the
+     line above it. */
+  row-gap: var(--space-2);
+}
+
+/* The switch keeps its full 44px hit target without making a two-line row inherit 44px of
+   layout height: the visible 20px track is what the line measures, and the rest of the hit
+   area occupies the row's own padding. */
+:is(.setting-row, .policy-row) .switch {
+  margin-block: calc((20px - var(--touch-target)) / 2);
+}
+
+/* SET HERE, NOT INHERITED. The mark lives inside the row: the bar stands on the card's own
+   content edge, so the row keeps the regular card whitespace to its left, and the text
+   steps right of it on the row's own breathing rhythm. Hung outside the row it floated on
+   an edge nothing else drew. */
+:is(.setting-row, .policy-row).is-managed {
+  padding-inline-start: calc(var(--space-2) + 3px + var(--space-3));
+}
+
+:is(.setting-row, .policy-row).is-managed::before {
+  background: var(--managed-bar);
+  border-radius: 2px;
+  content: '';
+  inline-size: 3px;
+  inset-block: var(--row-pad-default);
+  inset-inline-start: var(--space-2);
+  position: absolute;
+}
+
+/* A CHANGE NOT YET SAVED IS A STATE OF THE ROW IT WAS MADE IN, so a reader looking for
+   what they touched finds it without reading the values back. Ten pages wrote this. */
+:is(.setting-row, .policy-row, .object-row).is-unsaved {
+  background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
+  box-shadow: inset 2px 0 var(--brand-action);
+}
+
+/* A drawn hairline, not a border: a border on a radiused row curves at its tips, and it
+   also makes sibling rows measure one pixel apart. It belongs to a row that has another
+   VISIBLE sibling after it - DOM order is not visual order once filters hide rows. */
+.setting-row::after,
+.policy-row::after {
+  background: var(--hairline, var(--border-subtle));
+  block-size: 1px;
+  bottom: 0;
+  content: none;
+  position: absolute;
+}
+
+.setting-row:not([hidden]):has(~ .setting-row:not([hidden]))::after,
+.policy-row:not([hidden]):has(~ .policy-row:not([hidden]))::after {
+  content: '';
+  inset-inline: var(--space-2);
+}
+
+/* The sentence takes what is left and never less than it can be read at.
+   `--setting-say-min` is clause 3's threshold, and it is a reading number rather than a
+   round one: at the description's size it holds about thirty-two characters, five average
+   English words - below that a line breaks after every word or two and stops being a
+   sentence to scan. Set as BOTH the basis and the floor, so the line breaks exactly where
+   the sentence would become unreadable rather than where it happens to run out of room.
+
+   A FLOOR IS A FLOOR UNTIL THE ROOM IS SMALLER THAN IT. Once stacked there is nowhere
+   further to go, and a bare floor then pushes the sentence out of a narrow pane; `min()`
+   with 100% hands the container back the moment the floor does not fit. */
+.setting-say {
+  display: grid;
+  flex: 1 1 var(--setting-say-min);
+  gap: 0;
+  /* One column that may not exceed the say - the same auto-track law the object
+     row states above, and the same fault without it: a setting whose name has no
+     spaces in it drew across the control it belongs to. */
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: min(var(--setting-say-min), 100%);
+}
+
+/* THE COPY-RHYTHM LAW, WHICH IS 8px RENDERED - see `--row-copy-gap`. Both boxes are
+   trimmed to their ink, so the declared margin is the rendered gap; the derivation this
+   replaces resolved 10.31px, which is a number no law asked for. */
+.setting-say > .setting-why {
+  margin-block-start: var(--row-copy-gap);
+}
+
+/* The trimmed cap box is 9.69px; floored to 10 the say stack stays whole, with the slack
+   under the alphabetic edge where no ink reaches. */
+/* PROSE BREAKS RATHER THAN DECIDING HOW WIDE THE ROW IS - the object row's own law,
+   said for the setting row's two voices. A name with no spaces in it, or a sentence
+   carrying a key set in mono, drew across the control it belongs to. */
+.setting-name,
+.setting-why {
+  overflow-wrap: anywhere;
+}
+
+.setting-name {
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  min-block-size: 10px;
+  text-box: trim-both cap alphabetic;
+  text-wrap: balance;
+}
+
+/* Trimmed like the name: untrimmed, the why's bottom leading sat above every row separator
+   while the next row's trimmed name gave the line exactly its 8px, and the seam read
+   off-centre in every settings card. No measure cap either - the say column already bounds
+   the line, and a 52ch cap folded one-sentence descriptions onto two with half the card
+   standing empty beside them. */
+.setting-why {
+  color: var(--text-muted);
+  font-size: var(--font-size-meta);
+  min-block-size: 9px;
+  text-box: trim-both cap alphabetic;
+  text-wrap: pretty;
+}
+
+.setting-why code {
+  font-family: var(--mono);
+  font-size: var(--font-size-micro);
+}
+
+.setting-value,
+.policy-value {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: end;
+  max-inline-size: 50cqi;
+  min-inline-size: min-content;
+}
+
+/* Whole controls wrap; a chip cluster never pushes the row wider than the law allows. */
+:is(.setting-value, .policy-value) > :is(.pattern-entry, .add-chip, .btn, .seg) {
+  flex: none;
+}
+
+/* Chips wrap towards the end they came from. The cap is the law's own - this class only
+   says "these wrap". */
+.setting-value-wrap {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* THE HALF IS A HALF OF A ROW WITH TWO SIDES ON IT. Once the row has stacked there is no
+   other side, and holding the controls to half leaves a phone's chip cluster in a 167px
+   column beside 165px of nothing. The row is its own query container, so it can be asked:
+   below the width at which a sentence and any control could stand together -
+   `--setting-say-min` plus the column gap plus the narrowest useful control - the value
+   has the line. The one threshold this law needs beyond its two numbers, and it is derived
+   from them rather than picked. */
+@container (max-width: 25rem) {
+  .setting-row > .setting-value,
+  .policy-row > .policy-value {
+    max-inline-size: 100%;
+  }
+}
+
+/* KNOWN IN ADVANCE, DECLARED IN ADVANCE. Some controls are never going to stand beside a
+   sentence and nothing has to measure to find that out: a checklist of every command the
+   bot answers is a set to read across, not a value at the end of a line. Such a row is
+   authored as two lines and says so, rather than being computed into them at the width
+   where it finally does not fit. `:has(.check-line)` is the same decision written where
+   the sheet can keep it - a row that gains a checklist becomes a stacked row without
+   anybody remembering to add the class. */
+:is(.setting-row, .policy-row):has(.check-line),
+:is(.setting-row, .policy-row).is-stacked {
+  flex-wrap: wrap;
+}
+
+:is(.setting-row, .policy-row):has(.check-line) > .setting-say,
+:is(.setting-row, .policy-row).is-stacked > .setting-say {
+  flex-basis: 100%;
+}
+
+/* The stacked value is a control under its explanation: it takes the line, packs left, and
+   the row gap is the distance. */
+:is(.setting-row, .policy-row):has(.check-line) > :is(.setting-value, .policy-value),
+:is(.setting-row, .policy-row).is-stacked > :is(.setting-value, .policy-value) {
+  justify-content: flex-start;
+  margin-inline-start: 0;
+  max-inline-size: 100%;
+}
+
+/* ---------- The checkbox cluster: several things on at once ----------
+
+   A switch is one thing on or off; a command set is a checklist. One content-hugging
+   line, left-packed, so the eye takes the whole set in a sweep - and each box is still
+   its own 34px press target with the row veil under it. The container's negative start
+   margin puts the first box's ink on the card's own text edge. */
+.check-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  margin-inline-start: -8px;
+}
+
+.check-item {
+  align-items: center;
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  min-block-size: 34px;
+  padding-inline: 8px;
+  position: relative;
+}
+
+.check-item:hover {
+  background: var(--row-hover);
+}
+
+.check-item:has(input:disabled) {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.check-item:has(input:disabled):hover {
+  background: none;
+}
+
+.check-item input {
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+}
+
+.check-item input:checked ~ .check-box {
+  background: var(--brand-action);
+  border-color: var(--brand-action);
+  color: var(--on-brand-action);
+}
+
+.check-item input:focus-visible ~ .check-box {
+  outline: var(--focus-ring-width) solid var(--focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.check-box {
+  align-items: center;
+  background: var(--input-bg);
+  block-size: 18px;
+  border: 1px solid var(--control-border);
+  border-radius: 5px;
+  color: transparent;
+  display: inline-flex;
+  flex: none;
+  inline-size: 18px;
+  justify-content: center;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.check-word {
+  font-family: var(--mono);
+  font-size: var(--font-size-compact);
+  min-block-size: 9px;
+  text-box: trim-both cap alphabetic;
+}
+
+/* A field with its unit written beside the number, never buried in the prose above it. */
+.entry-suffix {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.entry-unit {
+  color: var(--text-muted);
+  font-size: var(--font-size-compact);
+  min-block-size: 9px;
+  text-box: trim-both cap alphabetic;
+}
+
+/* A read-only value in a row's value column - words, not a control. */
+.setting-fact {
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  min-block-size: 9px;
+  text-box: trim-both cap alphabetic;
+}
+
+/* A VALUE BREAKS RATHER THAN DECIDING HOW WIDE THE PAGE IS. An endpoint is one
+   unbreakable run - `https://github.com/login/oauth/authorize` is 341px - and there
+   is no phone it fits on, so a row carrying one set the document's width and Chrome
+   answered by zooming the whole page out to 88%. Nothing in a fact is a value whose
+   line breaks matter; every one of them is read, not copied by eye. */
+.setting-fact,
+.setting-fact code {
+  overflow-wrap: anywhere;
+}
+
+/* THE PART OF A PATTERN THAT MAKES IT ONE. `release/*` and `release/v2` are a glyph
+   apart and only one of them is a rule, so the glyph carries the action colour and the
+   path around it stays text. A `~TOKEN` inks whole - the token IS the meaning - and a
+   `*` inks itself. */
+.glob-meta {
+  color: var(--brand-action);
+}
+
+.setting-unmanaged {
+  color: var(--text-muted);
+  font-size: var(--font-size-compact);
+  font-style: normal;
+  /* Ink-true, so the padding around the hairlines measures to the glyphs rather than to
+     the line box's leading. */
+  text-box: trim-both cap alphabetic;
+}
+
+/* The way back to inherited, which is what makes an override reversible. Quiet, but not
+   so faint that the glyph disappears on a dark card; hover and focus promote it. */
+.setting-clear {
+  align-items: center;
+  background: transparent;
+  block-size: var(--tier-quiet);
+  border: 0;
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  inline-size: var(--tier-quiet);
+  justify-content: center;
+  padding: 0;
+}
+
+.setting-clear:hover {
+  background: var(--interactive-hover-layer);
+  color: var(--text-primary);
+}
+
+.setting-clear:active {
+  background: var(--interactive-pressed);
+}
+
+:is(.setting-row, .policy-row) .setting-clear {
+  opacity: 0.64;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+
+:is(.setting-row, .policy-row):hover .setting-clear,
+:is(.setting-row, .policy-row):focus-within .setting-clear {
+  opacity: 1;
+}
+
+/* The value said in a word beside the control, so a scan reads the policy without decoding
+   thumb positions. */
+.value-word {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--font-size-micro);
+  font-variant-numeric: tabular-nums;
+  min-inline-size: 1.9rem;
+  text-align: end;
+  text-box: trim-both cap alphabetic;
+}
+
+.value-word.is-on {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* THE READING COLUMN A PAGE STANDS IN, centred in whatever pane holds it. Ten pages said
+   this themselves, which is nine chances for one of them to say it differently - and the
+   index below cannot widen a column it does not own. */
+.view-frame {
+  box-sizing: border-box;
+  inline-size: 100%;
+  margin-inline: auto;
+  max-inline-size: var(--content-max);
+  min-inline-size: 0;
+}
+
+/* ---------- The index beside a long page ----------
+
+   An index is for a page a reader has to travel; where the page is short, the answer is a
+   shorter page and not a signpost at the top of one. So it exists only where there is room
+   for it OUTSIDE the reading column: the frame widens by exactly the rail and its gutter,
+   the prose keeps its measure, and below that width the index is gone rather than narrowed
+   or stacked - the pages it indexes are one screen's scroll on a phone. */
+.page-toc {
+  display: none;
+}
+
+@media (min-width: 72rem) {
+  /* TWO ITEMS, NOT TWO COLUMNS OF MANY ROWS. As a grid item spanning every row - the usual
+     way to give a sticky element somewhere to travel - the index's own height is
+     distributed back across the tracks it spans, and a tall index over a short page head
+     stretches that head's row and leaves a void under the title. The page's content is one
+     item, so the two children's heights owe each other nothing. */
+  .view-frame:has(> .page-toc) {
+    align-items: start;
+    column-gap: var(--space-6);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--toc-width);
+    max-inline-size: calc(var(--content-max) + var(--toc-width) + var(--space-6));
+  }
+
+  /* Only a page that scrolls is given an index; a page whose cards are all on screen gets
+     its full width back. */
+  .view-frame:has(> .page-toc):not(.page-scrolls) {
+    display: block;
+    max-inline-size: var(--content-max);
+  }
+
+  .view-frame:has(> .page-toc):not(.page-scrolls) > .page-toc {
+    display: none;
+  }
+
+  .view-frame:has(> .page-toc) > .page-main {
+    grid-column: 1;
+    min-inline-size: 0;
+  }
+
+  .page-toc {
+    align-self: start;
+    display: grid;
+    gap: var(--space-1);
+    grid-column: 2;
+    grid-row: 1;
+    inset-block-start: var(--rhythm-pane-top-wide);
+    position: sticky;
+  }
+}
+
+/* THE LABEL STARTS AT THE COLUMN'S EDGE. Indented to line up with the links it read as the
+   first entry of its own list - and the entries are indented because they hang off a rule,
+   which the label does not. */
+.toc-title {
+  color: var(--text-muted);
+  font-size: var(--font-size-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  margin: 0 0 var(--space-2);
+  text-box: trim-both cap alphabetic;
+  text-transform: uppercase;
+}
+
+.page-toc a {
+  align-items: center;
+  border-inline-start: 2px solid var(--border-subtle);
+  border-radius: 0 var(--radius-chip) var(--radius-chip) 0;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--font-size-compact);
+  min-block-size: var(--tier-quiet);
+  padding-inline: var(--space-3);
+  text-decoration: none;
+}
+
+.page-toc a:hover {
+  background: var(--control-bg-hover);
+  color: var(--text-primary);
+}
+
+/* The reader's place in the page, not a selection they made - so it is said with the rule
+   and the ink, and never with a filled ground. */
+.page-toc a.is-here {
+  border-inline-start-color: var(--brand-action);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ---------- The pulse strip ----------
+
+   What a page says about the plumbing, at its foot: one dot and one sentence per
+   fact. The dot is the only colour on the strip - three coloured sentences would
+   be three alarms, and the point of the strip is that it is quiet until it is not. */
+.fact-row {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-size-meta);
+  gap: var(--space-2) var(--space-5);
+}
+
+.fact-bit {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+/* A fact is a hit target the moment it carries a link, so the line it sits on is
+   at least a target tall whether or not this one does - a strip whose rows change
+   height depending on which facts happen to link somewhere is a strip that moves. */
+.fact-bit,
+.fact-bit a {
+  min-block-size: var(--field-target-min);
+}
+
+.fact-bit a {
+  align-items: center;
+  color: inherit;
+  display: inline-flex;
+}
+
+.fact-bit a:hover {
+  color: var(--text-primary);
+}
+
+.fact-dot {
+  background: var(--success);
+  block-size: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+  inline-size: 8px;
+}
+
+.fact-dot.is-warn {
+  background: var(--warning);
+}
+
+.fact-dot.is-bad {
+  background: var(--danger);
+}
+
+@media (max-width: 47.9375rem) {
+  /* One fact per line: three of them wrapped on a phone read as a block of prose
+     rather than as three separate places to go. */
+  .fact-row {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .fact-bit,
+  .fact-bit a {
+    min-block-size: var(--touch-target);
+  }
+}
+
+/* A card head's quiet right-side fact, the group-tally voice. */
+.card-meta {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--font-size-compact);
+  line-height: var(--leading-compact);
+  margin-inline-start: auto;
+  text-box: trim-both cap alphabetic;
+}
+
+/* ---------- Console menus: the material the chrome's popovers are made of ----------
+
+   Written here rather than in the rail, because the rail stopped being the only
+   thing that opens one. The collapsed sidebar carries the workspace switch and the
+   account menu itself - the rail is not drawn at all then - and a second copy of
+   this vocabulary is a second menu that drifts from the first. */
+.console-menu {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: 13rem;
+  max-inline-size: min(24rem, calc(100vw - 24px));
+  padding: var(--space-1);
+  /* Rows breathe 2px apart, so a hovered row and its chosen neighbour never
+     read as one fused pill. */
+  row-gap: 2px;
+}
+
+.console-menu .menu-item {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  block-size: 32px;
+  color: var(--sidebar-menu-text);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--font-size-control);
+  gap: var(--space-2);
+  inline-size: 100%;
+  padding-inline: var(--space-3);
+  text-align: start;
+  text-decoration: none;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    translate var(--duration-press) var(--ease-standard),
+    box-shadow var(--duration-press) var(--ease-standard);
+}
+
+.console-menu .menu-item:hover {
+  background: var(--sidebar-menu-hover);
+}
+
+.console-menu .menu-item:focus-visible {
+  background: var(--sidebar-menu-hover);
+  outline: none;
+}
+
+.console-menu .menu-item:active {
+  background: var(--sidebar-menu-pressed);
+  box-shadow: var(--sidebar-pressed-inset);
+  translate: 0 1px;
+}
+
+.console-menu .menu-item.is-danger {
+  color: var(--sidebar-stop);
+}
+
+.console-menu .menu-item.is-danger:hover,
+.console-menu .menu-item.is-danger:focus-visible {
+  background: var(--sidebar-stop-tint);
+}
+
+/* No cap trim here: a menu label is a name with descenders, and the trim cut them
+   off. The flex row centres it on its own. */
+.mi-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-eyebrow {
+  color: var(--sidebar-menu-muted);
+  font-size: var(--font-size-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  line-height: var(--leading-tight);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  text-transform: uppercase;
+}
+
+.menu-sep {
+  background: var(--sidebar-popover-border);
+  block-size: 1px;
+  margin: var(--space-1) calc(var(--space-1) * -1);
+}
+
+.menu-theme-row {
+  display: flex;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+
+.menu-search {
+  align-items: center;
+  /* Declared 36, and the seam is a drawn line in the gap below, not part of the
+     row's box - a border made the row 37 and the text ride 0.5 high. */
+  block-size: 36px;
+  box-shadow: 0 1px 0 var(--sidebar-popover-border);
+  color: var(--sidebar-menu-muted);
+  display: flex;
+  gap: var(--space-2);
+  margin: calc(var(--space-1) * -1) calc(var(--space-1) * -1) var(--space-1);
+  padding: 0 var(--space-3);
+}
+
+.menu-search input {
+  background: none;
+  block-size: 100%;
+  border: 0;
+  color: var(--sidebar-menu-text);
+  flex: 1;
+  font-size: var(--font-size-control);
+  outline: none;
+  padding: 0;
+}
+
+.menu-search input::placeholder {
+  color: var(--sidebar-menu-muted);
+}
+
+.menu-scroll {
+  display: grid;
+  max-block-size: 288px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.menu-hint {
+  color: var(--sidebar-menu-muted);
+  font-size: var(--font-size-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-tight);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+
+/* The workspace initial at menu size: the identity at rest voice, 20px. */
+.ws-mini {
+  align-items: center;
+  background: var(--ws-tint);
+  border-radius: 6px;
+  block-size: var(--tier-mark);
+  color: var(--ws-ink);
+  display: inline-flex;
+  flex: none;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  inline-size: 20px;
+  justify-content: center;
+  /* The generated mark is a colour of its own, so it needs a boundary against the
+     surface it sits on: a white inner hairline to lift it off its own fill, and the
+     rail's line token outside that - tuned to the 3:1 floor rather than past it,
+     which is what read as chalk. */
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 22%),
+    0 0 0 1px var(--sidebar-thumb-line);
+}
+
+.ws-mini .t {
+  text-box: trim-both cap alphabetic;
+}
+
+/* The chrome cannot grow when state appears. This keyed mark sits over the existing
+   tile/menu geometry and remains legible without its warning ink. */
+.rail-dirty {
+  align-items: center;
+  background: var(--sidebar-bg);
+  block-size: 12px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  box-sizing: border-box;
+  color: var(--warning);
+  display: inline-flex;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  font-weight: 800;
+  inline-size: 12px;
+  inset-block-start: -3px;
+  inset-inline-end: -3px;
+  justify-content: center;
+  line-height: var(--leading-flat);
+  position: absolute;
+  text-box: trim-both cap alphabetic;
+  z-index: 3;
+}
+
+.menu-item.has-dirty {
+  position: relative;
+}
+
+.menu-item.has-dirty .mi-label {
+  padding-inline-end: 16px;
+}
+
+.menu-dirty {
+  background: var(--sidebar-popover-bg);
+  inset-block-start: 50%;
+  inset-inline-end: 8px;
+  translate: 0 -50%;
+}
+
+/*
+  WHAT A PHONE DOES TO THE SHARED VOCABULARY, LAST IN THE SHEET.
+
+  Every rule here overrides a base declared above it at the same class count, so it has
+  to come after it: written where each vocabulary is defined, the base won on source
+  order and a phone kept the desktop's layout while the sheet said otherwise.
+*/
+@media (max-width: 47.9375rem) {
+  /* A toolbar's tools sit beside what they belong to. The automatic margin pushed them
+     to the far edge of a line they were alone on. */
+  .filter-bar .push-end {
+    margin-inline-start: 0;
+  }
+
+  /* Rows re-form as cards: the name and its standings, the sentence, and then whatever
+     the row offers on its own line - never a sentence and a control crushed side by
+     side into two columns of four words each. */
+  .object-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .object-side {
+    color: var(--text-secondary);
+    justify-content: flex-start;
+  }
+
+  /* A row that offers nothing takes no line for it. */
+  .object-side:empty {
+    display: none;
+  }
+
+  /* Nor does a chevron, once the whole row is the target: stacked, it points at
+     nothing from under the sentence and costs a line to do it. */
+  a.object-row > .object-side {
+    display: none;
+  }
+
+  /* Flush with the sentence above it: a quiet control's own inset is what separated
+     the two, and under a stacked row that reads as an indent nothing asked for. */
+  .object-side > .btn-quiet {
+    margin-inline-start: calc(var(--space-3) * -1);
+  }
+
+  /* THE LAW ALREADY STACKS THESE. A phone is narrower than a sentence plus any control,
+     so the flex line breaks on its own - there is no breakpoint to write and nothing to
+     force. What is left here is what a stacked row looks like once it has stacked: the
+     sentence takes the line, the controls take the next one and pack left, and the way
+     back to inherited stays beside them in DOM order rather than orphaned on a third row.
+     The grid templates and explicit row placements seven pages carried here are gone;
+     every one of them would now fight the law. */
+  .policy-row > .setting-say {
+    flex-basis: 100%;
+  }
+
+  :is(.setting-row, .policy-row) > :is(.setting-value, .policy-value) {
+    justify-content: flex-start;
+  }
+
+  .policy-row .policy-value .value-select {
+    max-inline-size: 100%;
+  }
+
+  /* No hover on a phone, so the quiet way back has to be visible without one. */
+  :is(.setting-row, .policy-row) .setting-clear {
+    opacity: 1;
+  }
+
+  :is(.setting-row, .policy-row) .switch {
+    margin-block: 0;
+    min-block-size: 32px;
   }
 }

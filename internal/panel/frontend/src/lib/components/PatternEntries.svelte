@@ -1,16 +1,7 @@
 <script lang="ts">
-  /**
-   * A list of patterns edited in place: an entry is an INPUT wearing field
-   * material, press its text to edit it where it stands, the x detaches it,
-   * Add opens an empty one. Commits ride a 700ms debounce; pasting, Enter,
-   * Escape and leaving the field commit at once, and an entry left empty is
-   * dropped rather than kept blank.
-   *
-   * Three pages share this row: labels, rulesets and files all carry a
-   * leave-alone list, and each used to grow its own copy of the same
-   * fifteen behaviours.
-   */
   import { tick } from 'svelte';
+
+  import { globRuns } from '#lib/glob-runs.js';
 
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
@@ -128,6 +119,19 @@
   );
 </script>
 
+<!--
+@component
+A list of patterns edited in place: an entry is an INPUT wearing field
+material, press its text to edit it where it stands, the x detaches it,
+Add opens an empty one. Commits ride a 700ms debounce; pasting, Enter,
+Escape and leaving the field commit at once, and an entry left empty is
+dropped rather than kept blank.
+
+Three pages share this row: labels, rulesets and files all carry a
+leave-alone list, and each used to grow its own copy of the same
+fifteen behaviours.
+-->
+
 <svelte:document onclick={outside} />
 
 <span class="pattern-entries">
@@ -150,27 +154,33 @@
           aria-label="Remove {pattern === '' ? 'pattern' : pattern}"
           onclick={() => remove(index)}
         >
-          <Icon name="close" size={12} />
+          <Icon name="close" size="xs" />
         </button>
       </span>
     {:else}
       <span class="pattern-entry">
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <span class="t" onclick={(event) => void open(index, event)}>{pattern}</span>
+        <!-- The metacharacters inked apart from the path they sit in: a pattern is
+             read for what makes it a pattern. -->
+        <span class="t" onclick={(event) => void open(index, event)}
+          >{#each globRuns(pattern) as run, at (at)}{#if run.meta}<span class="glob-meta"
+                >{run.text}</span
+              >{:else}{run.text}{/if}{/each}</span
+        >
         <button
           class="pattern-del"
           aria-label="Remove {pattern}"
           disabled={readOnly}
           onclick={() => remove(index)}
         >
-          <Icon name="close" size={12} />
+          <Icon name="close" size="xs" />
         </button>
       </span>
     {/if}
   {/each}
 </span>
 <Button tone="quiet" class="pattern-add" disabled={readOnly} onclick={() => void add()}>
-  {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
+  {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
   Add
 </Button>
 
@@ -179,6 +189,8 @@
     align-items: center;
     display: inline-flex;
     flex-wrap: wrap;
+    /* As wide as the entries it holds - see the note above `.chip` in app.css. */
+    inline-size: fit-content;
     gap: var(--space-2);
   }
 
@@ -206,8 +218,8 @@
 
   .pattern-entry:focus-within {
     border-color: var(--focus);
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 
   .pattern-entry .pattern-input {
@@ -229,14 +241,14 @@
   .pattern-del {
     align-items: center;
     background: transparent;
-    block-size: 24px;
+    block-size: var(--field-target-min);
     border: 0;
     border-radius: 3px;
     color: var(--text-muted);
     cursor: pointer;
     display: inline-flex;
     flex: none;
-    inline-size: 24px;
+    inline-size: var(--field-target-min);
     justify-content: center;
     opacity: 0;
     padding: 0;

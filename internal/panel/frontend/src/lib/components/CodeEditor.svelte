@@ -1,18 +1,4 @@
 <script lang="ts">
-  /**
-   * The composed copy as an editable surface: CodeMirror, dressed to sit
-   * where a CodeBlock sits - same font, same line grid, same managed gutter
-   * bar on the lines an adjustment rewrote. JSON only, because that is the
-   * one language the merge can be derived back from.
-   *
-   * The editor mounts inside a shadow root. That is not decoration: the
-   * panel serves `style-src 'self'`, under which the style element
-   * CodeMirror injects into a document head is parsed and thrown away -
-   * silently, like every CSP style refusal. In a shadow root its style
-   * module rides `adoptedStyleSheets`, which is script writing to the
-   * CSSOM, and CSP does not govern that. (Spelled "style element" here
-   * because svelte2tsx scans script comments for tags.)
-   */
   import { defaultKeymap, history, historyKeymap, undo, undoDepth } from '@codemirror/commands';
   import { json } from '@codemirror/lang-json';
   import { markdown } from '@codemirror/lang-markdown';
@@ -137,12 +123,12 @@
     },
     '.cm-scroller': {
       fontFamily: 'inherit',
-      lineHeight: 'round(1.65em, 1px)',
+      lineHeight: 'var(--leading-meta)',
       overflowX: 'auto',
       padding: 'var(--space-3) 0',
     },
     '.cm-content': {
-      caretColor: 'var(--text)',
+      caretColor: 'var(--text-primary)',
       padding: '0',
     },
     '.cm-line': {
@@ -253,6 +239,22 @@
   });
 </script>
 
+<!--
+@component
+The composed copy as an editable surface: CodeMirror, dressed to sit
+where a CodeBlock sits - same font, same line grid, same managed gutter
+bar on the lines an adjustment rewrote. JSON only, because that is the
+one language the merge can be derived back from.
+
+The editor mounts inside a shadow root. That is not decoration: the
+panel serves `style-src 'self'`, under which the style element
+CodeMirror injects into a document head is parsed and thrown away -
+silently, like every CSP style refusal. In a shadow root its style
+module rides `adoptedStyleSheets`, which is script writing to the
+CSSOM, and CSP does not govern that. (Spelled "style element" here
+because svelte2tsx scans script comments for tags.)
+-->
+
 <div class="code-editor" {@attach editor}></div>
 
 <style>
@@ -264,12 +266,12 @@
     border-radius: var(--r-ctl);
     font-family: var(--mono);
     font-size: var(--font-size-compact);
-    line-height: round(1.65em, 1px);
+    line-height: var(--leading-meta);
   }
 
   .code-editor:focus-within {
     border-color: var(--focus);
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 </style>

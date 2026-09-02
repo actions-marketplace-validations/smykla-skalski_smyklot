@@ -5,7 +5,7 @@
    * Who a row is about: a mark, a name, and the handle under it.
    *
    * Five tables wrote this by hand under five class names - `.identity`,
-   * `.user-identity`, `.option-copy`, `.who-*`, `.installation-identity` - and the
+   * `.user-identity`, `.option-copy`, `.who-*`, `.workspace-identity` - and the
    * copies disagreed about the one thing that is hard to see and easy to lose.
    *
    * **The stack is trimmed, always.** A name over a handle is two elements, so the
@@ -20,26 +20,6 @@
    * off centre anyway, because at its size the leading and the descender room
    * happened to cancel - correct by luck rather than by construction, and only for
    * that pairing of fonts at that size. Here it is by construction.
-   */
-  /**
-   * ## The sidebar's account row is NOT one of these, and that was decided by looking
-   *
-   * `IdentityBar`'s `.who` draws the same three things - avatar, name, handle - and is
-   * the obvious eighth call site. It stays as it is, because the two are only the same
-   * shape and not the same thing:
-   *
-   * - Its ink is `--sidebar-text` and `--sidebar-text-muted`, a palette the rail
-   *   re-declares. This row is written against the page's.
-   * - Its stack gap is 0.1rem, measured against the card it sits in. This one takes
-   *   `--space-2`, measured against a table row.
-   * - Its two lines are a step smaller, because the rail is 240px and a name has to
-   *   fit beside a 32px avatar with a chevron after it.
-   *
-   * Folding them together would change how the sidebar looks, which is a design
-   * decision wearing a refactor's clothes - the same call as the cell font size in
-   * `DataTable`. It is worth asking whether the sidebar should adopt this row's
-   * typography; it is worth asking where it can be looked at, not in a diff that
-   * claims to move nothing.
    */
   const {
     mark,
@@ -62,6 +42,30 @@
     extra?: Snippet;
   } = $props();
 </script>
+
+<!--
+@component
+An account said in one line: the avatar, the name and the handle, at the seven places
+that report who something belongs to.
+
+## The sidebar's account row is NOT one of these, and that was decided by looking
+
+`IdentityBar`'s `.who` draws the same three things - avatar, name, handle - and is
+the obvious eighth call site. It stays as it is, because the two are only the same
+shape and not the same thing:
+
+- Its ink is `--sidebar-text` and `--sidebar-text-muted`, a palette the rail
+  re-declares. This row is written against the page's.
+- Its stack gap is 0.1rem, measured against the card it sits in. This one takes
+  `--space-2`, measured against a table row.
+- Its two lines are a step smaller, because the rail is 240px and a name has to
+  fit beside a 32px avatar with a chevron after it.
+
+Folding them together would change how the sidebar looks, which is a design
+decision wearing a refactor's clothes. It is worth asking whether the sidebar
+should adopt this row's typography; it is worth asking where it can be looked
+at, not in a diff that claims to move nothing.
+-->
 
 <span class="identity-row">
   {@render mark()}
@@ -96,7 +100,7 @@
      truncate rather than wrapping, because a row is one line tall.
 
      Two tables declared exactly this and a third wrote its own. Anything a caller
-     genuinely needs to differ - the installations table's monospace handle - it
+     genuinely needs to differ - the workspaces table's monospace handle - it
      still says for itself, on a class of its own. */
   /* `clip` with a margin, not `hidden`.
      ------------------------------------
@@ -110,7 +114,7 @@
      ink that escaped would land in the row beneath. 0.4em is what the queue's
      pull-request names already ask for; the deepest descender here is 0.18em.
 
-     The installations table had found this and the other two had not, so two of the
+     The workspaces table had found this and the other two had not, so two of the
      three were clipping their own descenders. Here it is the default, which is the
      point of the component. */
   .identity-row > :global(.band-trim-stack) > :global(*) {
@@ -122,12 +126,12 @@
 
   .identity-row :global(strong) {
     font-size: var(--font-size-body);
-    line-height: 1.2;
+    line-height: var(--leading-body);
   }
 
   .identity-row :global(.mono) {
     color: var(--text-muted);
     font-size: var(--font-size-compact);
-    line-height: 1.25;
+    line-height: var(--leading-compact);
   }
 </style>

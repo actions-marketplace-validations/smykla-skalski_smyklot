@@ -113,7 +113,7 @@ export const RUNTIME_DURATION_SPECS: Readonly<Record<RuntimeDurationKey, Runtime
     minimumSeconds: 60,
     maximumSeconds: 7 * 24 * 60 * 60,
     allowZero: false,
-    problem: 'Path index interval must be between 1 minute and the service ceiling',
+    problem: 'File index interval must be between 1 minute and the service ceiling',
   },
   session_ttl_seconds: {
     key: 'session_ttl_seconds',
@@ -328,7 +328,7 @@ export function serializeRuntimeSettingsDraft(
     return {
       ok: false,
       controlId: 'runtime.log_level',
-      problem: 'Runtime settings revision is invalid',
+      problem: 'Service settings revision is invalid',
     };
   }
   const parsed = parseRuntimeSettingsDraftDocument(document);
@@ -336,7 +336,7 @@ export function serializeRuntimeSettingsDraft(
     return {
       ok: false,
       controlId: 'runtime.log_level',
-      problem: 'Runtime settings draft is invalid',
+      problem: 'Service settings draft is invalid',
     };
   }
   const durations: Partial<Record<RuntimeDurationKey, number | null>> = {};

@@ -25,7 +25,14 @@ async function flip(page: Page, name: string): Promise<void> {
   await page.locator('label.switch').filter({ has: input }).click();
 }
 
-describe('installation Sync drafts', () => {
+/* The kind switch says what pressing it would DO - "Pause label syncing" when
+   it is on, "Resume" when it is off - so the stable handle is where it sits
+   rather than what it currently reads. */
+async function flipKind(page: Page): Promise<void> {
+  await page.locator('.page-status label.switch').click();
+}
+
+describe('workspace Sync drafts', () => {
   it('persists across routes and workspaces, then saves every setting once', async () => {
     const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
     const saves: Request[] = [];
@@ -39,17 +46,17 @@ describe('installation Sync drafts', () => {
     });
 
     try {
-      await visit(page, addressOf(panel, 'i/sync/labels'), { ready: 'h2' });
-      await flip(page, 'Remove labels this list does not name');
+      await visit(page, addressOf(panel, 'workspace/sync/labels'), { ready: 'h1' });
+      await flip(page, 'Delete unlisted labels');
       await page.getByText('1 changed setting').waitFor({ state: 'visible' });
       expect(saves).toHaveLength(0);
 
-      await page.locator(`a[href="/i/${panel.account}/sync/settings"]`).click();
-      await page.getByRole('heading', { name: 'Settings' }).waitFor({ state: 'visible' });
+      await page.locator(`a[href="/workspace/${panel.account}/sync/settings"]`).click();
+      await page.getByRole('heading', { name: 'Repository options' }).waitFor({ state: 'visible' });
       await page.getByText('1 changed setting').waitFor({ state: 'visible' });
       expect(saves).toHaveLength(0);
 
-      await flip(page, 'Settings sync');
+      await flipKind(page);
       await page.getByText('2 changed settings').waitFor({ state: 'visible' });
       const saved = page.waitForRequest(batchSave);
       await page.getByRole('button', { name: 'Save' }).click();
@@ -84,7 +91,7 @@ describe('installation Sync drafts', () => {
           }>;
         };
         const rootInspection = (await (
-          await fetch(`/api/v1/root/installations/2001/settings/checkpoints/${checkpointId}`)
+          await fetch(`/api/v1/root/workspaces/2001/settings/checkpoints/${checkpointId}`)
         ).json()) as { id: string };
         const labels = source.items.find(
           (item) => item.kind === 'sync_config' && item.sync_kind === 'labels',
@@ -155,32 +162,88 @@ describe('installation Sync drafts', () => {
       });
       expect(checkpointProof.restoredCheckpointId).toBeTruthy();
 
-      await page.locator(`a[href="/i/${panel.account}/sync/labels"]`).click();
-      await flip(page, 'Remove labels this list does not name');
+      await page.locator(`a[href="/workspace/${panel.account}/sync/labels"]`).click();
+      await flip(page, 'Delete unlisted labels');
       await page.getByText('1 changed setting').waitFor({ state: 'visible' });
 
+      /* A reload restores the draft and says so where the draft is, which is the
+         composer counting it - there is no notice announcing it any more. */
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await page.getByText('Unsaved settings restored').waitFor({ state: 'visible' });
       await page.getByText('1 changed setting').waitFor({ state: 'visible' });
 
-      const workspaces = page.locator('nav[aria-label="Consoles"] a[href^="/i/"]');
+      const workspaces = page.locator('nav[aria-label="Consoles"] a[href^="/workspace/"]');
       expect(await workspaces.count()).toBeGreaterThan(1);
       const originalWorkspace = page.locator(
-        `nav[aria-label="Consoles"] a[href^="/i/${panel.account}/"]`,
+        `nav[aria-label="Consoles"] a[href^="/workspace/${panel.account}/"]`,
       );
       const other = page
-        .locator(`nav[aria-label="Consoles"] a[href^="/i/"]:not([href^="/i/${panel.account}/"])`)
+        .locator(
+          `nav[aria-label="Consoles"] a[href^="/workspace/"]:not([href^="/workspace/${panel.account}/"])`,
+        )
         .first();
       const originalPath = new URL(page.url()).pathname;
       await other.click();
       await page.waitForURL((url) => url.pathname !== originalPath);
       expect(await originalWorkspace.getAttribute('aria-label')).toContain('unsaved changes');
       await originalWorkspace.click();
-      await page.waitForURL((url) => url.pathname === `/i/${panel.account}/sync`);
-      await page.locator(`a.tree-kid[href="${originalPath}"]`).click();
+      await page.waitForURL((url) => url.pathname === `/workspace/${panel.account}/sync`);
+      await page.locator(`a.tree-row[href="${originalPath}"]`).click();
       await page.waitForURL((url) => url.pathname === originalPath);
       await page.getByText('1 changed setting').waitFor({ state: 'visible' });
       expect(dialogs).toBe(0);
+    } finally {
+      await page.close();
+    }
+  });
+
+  /**
+   * A change that removes something reports what it removed, and hands back the way to
+   * keep it - and the receipt never covers the bar a reader is about to press.
+   */
+  it('receipts a removal, stands clear of the save bar, and undoes', async () => {
+    const page = await panel.browser.newPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await visit(page, addressOf(panel, 'workspace/sync/labels'), { ready: 'h2' });
+
+      /* The fixture's list is empty, so the row this removes is one it made: a receipt
+         has to name the label it took away, and a made row proves the name travelled. */
+      const name = 'needs-triage';
+      await page.getByRole('button', { name: 'Add a label' }).click();
+      await page.getByRole('textbox', { name: 'Label name' }).fill(name);
+      await page.getByRole('textbox', { name: 'Label name' }).press('Enter');
+
+      const first = page.locator('.label-row').first();
+      await first.getByRole('button', { name: `Remove ${name}` }).click();
+
+      const receipt = page.locator('.toast');
+      await receipt.getByText(`Removed ${name}`).waitFor();
+
+      /* The composer is up - a label just left the draft - so the receipt has to be
+         standing above it rather than on it. */
+      const clear = await page.evaluate(() => {
+        const toast = document.querySelector('.toast')?.getBoundingClientRect();
+        const bar = document
+          .querySelector('.settings-composer, .apply-bar')
+          ?.getBoundingClientRect();
+        if (toast === undefined || bar === undefined) return null;
+
+        return Math.round(bar.top - toast.bottom);
+      });
+      expect(clear === null || clear >= 0).toBe(true);
+
+      await receipt.getByRole('button', { name: 'Undo' }).click();
+      await page.locator('.toast').getByText(`${name} is back`).waitFor();
+      await page
+        .locator('.label-row')
+        .filter({ hasText: name })
+        .first()
+        .waitFor({ state: 'visible' });
+
+      /* Escape takes the receipt away, which is the design system's rule and the one
+         way out of it that needs no pointer. It is the TOPMOST surface's press here -
+         nothing is open over the page - and the receipt is what answers. */
+      await page.keyboard.press('Escape');
+      await page.locator('.toast').waitFor({ state: 'detached' });
     } finally {
       await page.close();
     }

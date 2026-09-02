@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 
+import { mixOklab } from './color';
+
 /**
- * The four palettes a control actually renders in, reconstructed from `app.css`.
+ * The four palettes a control actually renders in, reconstructed from `tokens.css`.
  *
  * The panel has two themes and the Root console re-skins both of them, so every rule about a
  * hover, a press or a selected fill has four answers, not one. A number checked only against the
@@ -10,19 +12,33 @@ import { readFileSync } from 'node:fs';
  * derived from them.
  *
  * Custom properties substitute at computed-value time on the element that declares them, which is
- * why this resolves per element rather than by flattening every block into one map: `--accent:
- * var(--brand-action)` declared on `:root` is already resolved to petrol by the time it inherits
- * into the violet Root shell. That is a real cascade behaviour the shell works around by
- * re-declaring its aliases, and a resolver that ignored it would report colours nobody sees.
+ * why this resolves per element rather than by flattening every block into one map: a
+ * `--border-strong: color-mix(…, var(--text-primary) …)` declared on `:root` is already resolved
+ * against the panel's ink by the time it inherits into the violet Root shell. That is a real
+ * cascade behaviour the shell works around by re-declaring what it moves, and a resolver that
+ * ignored it would report colours nobody sees.
  */
 
-const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../src/tokens.css', import.meta.url), 'utf8');
+
+/**
+ * The two halves of the panel's stylesheet, and the pair every sweep has to read.
+ *
+ * `tokens.css` holds the declarations and `app.css` the rules that spend them, so a check written
+ * against one of them alone is a check against half the sheet - and the half it misses is silent:
+ * an orphan sweep with no declarations to read reports no orphans.
+ */
+export const tokensStylesheet = css;
+export const appStylesheet = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+export const stylesheets = `${css}\n${appStylesheet}`;
 
 type Declarations = Record<string, string>;
 
 function block(selector: string): Declarations {
-  const start = css.indexOf(`\n${selector} {`);
-  if (start === -1) throw new Error(`app.css has no \`${selector}\` block`);
+  const escaped = selector.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
+  const opener = new RegExp(String.raw`^${escaped}(?:,|\s*\{)`, 'mu').exec(css);
+  if (opener === null) throw new Error(`tokens.css has no \`${selector}\` block`);
+  const start = opener.index;
   const open = css.indexOf('{', start);
   const end = css.indexOf('\n}', open);
   if (end === -1) throw new Error(`\`${selector}\` block is unterminated`);
@@ -120,6 +136,25 @@ function element(own: Declarations, inherited: Map<string, Paint>): Map<string, 
 
     const reference = trimmed.match(/^var\(--(?<name>[\w-]+)\)$/u)?.groups?.name;
     if (reference !== undefined) return token(reference);
+
+    /* OKLab is mixed perceptually rather than channel by channel, and only where both terms are
+       opaque - which is every declaration that asks for it. A translucent one would need the
+       premultiplied path below, and is refused rather than silently mixed the wrong way. */
+    const perceptual = trimmed.match(
+      /^color-mix\(in oklab,\s*(?<top>.+?)\s+(?<share>[\d.]+)%,\s*(?<base>.+)\)$/u,
+    );
+    if (perceptual !== null) {
+      const top = value(perceptual.groups?.top ?? '');
+      const base = value(perceptual.groups?.base ?? '');
+      if (top.alpha !== 1 || base.alpha !== 1) {
+        throw new Error(`a translucent \`in oklab\` mix is not resolved here: ${trimmed}`);
+      }
+
+      return {
+        alpha: 1,
+        color: mixOklab(top.color, base.color, Number(perceptual.groups?.share) / 100),
+      };
+    }
 
     const blend = trimmed.match(
       /^color-mix\(in srgb,\s*(?<top>.+?)\s+(?<share>[\d.]+)%,\s*(?<base>.+)\)$/u,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/smykla-skalski/smyklot/internal/storage"
@@ -103,7 +104,7 @@ func (s *Server) getTargets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"targets": response})
 }
 
-func (s *Server) postRootInstallationSync(w http.ResponseWriter, r *http.Request) {
+func (s *Server) postRootWorkspaceSync(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSameOrigin(w, r) {
 		return
 	}
@@ -154,7 +155,7 @@ func (s *Server) getRepository(w http.ResponseWriter, r *http.Request) {
 // stored where the request does not mention it.
 //
 // Four handlers decode a settings request carrying this field - an
-// installation's and one repository's, each from the panel and from the Root
+// workspace's and one repository's, each from the panel and from the Root
 // console - and each spelled the same eight lines. The field lives on the
 // shared request struct and the check did not, so a fifth handler decoding
 // either struct would have accepted it with nothing looking at it.
@@ -302,32 +303,17 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.getInstallationAuditPage(w, r, target.ID)
+	s.getWorkspaceAuditPage(w, r, target.ID)
 }
 
-func (s *Server) getInstallationAuditPage(w http.ResponseWriter, r *http.Request, targetID string) {
+func (s *Server) getWorkspaceAuditPage(w http.ResponseWriter, r *http.Request, targetID string) {
 	page, err := parseHistoryPage(r.URL.Query(), auditHistoryOrders...)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", err.Error())
 		return
 	}
-	scope := storage.AuditScope(r.URL.Query().Get("scope"))
-	if scope == "" {
-		scope = storage.AuditAll
-	}
-	if scope != storage.AuditAll && scope != storage.AuditAccount &&
-		scope != storage.AuditRepositories {
-		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid audit scope")
-		return
-	}
-	change := storage.AuditChange(r.URL.Query().Get("change"))
-	if change == "" {
-		change = storage.AuditChangeAll
-	}
-	if change != storage.AuditChangeAll && change != storage.AuditChangeRepository &&
-		change != storage.AuditChangeAccount &&
-		change != storage.AuditChangeSync {
-		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid audit change")
+	scope, change, ok := s.auditFilters(w, r)
+	if !ok {
 		return
 	}
 	result, err := s.store.ListAudit(r.Context(), targetID, storage.AuditPageRequest{
@@ -342,15 +328,47 @@ func (s *Server) getInstallationAuditPage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, auditPageDTO(result))
 }
 
+// auditFilters reads the two narrowings a workspace's audit takes, or writes the
+// refusal itself. Shared by the page and the export, so the file a reader takes
+// away is filtered exactly the way the page they took it from was.
+func (s *Server) auditFilters(
+	w http.ResponseWriter,
+	r *http.Request,
+) (storage.AuditScope, storage.AuditChange, bool) {
+	scope := storage.AuditScope(r.URL.Query().Get("scope"))
+	if scope == "" {
+		scope = storage.AuditAll
+	}
+	if scope != storage.AuditAll && scope != storage.AuditAccount &&
+		scope != storage.AuditRepositories {
+		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid audit scope")
+
+		return "", "", false
+	}
+	change := storage.AuditChange(r.URL.Query().Get("change"))
+	if change == "" {
+		change = storage.AuditChangeAll
+	}
+	if change != storage.AuditChangeAll && change != storage.AuditChangeRepository &&
+		change != storage.AuditChangeAccount &&
+		change != storage.AuditChangeSync {
+		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid audit change")
+
+		return "", "", false
+	}
+
+	return scope, change, true
+}
+
 func (s *Server) getFailures(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.historyTarget(w, r)
 	if !ok {
 		return
 	}
-	s.getInstallationFailurePage(w, r, target.ID)
+	s.getWorkspaceFailurePage(w, r, target.ID)
 }
 
-func (s *Server) getInstallationFailurePage(w http.ResponseWriter, r *http.Request, targetID string) {
+func (s *Server) getWorkspaceFailurePage(w http.ResponseWriter, r *http.Request, targetID string) {
 	page, err := parseHistoryPage(r.URL.Query(), failureHistoryOrders...)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", err.Error())
@@ -369,15 +387,39 @@ func (s *Server) getInstallationFailurePage(w http.ResponseWriter, r *http.Reque
 		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid failure kind")
 		return
 	}
+	since, ok := failuresSince(r.URL.Query())
+	if !ok {
+		s.writeError(w, http.StatusBadRequest, "invalid_history_query", "invalid failure window")
+		return
+	}
 	result, err := s.store.ListFailures(r.Context(), targetID, storage.FailurePageRequest{
 		HistoryPageRequest: page,
 		Retryable:          retryable,
+		Since:              since,
 	})
 	if err != nil {
 		s.writeInternal(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, failurePageDTO(result))
+}
+
+// failuresSince reads the window a caller asked for, or none. The false return
+// is a malformed one, which is a different answer from an absent one: a page
+// silently widened to all of history would read as "nothing failed lately"
+// only by luck.
+func failuresSince(values url.Values) (*time.Time, bool) {
+	raw := values.Get("since")
+	if raw == "" {
+		return nil, true
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, false
+	}
+	value = value.UTC()
+
+	return &value, true
 }
 
 func (s *Server) historyTarget(

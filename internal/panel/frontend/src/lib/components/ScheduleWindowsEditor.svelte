@@ -34,10 +34,20 @@
   }
 </script>
 
+<!--
+@component
+The weekly windows during which work may run, edited as a list rather than a calendar.
+A window is a day and a span, and the list is the profile.
+
+Overlapping windows are not an error and are not merged: two that overlap mean the same
+thing as one that spans both, and rewriting what somebody typed into what it is
+equivalent to is a change they did not make.
+-->
+
 <div class="windows-editor">
   <div class="windows-heading">
-    <span>Weekly open windows</span>
-    <Button row onclick={() => onChange([...windows, newWindow()])}>Add window</Button>
+    <span>Open hours, week by week</span>
+    <Button row onclick={() => onChange([...windows, newWindow()])}>Add a day</Button>
   </div>
   {#each windows as window, index (window.id)}
     <div class="window-row">
@@ -113,7 +123,7 @@
     background: var(--input-bg);
     border: 1px solid var(--control-border);
     border-radius: var(--radius-control);
-    color: var(--text);
+    color: var(--text-primary);
     font: inherit;
     min-height: 2.5rem;
     padding: 0 var(--space-3);

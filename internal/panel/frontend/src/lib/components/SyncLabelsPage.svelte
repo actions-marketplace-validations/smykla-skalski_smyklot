@@ -30,43 +30,48 @@
   }
 </script>
 
+<!--
+@component
+The labels page: staged, per-segment editing. Pressing a name,
+a description or the colour dot swaps only that piece into its edit
+state, in place - the in-place input is the hover ghost made real, so
+the swap moves nothing. Everything updates the workspace draft as it
+commits; pressing anywhere else closes the open piece. Below, the two
+decisions that shape what the list means: whether
+unlisted labels are removed, and the patterns left alone either way.
+-->
+
 <script lang="ts">
-  /**
-   * The labels page: staged, per-segment editing. Pressing a name,
-   * a description or the colour dot swaps only that piece into its edit
-   * state, in place - the in-place input is the hover ghost made real, so
-   * the swap moves nothing. Everything updates the installation draft as it
-   * commits; pressing anywhere else closes the open piece. Below, the two
-   * decisions that shape what the list means: whether
-   * unlisted labels are removed, and the patterns left alone either way.
-   */
   import { tick, untrack } from 'svelte';
 
-  import type { SyncConfig, SyncLabel } from '../types';
-  import type { SyncSection } from '../routes';
+  import { receipts } from '../receipts.svelte';
+  import type { SyncConfig, SyncLabel, SyncStatus } from '../types';
 
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import FormError from './FormError.svelte';
   import Icon from './Icon.svelte';
   import LabelColorPicker from './LabelColorPicker.svelte';
-  import PanePath from './PanePath.svelte';
+  import PageHeader from './PageHeader.svelte';
   import PatternEntries from './PatternEntries.svelte';
   import Switch from './Switch.svelte';
+  import SyncKindFacts, { syncSwitchLabel, syncSwitchWord } from './SyncKindFacts.svelte';
 
   const {
     config,
     readOnly,
     problem = null,
-    sectionHref,
-    onOpenSection,
+    syncStatus = null,
+    nowMs,
     onChange,
     dirtyControls = [],
   }: {
     config: SyncConfig | null;
     readOnly: boolean;
     problem?: string | null;
-    sectionHref: (section: SyncSection) => string;
-    onOpenSection: (section: SyncSection) => void;
+    /** The fleet, for how far this kind reaches. */
+    syncStatus?: SyncStatus | null;
+    nowMs: number;
     /** Stages one semantic labels control in the application-wide draft. */
     onChange: (
       input: LabelsSaveInput,
@@ -325,9 +330,22 @@
 
   function removeLabel(index: number): void {
     if (frozen) return;
+    const gone = rows[index];
     rows = rows.filter((_, at) => at !== index);
     editing = null;
     push('sync.labels.labels');
+    /* A row that leaves is the one change on this page with nothing left on screen to
+       read it back from, so the receipt carries both the name and the way back. */
+    receipts.say(`Removed ${gone?.name === '' || gone === undefined ? 'the label' : gone.name}`, {
+      undo:
+        gone === undefined
+          ? undefined
+          : () => {
+              rows = [...rows.slice(0, index), gone, ...rows.slice(index)];
+              push('sync.labels.labels');
+              receipts.say(`${gone.name === '' ? 'The label' : gone.name} is back`);
+            },
+    });
   }
 
   /* ---------- Outside is the exit ---------- */
@@ -363,32 +381,37 @@
 <svelte:document onclick={outside} onkeydown={keys} />
 
 <div class="view-frame">
-  <PanePath
-    segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
-    ]}
-  />
-
-  <div
-    class="kind-head"
-    class:is-unsaved={dirtyControlSet.has('sync.labels.enabled')}
-    data-unsaved={dirtyControlSet.has('sync.labels.enabled') || undefined}
+  <PageHeader
+    id="sync-labels-heading"
+    section="Sync"
+    title="Labels"
+    description="The labels every syncing repository should carry; changes enter the next plan"
+    statusUnsaved={dirtyControlSet.has('sync.labels.enabled')}
   >
-    <div class="kind-head-say">
-      <h2 class="card-title">Labels</h2>
-      <p class="kind-head-sub">
-        The labels every repository should carry. Changes here feed the next plan - nothing reaches
-        GitHub until you apply one
-      </p>
-    </div>
-    <Switch
-      checked={enabled}
-      label="Label sync"
-      word="Syncing"
-      disabled={frozen}
-      onToggle={(next) => push('sync.labels.enabled', { enabled: next })}
-    />
-  </div>
+    {#snippet actions()}
+      <Button class="label-add" disabled={frozen} onclick={addLabel}>
+        {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
+        Add a label
+      </Button>
+    {/snippet}
+    {#snippet status()}
+      <SyncKindFacts
+        kind="labels"
+        {enabled}
+        status={syncStatus}
+        updatedBy={config?.updated_by ?? ''}
+        updatedAt={config?.updated_at ?? ''}
+        {nowMs}
+      />
+      <Switch
+        checked={enabled}
+        label={syncSwitchLabel('labels', enabled)}
+        word={syncSwitchWord(enabled)}
+        disabled={frozen}
+        onToggle={(next) => push('sync.labels.enabled', { enabled: next })}
+      />
+    {/snippet}
+  </PageHeader>
 
   {#if problem !== null}
     <FormError message={problem} />
@@ -396,34 +419,37 @@
 
   {#if unreadable}
     <p class="sync-notice" role="alert">
-      This installation's labels are stored in a form this version of Smyklot cannot read, so they
-      are not shown and nothing here can be changed. Nothing has been lost.
+      This workspace's labels are stored in a form this version of Smyklot cannot read, so they are
+      not shown and nothing here can be changed. Nothing has been lost.
     </p>
   {/if}
 
   {#if unavailable !== '' && enabled}
     <p class="sync-notice" role="status">
       {unavailable}. Nothing here will be planned or changed until an owner grants it on the
-      installation's page on GitHub.
+      workspace's page on GitHub.
     </p>
   {/if}
 
-  <div
-    class="card label-card"
-    class:is-unsaved={dirtyControlSet.has('sync.labels.labels')}
-    data-unsaved={dirtyControlSet.has('sync.labels.labels') || undefined}
-  >
+  <Card class="label-card" unsaved={dirtyControlSet.has('sync.labels.labels')}>
     <div class="card-head">
-      <h3 class="card-title">{rows.length} {rows.length === 1 ? 'label' : 'labels'}</h3>
-      <Button class="label-add" disabled={frozen} onclick={addLabel}>
-        {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
-        Add a label
-      </Button>
+      <h2 class="card-title">{rows.length} {rows.length === 1 ? 'label' : 'labels'}</h2>
     </div>
-    <p class="label-hint">
-      Press any name, description or colour dot to change it here. Edits stay in the draft until you
-      save them below.
-    </p>
+    {#if rows.length === 0}
+      <!-- The hint below explains how to edit a row, and there are none - so the
+           card said "0 labels" over a sentence about editing and then stopped. -->
+      <div class="state-panel">
+        <span
+          ><strong>No labels are synced here yet.</strong> Every repository keeps its own until one is
+          added - then every syncing repository is held to the list</span
+        >
+      </div>
+    {:else}
+      <p class="label-hint">
+        Edit any name, description or colour. Each edit enters the draft as it commits; press Escape
+        to take one back.
+      </p>
+    {/if}
     <ul class="label-rows">
       {#each rows as row, index (index)}
         {@const open = editing !== null && editing.index === index ? editing.piece : null}
@@ -478,7 +504,7 @@
               </span>
               {#if fieldError !== null}
                 <span class="field-error"
-                  ><Icon name="alert" size={12} /><span class="t">{fieldError}</span></span
+                  ><Icon name="alert" size="xs" /><span class="t">{fieldError}</span></span
                 >
               {/if}
             </span>
@@ -506,15 +532,15 @@
               disabled={frozen}
               onclick={() => removeLabel(index)}
             >
-              <Icon name="trash" size={14} />
+              <Icon name="trash" size="sm" />
             </button>
           </span>
         </li>
       {/each}
     </ul>
-  </div>
+  </Card>
 
-  <div class="card">
+  <Card>
     <div class="setting-rows">
       <div
         class="setting-row"
@@ -522,15 +548,15 @@
         data-unsaved={dirtyControlSet.has('sync.labels.allow_removal') || undefined}
       >
         <span class="setting-say">
-          <span class="setting-name">Remove labels this list does not name</span>
+          <span class="setting-name">Delete unlisted labels</span>
           <span class="setting-why"
-            >Off, a repository may keep labels of its own. On, the list above is the whole truth and
-            everything else is deleted</span
+            >On deletes labels missing above from every syncing repository, except ignored matches.
+            Off keeps repository-only labels</span
           >
         </span>
         <Switch
           checked={allowRemoval}
-          label="Remove labels this list does not name"
+          label="Delete unlisted labels"
           disabled={frozen}
           onToggle={(next) => push('sync.labels.allow_removal', { allow_removal: next })}
         />
@@ -541,9 +567,10 @@
         data-unsaved={dirtyControlSet.has('sync.labels.excludes') || undefined}
       >
         <span class="setting-say">
-          <span class="setting-name">Labels to leave alone</span>
+          <span class="setting-name">Ignored labels</span>
           <span class="setting-why"
-            >Patterns, where <code>*</code> stands for any run of characters. Neither written nor removed</span
+            >Patterns, where <code>*</code> stands for any run of characters. Neither written nor removed
+            - ignoring wins over every list above, deletion included</span
           >
         </span>
         <span class="setting-value">
@@ -558,75 +585,13 @@
         </span>
       </div>
     </div>
-  </div>
+  </Card>
 </div>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
-  .kind-head {
-    align-items: start;
-    display: flex;
-    gap: var(--space-4);
-    justify-content: space-between;
-    margin-bottom: var(--space-4);
-  }
-
-  .kind-head-say {
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  /* Uncapped like the setting whys: the head's own width is the measure. */
-  .kind-head-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-  }
-
-  /* The tap box must not inflate the head - the hit area survives on the
-     input itself. */
-  .kind-head :global(.switch) {
-    min-block-size: auto;
-  }
-
-  .kind-head.is-unsaved,
-  .setting-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .kind-head.is-unsaved {
-    margin-inline: calc(var(--space-2) * -1);
-    padding: var(--space-2);
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
   .label-card.is-unsaved {
     border-color: color-mix(in srgb, var(--brand-action) 55%, var(--border-subtle));
     box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .card + .card {
-    margin-top: var(--space-4);
-  }
-
-  .card-title {
-    font-size: var(--font-size-card-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 13px;
-    text-box: trim-both cap alphabetic;
   }
 
   .card-head {
@@ -677,7 +642,7 @@
     grid-template-columns: auto clamp(11rem, 30%, 22rem) minmax(0, 1fr) auto;
     margin-inline: calc(var(--space-2) * -1);
     min-block-size: 40px;
-    padding: 0.5rem var(--space-2);
+    padding: var(--row-pad-compact) var(--space-2);
     position: relative;
   }
 
@@ -703,7 +668,7 @@
   .label-name {
     font-size: var(--font-size-meta);
     font-weight: 600;
-    line-height: 20px;
+    line-height: var(--leading-meta);
     min-inline-size: 0;
     overflow-wrap: anywhere;
   }
@@ -711,7 +676,7 @@
   .label-desc {
     color: var(--text-muted);
     font-size: var(--font-size-meta);
-    line-height: 20px;
+    line-height: var(--leading-meta);
     min-inline-size: 0;
     overflow-wrap: anywhere;
   }
@@ -749,20 +714,20 @@
     min-inline-size: 9rem;
   }
 
-  /* The dot's press target: a 24px round pad the 12px disc sits in, taken
-     out of the layout with negative margins so the column never moves. */
+  /* The dot's press target: the small-target round pad the 12px disc sits in,
+     taken out of the layout with negative margins so the column never moves. */
   .dot-btn {
     align-items: center;
     background: transparent;
     border: 1px solid transparent;
     border-radius: 50%;
-    block-size: 24px;
+    block-size: var(--field-target-min);
     /* A button does not inherit ink - the UA's buttontext would ride here
        and tint anything the disc ever grows. */
     color: inherit;
     cursor: pointer;
     display: inline-flex;
-    inline-size: 24px;
+    inline-size: var(--field-target-min);
     justify-content: center;
     margin: -6px;
     padding: 0;
@@ -809,7 +774,7 @@
   }
 
   .lbl-field.is-inplace .text-inline {
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding-inline: 7px;
   }
 
@@ -833,7 +798,7 @@
   .label-del {
     align-items: center;
     background: transparent;
-    block-size: 28px;
+    block-size: var(--tier-quiet);
     border: 0;
     border-radius: 6px;
     color: var(--text-muted);
@@ -887,8 +852,8 @@
 
   .text-inline:focus {
     border-color: var(--focus);
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 
   /* Wrong input: the field wears danger quietly at rest - hairline and a 4%
@@ -909,7 +874,7 @@
     display: inline-flex;
     font-size: var(--font-size-micro);
     gap: 4px;
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-micro);
   }
 
   .field-error :global(svg) {
@@ -987,115 +952,43 @@
 
   /* ---------- The bottom card: the two decisions ---------- */
 
-  .setting-rows {
-    display: grid;
-  }
-
-  /* A card that is nothing but rows: the rows' own block padding is the
-     card's edge whitespace, so unswallowed it doubled onto the card's 20px
-     and the top and bottom read heavier than the sides. */
-  .card > .setting-rows:only-child {
-    margin-block: calc(var(--space-5) * -1);
-  }
-
-  /* Top-aligned, not centred: centring the say against a taller control put
-     its half-slack on the seam. The switch is the exception: a lone toggle
-     reads centred against its row, and it carries no ink the seams are
-     measured to. */
-  .card > .setting-rows:only-child > .setting-row {
-    align-items: start;
-    padding-block: var(--space-5);
-  }
-
-  /* The 44px tap box stays for the finger, not for the layout. */
-  .setting-row :global(.switch) {
-    align-self: center;
-    margin-block: calc((20px - var(--touch-target)) / 2);
-  }
-
-  .setting-row {
-    align-items: center;
-    border-radius: var(--r-ctl);
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    /* Auto-flow, not `1fr auto auto`: a fixed template kept an empty third
-       track on two-child rows, and its 16px column gap pushed the switch
-       off the row's right edge. */
-    grid-auto-columns: auto;
-    grid-auto-flow: column;
-    grid-template-columns: 1fr;
-    margin-inline: calc(var(--space-2) * -1);
-    /* 12px block padding: with trimmed text the padding IS the
-       ink-to-hairline distance. The floor is the 44px touch target. */
-    min-block-size: var(--touch-target);
-    padding: var(--space-3) var(--space-2);
-    position: relative;
-  }
-
-  .setting-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  /* 12, not 4: with name and why both ink-trimmed the gap IS the ink
-     distance - blocks must sit further apart than the lines inside them. */
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why code {
-    font-family: var(--mono);
-  }
-
-  /* The value may wrap but never push: min-size 0 lets its grid track
-     shrink below max-content, so a new entry wraps inside the row instead
-     of making the card wider. */
-  .setting-value {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    justify-content: end;
-    justify-self: end;
-    min-inline-size: 0;
-  }
-
   @media (max-width: 36rem) {
-    .card {
-      padding: var(--space-4);
-    }
-
     .card-head {
       flex-wrap: wrap;
     }
 
-    .setting-row {
-      grid-auto-flow: row;
-      grid-template-columns: minmax(0, 1fr);
+    /* THE ROW RE-FORMS, like every other row does here. Four columns cannot stand
+       on a 320px page: an 11rem name track and the 9rem floor an empty description
+       keeps for its own prompt are 320px between them before the swatch and the
+       delete are drawn, so the row set the document's width and Chrome answered by
+       zooming the whole page to 80%. The description takes the line below the name,
+       and an empty one asks for nothing. */
+    .label-row {
+      grid-template-columns: auto minmax(0, 1fr) auto;
     }
 
-    .setting-value {
-      justify-content: start;
-      justify-self: stretch;
+    .label-row .swatch-wrap {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .label-row .label-name {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .label-row .label-tail {
+      grid-column: 3;
+      grid-row: 1;
+    }
+
+    .label-row .label-desc {
+      grid-column: 2 / -1;
+      grid-row: 2;
+    }
+
+    .label-row .label-desc:empty {
+      min-inline-size: 0;
     }
   }
 </style>

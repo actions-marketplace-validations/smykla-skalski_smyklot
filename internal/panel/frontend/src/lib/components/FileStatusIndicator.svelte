@@ -40,14 +40,25 @@
   });
 </script>
 
-<!-- The word is part of the same statement as the mark, so it explains itself on
-     hover too. Pointing at "Bypassed" and getting nothing, when the circle beside
-     it answers, is the sort of thing a reader reads as the tooltip being broken. -->
+<!--
+@component
+What became of one file in one repository, as a mark that answers when pointed at.
+
+The word beside it is part of the same statement rather than a separate thing, which is
+why it shares the mark's tooltip: pointing at "Bypassed" and getting nothing, when the
+circle beside it answers, reads as the tooltip being broken.
+
+The mark is a button and carries the sentence as its accessible name, so the outcome is
+readable without a pointer. Colour is never the only channel - the glyph differs per
+status as well, because four coloured circles are four circles to somebody who cannot
+tell them apart.
+-->
+
 <span class="file-indicator status-{status}">
   <AppTooltip {id} text={message} align="start">
     {#snippet children(props)}
       <button {...props} type="button" class="symbol" aria-label={label}>
-        <Icon name={icon} size={14} />
+        <Icon name={icon} size="sm" />
         {#if showLabel}
           <span class="status-label band-trim"
             >{status.slice(0, 1).toUpperCase() + status.slice(1)}</span
@@ -61,7 +72,7 @@
 <style>
   .file-indicator {
     align-items: center;
-    color: var(--dim);
+    color: var(--text-muted);
     display: inline-flex;
     gap: var(--space-2);
     height: 1.125rem;
@@ -71,15 +82,15 @@
      Untrimmed, "Bypassed" and "Missing" ride visibly high of their glyph. */
   .status-label {
     color: currentColor;
-    font: 600 var(--font-size-meta) / 1 var(--sans);
+    font: 600 var(--font-size-meta) / var(--leading-flat) var(--sans);
   }
 
   .status-valid {
-    color: var(--clear);
+    color: var(--success);
   }
 
   .status-invalid {
-    color: var(--stop);
+    color: var(--danger);
   }
 
   .status-bypassed {
@@ -105,8 +116,8 @@
     padding: 0;
     position: relative;
     transition:
-      background-color 120ms ease-out,
-      color 120ms ease-out;
+      background-color var(--duration-press) var(--ease-standard),
+      color var(--duration-press) var(--ease-standard);
   }
 
   .symbol::before {

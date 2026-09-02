@@ -31,8 +31,8 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 		{http.MethodGet, "/panel/api/v1/root/pending-ci/7"},
 		{http.MethodPost, "/panel/api/v1/root/pending-ci/7/check"},
 		{http.MethodDelete, "/panel/api/v1/root/pending-ci/7"},
-		{http.MethodGet, "/panel/api/v1/root/installations"},
-		{http.MethodPost, "/panel/api/v1/root/installations/sync"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/sync"},
 		{http.MethodGet, "/panel/api/v1/root/access/users"},
 		{http.MethodGet, "/panel/api/v1/root/access/invitations"},
 		{http.MethodPut, "/panel/api/v1/root/access/users/" + account},
@@ -40,6 +40,7 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 		{http.MethodPost, "/panel/api/v1/root/access/invitations/" + invitation + "/reissue"},
 		{http.MethodDelete, "/panel/api/v1/root/access/invitations/" + invitation},
 		{http.MethodGet, "/panel/api/v1/root/history/audit"},
+		{http.MethodGet, "/panel/api/v1/root/history/audit.csv"},
 		{http.MethodGet, "/panel/api/v1/root/history/failures"},
 		{http.MethodGet, "/panel/api/v1/root/runtime/settings"},
 		{http.MethodPut, "/panel/api/v1/root/runtime/settings"},
@@ -56,36 +57,36 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 		{http.MethodDelete, "/panel/api/v1/root/schedule-profiles/profile"},
 		{http.MethodGet, "/panel/api/v1/root/job-policies"},
 		{http.MethodPut, "/panel/api/v1/root/job-policies/sync_scan"},
-		{http.MethodPut, "/panel/api/v1/root/installations/" + target + "/job-policies/sync_scan"},
-		{http.MethodDelete, "/panel/api/v1/root/installations/" + target + "/job-policies/sync_scan"},
+		{http.MethodPut, "/panel/api/v1/root/workspaces/" + target + "/job-policies/sync_scan"},
+		{http.MethodDelete, "/panel/api/v1/root/workspaces/" + target + "/job-policies/sync_scan"},
 		{http.MethodGet, "/panel/api/v1/root/schedule-requests"},
 		{http.MethodPost, "/panel/api/v1/root/schedule-requests/request/decision"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/elevation"},
-		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/elevation"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/elevation"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/" + target + "/elevation"},
 		{http.MethodDelete, "/panel/api/v1/root/elevations/elevation-id"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/settings"},
-		{http.MethodPut, "/panel/api/v1/root/installations/" + target + "/settings"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/settings/checkpoints/baseline"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/settings/checkpoints/1"},
-		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/settings/checkpoints/1/restore"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/repositories"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/repositories/repository-20"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/settings"},
+		{http.MethodPut, "/panel/api/v1/root/workspaces/" + target + "/settings"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/baseline"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/1"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/1/restore"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/repositories"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/repositories/repository-20"},
 		{
 			http.MethodPost,
-			"/panel/api/v1/root/installations/" + target +
+			"/panel/api/v1/root/workspaces/" + target +
 				"/repositories/repository-20/config-migration",
 		},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/users"},
-		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/users"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/user-suggestions"},
-		{http.MethodPut, "/panel/api/v1/root/installations/" + target + "/users/" + account},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/users/" + account + "/decisions"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/invitations"},
-		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/invitations"},
-		{http.MethodPost, "/panel/api/v1/root/installations/" + target + "/invitations/" + invitation + "/reissue"},
-		{http.MethodDelete, "/panel/api/v1/root/installations/" + target + "/invitations/" + invitation},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/audit"},
-		{http.MethodGet, "/panel/api/v1/root/installations/" + target + "/failures"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/users"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/" + target + "/users"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/user-suggestions"},
+		{http.MethodPut, "/panel/api/v1/root/workspaces/" + target + "/users/" + account},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/users/" + account + "/decisions"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/invitations"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/" + target + "/invitations"},
+		{http.MethodPost, "/panel/api/v1/root/workspaces/" + target + "/invitations/" + invitation + "/reissue"},
+		{http.MethodDelete, "/panel/api/v1/root/workspaces/" + target + "/invitations/" + invitation},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/audit"},
+		{http.MethodGet, "/panel/api/v1/root/workspaces/" + target + "/failures"},
 	}
 
 	for _, probe := range probes {
@@ -102,8 +103,8 @@ func TestPanelRootRouteAuthorizationMatrix(t *testing.T) {
 func TestPanelRegularRouteRejectsNonOwnedRootMatrix(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	rootSession := harness.signIn(t)
-	_, installation := seedNonOwnedInstallation(t, harness)
-	probes := regularRouteProbes("/panel/api/v1/targets/" + installation.TargetID)
+	_, workspace := seedNonOwnedWorkspace(t, harness)
+	probes := regularRouteProbes("/panel/api/v1/targets/" + workspace.TargetID)
 
 	for _, probe := range probes {
 		probe := probe
@@ -125,7 +126,7 @@ func TestPanelQueueAndScheduleRoleMatrix(t *testing.T) {
 	item, err := harness.store.CreateQueueItem(t.Context(), workqueue.Item{
 		ID: "queue:role-matrix", Kind: workqueue.KindReactionScan,
 		Lane: workqueue.LaneMaintenance, TargetID: pointerTo(targetID),
-		Title: "Discover pull request reactions", State: workqueue.StateScheduled,
+		Title: "Scan for new commands", State: workqueue.StateScheduled,
 		Priority: workqueue.PriorityNormal, WindowMode: workqueue.WindowRespect,
 		ProfileID: &profileID, NotBefore: harness.now.Add(time.Hour),
 		EligibleAt: harness.now.Add(time.Hour), CreatedAt: harness.now, UpdatedAt: harness.now,
@@ -227,7 +228,7 @@ var routePlaceholders = map[string]string{
 	"{request}":    "request",
 }
 
-// regularRouteProbes is every installation-scoped route, with the concrete
+// regularRouteProbes is every workspace-scoped route, with the concrete
 // values a request needs. Shared so the matrix and its completeness check
 // cannot describe different route sets.
 func regularRouteProbes(target string) []authorizationProbe {
@@ -264,6 +265,7 @@ func regularRouteProbes(target string) []authorizationProbe {
 		{http.MethodPost, target + "/sync/plans/sync-plan-1/approval"},
 		{http.MethodDelete, target + "/sync/plans/sync-plan-1"},
 		{http.MethodGet, target + "/audit"},
+		{http.MethodGet, target + "/audit.csv"},
 		{http.MethodGet, target + "/failures"},
 		{http.MethodGet, target + "/queue"},
 		{http.MethodGet, target + "/queue/queue-item"},
@@ -282,7 +284,7 @@ func regularRouteProbes(target string) []authorizationProbe {
 // The matrix above is a hand-written list, and a hand-written list is a thing
 // you can forget to add to. Nothing downstream notices: the new route works,
 // its specs pass, and the one question nobody asked is whether somebody else's
-// installation can reach it. So the list is checked against the routes the
+// workspace can reach it. So the list is checked against the routes the
 // server actually registers.
 func TestPanelRegularRouteMatrixCoversEveryRoute(t *testing.T) {
 	registered := registeredTargetRoutes(t)
@@ -290,7 +292,7 @@ func TestPanelRegularRouteMatrixCoversEveryRoute(t *testing.T) {
 		t.Fatal("read no target routes out of server.go")
 	}
 
-	const target = "/panel/api/v1/targets/the-installation"
+	const target = "/panel/api/v1/targets/the-workspace"
 
 	probed := map[string]bool{}
 	for _, probe := range regularRouteProbes(target) {
@@ -300,7 +302,7 @@ func TestPanelRegularRouteMatrixCoversEveryRoute(t *testing.T) {
 	for _, route := range registered {
 		method, pattern, _ := strings.Cut(route, " ")
 
-		concrete := strings.Replace(pattern, "{target}", "the-installation", 1)
+		concrete := strings.Replace(pattern, "{target}", "the-workspace", 1)
 		for placeholder, value := range routePlaceholders {
 			concrete = strings.ReplaceAll(concrete, placeholder, value)
 		}
@@ -316,7 +318,7 @@ func TestPanelRegularRouteMatrixCoversEveryRoute(t *testing.T) {
 	}
 }
 
-// registeredTargetRoutes reads the installation-scoped routes out of the file
+// registeredTargetRoutes reads the workspace-scoped routes out of the file
 // that registers them.
 //
 // Reading the source rather than the mux, because http.ServeMux does not report
@@ -325,19 +327,47 @@ func TestPanelRegularRouteMatrixCoversEveryRoute(t *testing.T) {
 func registeredTargetRoutes(t *testing.T) []string {
 	t.Helper()
 
-	source, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatalf("read server.go: %v", err)
-	}
-
+	source := panelSources(t)
 	pattern := regexp.MustCompile(`"(GET|PUT|POST|DELETE) "\+base\+"(/api/v1/targets/\{target\}[^"]*)"`)
 
 	var routes []string
-	for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
+	for _, match := range pattern.FindAllStringSubmatch(source, -1) {
 		routes = append(routes, match[1]+" "+match[2])
 	}
 
 	return routes
+}
+
+// panelSources is every Go file in the package, read as one string.
+//
+// The two coverage guards used to read `server.go` alone, which held only while
+// every route was registered there. The moment two of them moved into the file
+// that serves them, both guards went on passing over routes they could no longer
+// see - a hole exactly the shape of the thing they exist to catch.
+func panelSources(t *testing.T) string {
+	t.Helper()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package: %v", err)
+	}
+	var all strings.Builder
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		all.Write(source)
+	}
+	if all.Len() == 0 {
+		t.Fatal("the package read as empty, so every route below is unchecked")
+	}
+
+	return all.String()
 }
 
 func createOrdinarySession(t *testing.T, harness *panelHarness) *http.Cookie {

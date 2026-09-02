@@ -19,10 +19,10 @@ import type {
   PanelTarget,
   PanelInvitation,
   InvitationPageRequest,
-  InstallationSettingsBatchInput,
-  InstallationSettingsBatchResponse,
+  WorkspaceSettingsBatchInput,
+  WorkspaceSettingsBatchResponse,
   SettingsCheckpoint,
-  InstallationSettingsConflict,
+  WorkspaceSettingsConflict,
   SettingsRestoreInput,
   PanelUser,
   PanelUserPageRequest,
@@ -49,7 +49,7 @@ import type {
   RepositorySummary,
   RootElevation,
   RootElevationInput,
-  RootInstallation,
+  RootWorkspace,
   RootOverview,
   RootPanelUser,
   RootPanelUserPageRequest,
@@ -77,7 +77,7 @@ export class PanelApiError extends Error {
     readonly code: string,
     message: string,
     readonly kind?: string,
-    readonly conflicts: InstallationSettingsConflict[] = [],
+    readonly conflicts: WorkspaceSettingsConflict[] = [],
   ) {
     super(message);
     this.name = 'PanelApiError';
@@ -87,8 +87,8 @@ export class PanelApiError extends Error {
 export interface PanelApi {
   fetchViewer(): Promise<PanelViewer | null>;
   fetchTargets(): Promise<PanelTarget[]>;
-  fetchRootInstallations(): Promise<RootInstallation[]>;
-  syncRootInstallations(): Promise<string[]>;
+  fetchRootWorkspaces(): Promise<RootWorkspace[]>;
+  syncRootWorkspaces(): Promise<string[]>;
   fetchRootOverview(): Promise<RootOverview>;
   fetchRootPendingCI(requestId: string): Promise<PendingCIDetail>;
   checkRootPendingCI(requestId: string, expectedRevision: number): Promise<PendingCIRequest>;
@@ -114,12 +114,12 @@ export interface PanelApi {
   updateRootScheduleProfile(id: string, input: ScheduleProfileInput): Promise<ScheduleProfile>;
   archiveRootScheduleProfile(id: string, expectedRevision: number): Promise<ScheduleProfile>;
   updateRootJobPolicy(kind: string, input: QueuePolicyInput): Promise<QueuePolicy>;
-  updateRootInstallationJobPolicy(
+  updateRootWorkspaceJobPolicy(
     targetId: string,
     kind: string,
     input: QueuePolicyInput,
   ): Promise<QueuePolicy>;
-  deleteRootInstallationJobPolicy(
+  deleteRootWorkspaceJobPolicy(
     targetId: string,
     kind: string,
     expectedRevision: number,
@@ -164,22 +164,25 @@ export interface PanelApi {
     input: SettingsRestoreInput,
   ): Promise<RootRuntimeSettings>;
   fetchRootAudit(request: AuditHistoryRequest): Promise<Page<AuditEntry>>;
+  /** The same filtered audit as a file, said as an address the browser can download. */
+  rootAuditExportHref(request: AuditHistoryRequest): string;
+  auditExportHref(targetId: string, request: AuditHistoryRequest): string;
   fetchRootFailures(request: FailureHistoryRequest): Promise<Page<DeliveryFailure>>;
   fetchRootTargetSettings(targetId: string): Promise<PanelTarget>;
-  saveRootInstallationSettings(
+  saveRootWorkspaceSettings(
     targetId: string,
-    input: InstallationSettingsBatchInput,
-  ): Promise<InstallationSettingsBatchResponse>;
-  fetchRootInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
-  fetchRootInstallationSettingsCheckpoint(
+    input: WorkspaceSettingsBatchInput,
+  ): Promise<WorkspaceSettingsBatchResponse>;
+  fetchRootWorkspaceSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
+  fetchRootWorkspaceSettingsCheckpoint(
     targetId: string,
     checkpointId: string,
   ): Promise<SettingsCheckpoint>;
-  restoreRootInstallationSettingsCheckpoint(
+  restoreRootWorkspaceSettingsCheckpoint(
     targetId: string,
     checkpointId: string,
     input: SettingsRestoreInput,
-  ): Promise<InstallationSettingsBatchResponse>;
+  ): Promise<WorkspaceSettingsBatchResponse>;
   fetchRootRepositories(
     targetId: string,
     request: RepositoryPageRequest,
@@ -217,6 +220,8 @@ export interface PanelApi {
   ): Promise<Page<DeliveryFailure>>;
   fetchNotifications(request: NotificationPageRequest): Promise<NotificationPage>;
   markNotificationRead(notificationId: string): Promise<SecurityNotification>;
+  /** Empties the inbox, and answers how many were unread rather than which. */
+  markAllNotificationsRead(): Promise<{ read: number }>;
   fetchTargetUsers(targetId: string, request: PanelUserPageRequest): Promise<Page<PanelUser>>;
   addTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser>;
   /** Logins offered while one is being typed; see `UserCompletion`. */
@@ -243,20 +248,20 @@ export interface PanelApi {
   ): Promise<PanelInvitation>;
   revokeTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation>;
   fetchUserDecisions(accountId: string, targetId: string): Promise<AccessDecision[]>;
-  saveInstallationSettings(
+  saveWorkspaceSettings(
     targetId: string,
-    input: InstallationSettingsBatchInput,
-  ): Promise<InstallationSettingsBatchResponse>;
-  fetchInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
-  fetchInstallationSettingsCheckpoint(
+    input: WorkspaceSettingsBatchInput,
+  ): Promise<WorkspaceSettingsBatchResponse>;
+  fetchWorkspaceSettingsBaseline(targetId: string): Promise<SettingsCheckpoint>;
+  fetchWorkspaceSettingsCheckpoint(
     targetId: string,
     checkpointId: string,
   ): Promise<SettingsCheckpoint>;
-  restoreInstallationSettingsCheckpoint(
+  restoreWorkspaceSettingsCheckpoint(
     targetId: string,
     checkpointId: string,
     input: SettingsRestoreInput,
-  ): Promise<InstallationSettingsBatchResponse>;
+  ): Promise<WorkspaceSettingsBatchResponse>;
   fetchRepositories(
     targetId: string,
     request: RepositoryPageRequest,
@@ -470,16 +475,14 @@ export function createPanelApi(
       return body.targets;
     },
 
-    async fetchRootInstallations(): Promise<RootInstallation[]> {
-      const body = await jsonRequest<{ installations: RootInstallation[] }>(
-        '/api/v1/root/installations',
-      );
-      return body.installations;
+    async fetchRootWorkspaces(): Promise<RootWorkspace[]> {
+      const body = await jsonRequest<{ workspaces: RootWorkspace[] }>('/api/v1/root/workspaces');
+      return body.workspaces;
     },
 
-    async syncRootInstallations(): Promise<string[]> {
+    async syncRootWorkspaces(): Promise<string[]> {
       const body = await postJson<{ target_ids: string[] }>(
-        '/api/v1/root/installations/sync',
+        '/api/v1/root/workspaces/sync',
         undefined,
       );
       return body.target_ids;
@@ -601,24 +604,24 @@ export function createPanelApi(
       return putJson(`/api/v1/root/job-policies/${pathSegment(kind)}`, input);
     },
 
-    updateRootInstallationJobPolicy(
+    updateRootWorkspaceJobPolicy(
       targetId: string,
       kind: string,
       input: QueuePolicyInput,
     ): Promise<QueuePolicy> {
       return putJson(
-        `/api/v1/root/installations/${pathSegment(targetId)}/job-policies/${pathSegment(kind)}`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/job-policies/${pathSegment(kind)}`,
         input,
       );
     },
 
-    deleteRootInstallationJobPolicy(
+    deleteRootWorkspaceJobPolicy(
       targetId: string,
       kind: string,
       expectedRevision: number,
     ): Promise<QueuePolicy> {
       return jsonRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/job-policies/${pathSegment(kind)}` +
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/job-policies/${pathSegment(kind)}` +
           `?expected_revision=${expectedRevision}`,
         { method: 'DELETE' },
       );
@@ -725,6 +728,22 @@ export function createPanelApi(
       );
     },
 
+    /**
+     * Where the same filtered audit can be fetched as a file.
+     *
+     * An address rather than a request: the browser downloads it with the session
+     * cookie it already has, which is what makes the button a link rather than a
+     * fetch that would have to hold the whole export in memory to hand it back.
+     */
+    rootAuditExportHref(history: AuditHistoryRequest): string {
+      return panelUrl(
+        base,
+        withHistoryQuery('/api/v1/root/history/audit.csv', history, {
+          category: history.categories ?? [],
+        }),
+      );
+    },
+
     fetchRootAudit(history: AuditHistoryRequest): Promise<Page<AuditEntry>> {
       return jsonRequest(
         withHistoryQuery('/api/v1/root/history/audit', history, {
@@ -735,7 +754,7 @@ export function createPanelApi(
 
     async fetchRootFailures(history: FailureHistoryRequest): Promise<Page<DeliveryFailure>> {
       const page = await jsonRequest<
-        Page<{ installation: DeliveryFailure['installation']; failure: DeliveryFailure }>
+        Page<{ workspace: DeliveryFailure['workspace']; failure: DeliveryFailure }>
       >(
         withHistoryQuery('/api/v1/root/history/failures', history, {
           kind: history.kind,
@@ -743,43 +762,43 @@ export function createPanelApi(
       );
       return {
         ...page,
-        items: page.items.map(({ installation, failure }) => ({ ...failure, installation })),
+        items: page.items.map(({ workspace, failure }) => ({ ...failure, workspace })),
       };
     },
 
     fetchRootTargetSettings(targetId: string): Promise<PanelTarget> {
-      return jsonRequest(`/api/v1/root/installations/${pathSegment(targetId)}/settings`);
+      return jsonRequest(`/api/v1/root/workspaces/${pathSegment(targetId)}/settings`);
     },
 
-    saveRootInstallationSettings(
+    saveRootWorkspaceSettings(
       targetId: string,
-      input: InstallationSettingsBatchInput,
-    ): Promise<InstallationSettingsBatchResponse> {
-      return putDocument(`/api/v1/root/installations/${pathSegment(targetId)}/settings`, input);
+      input: WorkspaceSettingsBatchInput,
+    ): Promise<WorkspaceSettingsBatchResponse> {
+      return putDocument(`/api/v1/root/workspaces/${pathSegment(targetId)}/settings`, input);
     },
 
-    fetchRootInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
+    fetchRootWorkspaceSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
       return documentRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/baseline`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/settings/checkpoints/baseline`,
       );
     },
 
-    fetchRootInstallationSettingsCheckpoint(
+    fetchRootWorkspaceSettingsCheckpoint(
       targetId: string,
       checkpointId: string,
     ): Promise<SettingsCheckpoint> {
       return documentRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}`,
       );
     },
 
-    restoreRootInstallationSettingsCheckpoint(
+    restoreRootWorkspaceSettingsCheckpoint(
       targetId: string,
       checkpointId: string,
       input: SettingsRestoreInput,
-    ): Promise<InstallationSettingsBatchResponse> {
+    ): Promise<WorkspaceSettingsBatchResponse> {
       return postDocument(
-        `/api/v1/root/installations/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
         input,
       );
     },
@@ -790,7 +809,7 @@ export function createPanelApi(
     ): Promise<Page<RepositorySummary>> {
       return jsonRequest(
         withRepositoryQuery(
-          `/api/v1/root/installations/${pathSegment(targetId)}/repositories`,
+          `/api/v1/root/workspaces/${pathSegment(targetId)}/repositories`,
           repositoryPage,
         ),
       );
@@ -798,16 +817,16 @@ export function createPanelApi(
 
     fetchRootRepository(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
       return jsonRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/repositories/${pathSegment(repositoryId)}`,
       );
     },
 
     fetchRootElevation(targetId: string): Promise<RootElevation> {
-      return jsonRequest(`/api/v1/root/installations/${pathSegment(targetId)}/elevation`);
+      return jsonRequest(`/api/v1/root/workspaces/${pathSegment(targetId)}/elevation`);
     },
 
     beginRootElevation(targetId: string, input: RootElevationInput): Promise<RootElevation> {
-      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/elevation`, input);
+      return postJson(`/api/v1/root/workspaces/${pathSegment(targetId)}/elevation`, input);
     },
 
     endRootElevation(elevationId: string): Promise<RootElevation> {
@@ -821,12 +840,12 @@ export function createPanelApi(
       userPage: PanelUserPageRequest,
     ): Promise<Page<PanelUser>> {
       return jsonRequest(
-        withAccessPageQuery(`/api/v1/root/installations/${pathSegment(targetId)}/users`, userPage),
+        withAccessPageQuery(`/api/v1/root/workspaces/${pathSegment(targetId)}/users`, userPage),
       );
     },
 
     addRootTargetUser(targetId: string, input: AddTargetUserInput): Promise<PanelUser> {
-      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/users`, input);
+      return postJson(`/api/v1/root/workspaces/${pathSegment(targetId)}/users`, input);
     },
 
     updateRootTargetUser(
@@ -835,7 +854,7 @@ export function createPanelApi(
       input: UpdateTargetUserInput,
     ): Promise<PanelUser> {
       return putJson(
-        `/api/v1/root/installations/${pathSegment(targetId)}/users/${pathSegment(accountId)}`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/users/${pathSegment(accountId)}`,
         input,
       );
     },
@@ -846,7 +865,7 @@ export function createPanelApi(
     ): Promise<Page<PanelInvitation>> {
       return jsonRequest(
         withAccessPageQuery(
-          `/api/v1/root/installations/${pathSegment(targetId)}/invitations`,
+          `/api/v1/root/workspaces/${pathSegment(targetId)}/invitations`,
           invitationPage,
         ),
       );
@@ -856,7 +875,7 @@ export function createPanelApi(
       targetId: string,
       input: AddTargetInvitationInput,
     ): Promise<PanelInvitation> {
-      return postJson(`/api/v1/root/installations/${pathSegment(targetId)}/invitations`, input);
+      return postJson(`/api/v1/root/workspaces/${pathSegment(targetId)}/invitations`, input);
     },
 
     reissueRootTargetInvitation(
@@ -865,14 +884,14 @@ export function createPanelApi(
       expiresInDays: InvitationDays,
     ): Promise<PanelInvitation> {
       return postJson(
-        `/api/v1/root/installations/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}/reissue`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}/reissue`,
         { expires_in_days: expiresInDays },
       );
     },
 
     revokeRootTargetInvitation(targetId: string, invitationId: string): Promise<PanelInvitation> {
       return jsonRequest(
-        `/api/v1/root/installations/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/invitations/${pathSegment(invitationId)}`,
         { method: 'DELETE' },
       );
     },
@@ -882,7 +901,7 @@ export function createPanelApi(
       targetId: string,
     ): Promise<AccessDecision[]> {
       const body = await jsonRequest<{ decisions: AccessDecision[] }>(
-        `/api/v1/root/installations/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`,
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/users/${pathSegment(accountId)}/decisions`,
       );
       return body.decisions;
     },
@@ -892,7 +911,7 @@ export function createPanelApi(
       history: AuditHistoryRequest,
     ): Promise<Page<AuditEntry>> {
       return jsonRequest(
-        withHistoryQuery(`/api/v1/root/installations/${pathSegment(targetId)}/audit`, history, {
+        withHistoryQuery(`/api/v1/root/workspaces/${pathSegment(targetId)}/audit`, history, {
           scope: history.scope ?? 'all',
           change: history.change ?? 'all',
         }),
@@ -904,7 +923,7 @@ export function createPanelApi(
       history: FailureHistoryRequest,
     ): Promise<Page<DeliveryFailure>> {
       return jsonRequest(
-        withHistoryQuery(`/api/v1/root/installations/${pathSegment(targetId)}/failures`, history, {
+        withHistoryQuery(`/api/v1/root/workspaces/${pathSegment(targetId)}/failures`, history, {
           kind: history.kind,
         }),
       );
@@ -922,6 +941,10 @@ export function createPanelApi(
       return putJson(`/api/v1/notifications/${pathSegment(notificationId)}/read`, {});
     },
 
+    markAllNotificationsRead(): Promise<{ read: number }> {
+      return putJson('/api/v1/notifications/read', {});
+    },
+
     fetchTargetUsers(targetId: string, userPage: PanelUserPageRequest): Promise<Page<PanelUser>> {
       return jsonRequest(
         withAccessPageQuery(`/api/v1/targets/${pathSegment(targetId)}/users`, userPage),
@@ -937,7 +960,7 @@ export function createPanelApi(
     },
 
     suggestRootTargetUsers(targetId: string, query: string): Promise<PanelAccount[]> {
-      return suggest(`/api/v1/root/installations/${pathSegment(targetId)}/user-suggestions`, query);
+      return suggest(`/api/v1/root/workspaces/${pathSegment(targetId)}/user-suggestions`, query);
     },
 
     updateTargetUser(
@@ -995,20 +1018,20 @@ export function createPanelApi(
       return body.decisions;
     },
 
-    saveInstallationSettings(
+    saveWorkspaceSettings(
       targetId: string,
-      input: InstallationSettingsBatchInput,
-    ): Promise<InstallationSettingsBatchResponse> {
+      input: WorkspaceSettingsBatchInput,
+    ): Promise<WorkspaceSettingsBatchResponse> {
       return putDocument(`/api/v1/targets/${pathSegment(targetId)}/settings`, input);
     },
 
-    fetchInstallationSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
+    fetchWorkspaceSettingsBaseline(targetId: string): Promise<SettingsCheckpoint> {
       return documentRequest(
         `/api/v1/targets/${pathSegment(targetId)}/settings/checkpoints/baseline`,
       );
     },
 
-    fetchInstallationSettingsCheckpoint(
+    fetchWorkspaceSettingsCheckpoint(
       targetId: string,
       checkpointId: string,
     ): Promise<SettingsCheckpoint> {
@@ -1017,11 +1040,11 @@ export function createPanelApi(
       );
     },
 
-    restoreInstallationSettingsCheckpoint(
+    restoreWorkspaceSettingsCheckpoint(
       targetId: string,
       checkpointId: string,
       input: SettingsRestoreInput,
-    ): Promise<InstallationSettingsBatchResponse> {
+    ): Promise<WorkspaceSettingsBatchResponse> {
       return postDocument(
         `/api/v1/targets/${pathSegment(targetId)}/settings/checkpoints/${pathSegment(checkpointId)}/restore`,
         input,
@@ -1048,7 +1071,7 @@ export function createPanelApi(
 
     resetRootConfigMigration(targetId: string, repositoryId: string): Promise<RepositoryDetail> {
       return postJson(
-        `/api/v1/root/installations/${pathSegment(targetId)}/repositories/` +
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/repositories/` +
           `${pathSegment(repositoryId)}/config-migration`,
         {},
       );
@@ -1072,9 +1095,9 @@ export function createPanelApi(
     },
 
     /**
-     * Every path this installation's repositories are known to hold.
+     * Every path this workspace's repositories are known to hold.
      *
-     * Fetched whole and matched in the browser: it is a list the installation
+     * Fetched whole and matched in the browser: it is a list the workspace
      * already has, it changes about once a day, and a request per keystroke to
      * filter it would be a request per keystroke.
      */
@@ -1125,6 +1148,17 @@ export function createPanelApi(
       );
     },
 
+    /** One workspace's filtered audit as a file, on the same terms as the console's. */
+    auditExportHref(targetId: string, history: AuditHistoryRequest): string {
+      return panelUrl(
+        base,
+        withHistoryQuery(`/api/v1/targets/${pathSegment(targetId)}/audit.csv`, history, {
+          scope: history.scope ?? 'all',
+          change: history.change ?? 'all',
+        }),
+      );
+    },
+
     fetchAudit(targetId: string, history: AuditHistoryRequest): Promise<Page<AuditEntry>> {
       return jsonRequest(
         withHistoryQuery(`/api/v1/targets/${pathSegment(targetId)}/audit`, history, {
@@ -1141,6 +1175,7 @@ export function createPanelApi(
       return jsonRequest(
         withHistoryQuery(`/api/v1/targets/${pathSegment(targetId)}/failures`, history, {
           kind: history.kind,
+          ...(history.since === undefined ? {} : { since: history.since }),
         }),
       );
     },
@@ -1325,7 +1360,7 @@ async function readError(response: Response): Promise<PanelApiError> {
   let code = 'unknown';
   let message = describeStatus(response.status);
   let kind: string | undefined;
-  let conflicts: InstallationSettingsConflict[] = [];
+  let conflicts: WorkspaceSettingsConflict[] = [];
   try {
     const text = await response.text();
     const body = JSON.parse(text) as Partial<PanelErrorBody>;

@@ -10,16 +10,16 @@ import {
 } from './route-dialogs.ts';
 import {
   HISTORY_SECTIONS,
-  REPOSITORY_SECTIONS,
+  WRITTEN_QUEUE_SECTIONS,
   WRITTEN_SYNC_SECTIONS,
   isScopedPanelView,
-  isRootInstallationView,
+  isRootWorkspaceView,
   type HistorySection,
   type PanelRoute,
   type RepositoryPage,
-  type RepositorySection,
   type RootRoute,
   type SyncSection,
+  type WrittenQueueSection,
 } from './routes.ts';
 
 /**
@@ -37,13 +37,30 @@ import {
  * The panel keeps its own route vocabulary - `PanelRoute` says what is being looked at,
  * not where it is written down - so this is the one place the two meet.
  */
+/**
+ * The search results page, carrying the query in the address.
+ *
+ * A query lives in the address rather than in the page, so a reader who opens a result
+ * and presses back is given the search they left, and one who sends the link sends the
+ * search rather than an empty field. `resolve` answers the path; the query string is
+ * this function's, because a route id has no room for one.
+ */
+export function searchAddress(query: string): string {
+  const path = resolve('/search');
+  const asked = query.trim();
+
+  return asked === '' ? path : `${path}?q=${encodeURIComponent(asked)}`;
+}
+
 export function panelAddress(route: PanelRoute): string {
   if ('rootView' in route) return rootAddress(route);
-  if ('personal' in route) return resolve('/inbox');
+  if ('personal' in route) {
+    return route.personal === 'search' ? resolve('/search') : resolve('/inbox');
+  }
 
   const account = encodeURIComponent(route.account);
   if (route.view === 'users' || route.view === 'invitations') {
-    return resolve('/i/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
+    return resolve('/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]', {
       account,
       section: route.view,
       rest: route.dialog === undefined ? '' : (dialogRest(route.view, route.dialog) ?? ''),
@@ -51,7 +68,7 @@ export function panelAddress(route: PanelRoute): string {
   }
 
   if (route.view === 'history') {
-    return resolve('/i/[account]/history/[[section=historySection]]', {
+    return resolve('/workspace/[account]/history/[[section=historySection]]', {
       account,
       section: route.section,
     });
@@ -59,24 +76,23 @@ export function panelAddress(route: PanelRoute): string {
 
   if (route.view === 'queue') {
     return route.queue === undefined || route.queue === 'active'
-      ? resolve('/i/[account]/queue', { account })
-      : resolve('/i/[account]/queue/[section=queueSection]', {
+      ? resolve('/workspace/[account]/queue', { account })
+      : resolve('/workspace/[account]/queue/[section=queueSection]', {
           account,
           section: route.queue,
         });
   }
 
   if (route.view === 'repositories' && named(route.repository)) {
-    return resolve('/i/[account]/repositories/[repository]/[[section=repositorySection]]', {
+    return resolve('/workspace/[account]/repositories/[repository]', {
       account,
       repository: encodeURIComponent(route.repository.name),
-      section: writtenSection(route.repository),
     });
   }
 
   /* One ruleset's own page, a level below its list. */
   if (route.view === 'sync' && route.sync === 'rulesets' && route.syncRuleset !== undefined) {
-    return resolve('/i/[account]/sync/rulesets/[ruleset]', {
+    return resolve('/workspace/[account]/sync/rulesets/[ruleset]', {
       account,
       ruleset: encodeURIComponent(route.syncRuleset),
     });
@@ -84,7 +100,7 @@ export function panelAddress(route: PanelRoute): string {
 
   /* One template's own page - the path IS the address, slash for slash. */
   if (route.view === 'sync' && route.sync === 'files' && route.syncFile !== undefined) {
-    return resolve('/i/[account]/sync/files/[...file=syncFilePath]', {
+    return resolve('/workspace/[account]/sync/files/[...file=syncFilePath]', {
       account,
       file: route.syncFile.split('/').map(encodeURIComponent).join('/'),
     });
@@ -93,29 +109,37 @@ export function panelAddress(route: PanelRoute): string {
   /* The overview is the bare view - an address that names it as well is one a
      reader would have to be told to ignore. */
   if (route.view === 'sync' && route.sync !== undefined && route.sync !== 'overview') {
-    return resolve('/i/[account]/sync/[section=syncSection]', {
+    return resolve('/workspace/[account]/sync/[section=syncSection]', {
       account,
       section: route.sync,
     });
   }
 
-  return resolve('/i/[account]/[view=panelView]', { account, view: route.view });
+  /* The workspace opens on its overview, so the overview IS the workspace's
+     address. A second one naming it would be one a reader has to be told to
+     ignore - the console's own overview is the bare `/root` for the same
+     reason. */
+  if (route.view === 'overview') return resolve('/workspace/[account]', { account });
+
+  return resolve('/workspace/[account]/[view=panelView]', { account, view: route.view });
 }
 
 function rootAddress(route: RootRoute): string {
   switch (route.rootView) {
     case 'overview':
       return resolve('/root');
-    case 'installations':
-      return resolve('/root/installations');
+    case 'workspaces':
+      return resolve('/root/workspaces');
     case 'queue':
       return resolve('/root/queue');
     case 'queue-approvals':
       return resolve('/root/queue/[section=queueSection]', { section: 'approvals' });
+    case 'queue-waiting':
+      return resolve('/root/queue/[section=queueSection]', { section: 'waiting' });
+    case 'queue-running':
+      return resolve('/root/queue/[section=queueSection]', { section: 'running' });
     case 'queue-history':
       return resolve('/root/queue/[section=queueSection]', { section: 'history' });
-    case 'queue-recent':
-      return resolve('/root/queue/recent');
     case 'queue-request':
       return resolve('/root/queue/request/[id]', { id: encodeURIComponent(route.request) });
     case 'schedules':
@@ -124,8 +148,6 @@ function rootAddress(route: RootRoute): string {
       return resolve('/root/runtime/settings');
     case 'runtime-service':
       return resolve('/root/runtime/service');
-    case 'runtime-database':
-      return resolve('/root/runtime/database');
     case 'history-audit':
     case 'history-failures':
       return resolve('/root/history/[[section=historySection]]', {
@@ -139,16 +161,16 @@ function rootAddress(route: RootRoute): string {
         section: route.rootView === 'access-users' ? 'users' : 'invitations',
         rest: route.dialog === undefined ? '' : (dialogRest(route.rootView, route.dialog) ?? ''),
       });
-    case 'installation':
-      return rootInstallationAddress(route);
+    case 'workspace':
+      return rootWorkspaceAddress(route);
   }
 }
 
-function rootInstallationAddress(route: RootRoute & { rootView: 'installation' }): string {
+function rootWorkspaceAddress(route: RootRoute & { rootView: 'workspace' }): string {
   const account = encodeURIComponent(route.account);
   if (route.view === 'users' || route.view === 'invitations') {
     return resolve(
-      '/root/installations/[account]/access/[section=accessSection]/[...rest=dialogPath]',
+      '/root/workspaces/[account]/access/[section=accessSection]/[...rest=dialogPath]',
       {
         account,
         section: route.view,
@@ -158,24 +180,20 @@ function rootInstallationAddress(route: RootRoute & { rootView: 'installation' }
   }
 
   if (route.view === 'history') {
-    return resolve('/root/installations/[account]/history/[[section=historySection]]', {
+    return resolve('/root/workspaces/[account]/history/[[section=historySection]]', {
       account,
       section: route.section,
     });
   }
 
   if (route.view === 'repositories' && named(route.repository)) {
-    return resolve(
-      '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]',
-      {
-        account,
-        repository: encodeURIComponent(route.repository.name),
-        section: writtenSection(route.repository),
-      },
-    );
+    return resolve('/root/workspaces/[account]/repositories/[repository]', {
+      account,
+      repository: encodeURIComponent(route.repository.name),
+    });
   }
 
-  return resolve('/root/installations/[account]/[view=rootInstallationView]', {
+  return resolve('/root/workspaces/[account]/[view=rootWorkspaceView]', {
     account,
     view: route.view,
   });
@@ -189,16 +207,6 @@ function rootInstallationAddress(route: RootRoute & { rootView: 'installation' }
  */
 function named(repository: RepositoryPage | undefined): repository is RepositoryPage {
   return repository !== undefined && repository.name !== '';
-}
-
-/**
- * The pane an address spells out, which is none for the one the page opens on.
- *
- * `file` is where a repository starts, so the bare address already means it, and one
- * that says so as well is an address a reader would have to be told to ignore.
- */
-function writtenSection(repository: RepositoryPage): RepositorySection | undefined {
-  return repository.section === 'file' ? undefined : repository.section;
 }
 
 /**
@@ -233,24 +241,28 @@ export function panelRouteAt(
   switch (id) {
     case '/inbox':
       return { personal: 'inbox' };
+    case '/search':
+      return { personal: 'search' };
 
-    case '/i/[account]/[view=panelView]':
+    case '/workspace/[account]':
+      return { account, view: 'overview' };
+    case '/workspace/[account]/[view=panelView]':
       return withView(account, params.view);
-    case '/i/[account]/queue':
+    case '/workspace/[account]/queue':
       return { account, view: 'queue' };
-    case '/i/[account]/queue/[section=queueSection]':
-      return { account, view: 'queue', queue: section === 'history' ? 'history' : 'approvals' };
-    case '/i/[account]/access':
+    case '/workspace/[account]/queue/[section=queueSection]':
+      return { account, view: 'queue', queue: writtenQueueSection(section) };
+    case '/workspace/[account]/access':
       return withView(account, 'users');
-    case '/i/[account]/access/[section=accessSection]/[...rest=dialogPath]':
+    case '/workspace/[account]/access/[section=accessSection]/[...rest=dialogPath]':
       return withView(account, section, undefined, dialogAt(section, params.rest));
-    case '/i/[account]/history/[[section=historySection]]':
+    case '/workspace/[account]/history/[[section=historySection]]':
       return withView(account, 'history', asSection(section));
-    case '/i/[account]/sync/[section=syncSection]':
+    case '/workspace/[account]/sync/[section=syncSection]':
       return { account, view: 'sync', sync: asSyncSection(section) };
-    case '/i/[account]/sync/rulesets/[ruleset]':
+    case '/workspace/[account]/sync/rulesets/[ruleset]':
       return { account, view: 'sync', sync: 'rulesets', syncRuleset: params.ruleset ?? '' };
-    case '/i/[account]/sync/files/[...file=syncFilePath]': {
+    case '/workspace/[account]/sync/files/[...file=syncFilePath]': {
       /* SvelteKit has already decoded every segment in the rest parameter.
          Decoding again turns a literal percent sequence into another name -
          or throws for a perfectly valid name such as `100%bad.json`. */
@@ -262,19 +274,17 @@ export function panelRouteAt(
         syncFile: segments.join('/'),
       };
     }
-    case '/i/[account]/repositories/[repository]/[[section=repositorySection]]':
+    case '/workspace/[account]/repositories/[repository]':
       return { account, view: 'repositories', repository: repositoryAt(params) };
 
     case '/root':
       return { rootView: 'overview' };
-    case '/root/installations':
-      return { rootView: 'installations' };
+    case '/root/workspaces':
+      return { rootView: 'workspaces' };
     case '/root/queue':
       return { rootView: 'queue' };
     case '/root/queue/[section=queueSection]':
-      return { rootView: section === 'history' ? 'queue-history' : 'queue-approvals' };
-    case '/root/queue/recent':
-      return { rootView: 'queue-recent' };
+      return { rootView: `queue-${writtenQueueSection(section)}` };
     case '/root/queue/request/[id]':
       return { rootView: 'queue-request', request: params.id ?? '' };
     case '/root/schedules':
@@ -285,8 +295,10 @@ export function panelRouteAt(
       return { rootView: 'runtime-settings' };
     case '/root/runtime/service':
       return { rootView: 'runtime-service' };
+    /* The address survives its page: a redirect sends it to Service health, which
+       is where the database now lives. Read back as the page it lands on. */
     case '/root/runtime/database':
-      return { rootView: 'runtime-database' };
+      return { rootView: 'runtime-service' };
     case '/root/history/[[section=historySection]]':
       return { rootView: section === 'failures' ? 'history-failures' : 'history-audit' };
 
@@ -299,17 +311,17 @@ export function panelRouteAt(
       return { rootView: host, dialog: dialogAt(host, params.rest) };
     }
 
-    case '/root/installations/[account]/[view=rootInstallationView]':
-      return rootInstallation(account, params.view);
-    case '/root/installations/[account]/access':
-      return rootInstallation(account, 'users');
-    case '/root/installations/[account]/access/[section=accessSection]/[...rest=dialogPath]':
-      return rootInstallation(account, section, undefined, dialogAt(section, params.rest));
-    case '/root/installations/[account]/history/[[section=historySection]]':
-      return rootInstallation(account, 'history', asSection(section));
-    case '/root/installations/[account]/repositories/[repository]/[[section=repositorySection]]':
+    case '/root/workspaces/[account]/[view=rootWorkspaceView]':
+      return rootWorkspace(account, params.view);
+    case '/root/workspaces/[account]/access':
+      return rootWorkspace(account, 'users');
+    case '/root/workspaces/[account]/access/[section=accessSection]/[...rest=dialogPath]':
+      return rootWorkspace(account, section, undefined, dialogAt(section, params.rest));
+    case '/root/workspaces/[account]/history/[[section=historySection]]':
+      return rootWorkspace(account, 'history', asSection(section));
+    case '/root/workspaces/[account]/repositories/[repository]':
       return {
-        rootView: 'installation',
+        rootView: 'workspace',
         account,
         view: 'repositories',
         repository: repositoryAt(params),
@@ -329,19 +341,30 @@ function withView(
   return isScopedPanelView(view) ? { account, view, section, dialog } : null;
 }
 
-function rootInstallation(
+function rootWorkspace(
   account: string,
   view: string | undefined,
   section?: HistorySection,
   dialog?: RouteDialog,
 ): PanelRoute | null {
-  return isRootInstallationView(view)
-    ? { rootView: 'installation', account, view, section, dialog }
+  return isRootWorkspaceView(view)
+    ? { rootView: 'workspace', account, view, section, dialog }
     : null;
 }
 
 function asSection(value: string | undefined): HistorySection | undefined {
   return HISTORY_SECTIONS.find((section) => section === value);
+}
+
+/**
+ * The queue section an address names.
+ *
+ * The matcher has already refused anything outside the list, so the fallback is for the
+ * type rather than for a reader: Active is the section the bare Queue address is, and
+ * the one a section that cannot be read should behave as.
+ */
+function writtenQueueSection(value: string | undefined): WrittenQueueSection {
+  return WRITTEN_QUEUE_SECTIONS.find((section) => section === value) ?? 'approvals';
 }
 
 /** The written sections only: the overview never reaches this route. */
@@ -350,17 +373,13 @@ function asSyncSection(value: string | undefined): SyncSection | undefined {
 }
 
 /**
- * The repository an address names, opened on the pane it spells out.
+ * The repository an address names.
  *
  * The name comes back the way the reader wrote it: the router has already decoded the
- * segment, which is the half `panelAddress` encoded. A missing pane is the one the page
- * opens on rather than no pane at all - the address leaves `file` unwritten.
+ * segment, which is the half `panelAddress` encoded.
  */
 function repositoryAt(params: Readonly<Record<string, string | undefined>>): RepositoryPage {
-  return {
-    name: params.repository ?? '',
-    section: REPOSITORY_SECTIONS.find((pane) => pane === params.section) ?? 'file',
-  };
+  return { name: params.repository ?? '' };
 }
 
 /**

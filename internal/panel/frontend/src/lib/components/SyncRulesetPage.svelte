@@ -50,22 +50,27 @@
   ];
 </script>
 
-<script lang="ts">
-  /**
-   * One ruleset's own page. Every card speaks the settings row grammar: say
-   * on the left, value on the right, ghost clear at the end. A rule's
-   * parameters ARE its value, so they sit in the value column as chips
-   * beside Edit, and the row opens into a small staged form - fields
-   * stacked left, Cancel and Done on a hairline foot.
-   */
-  import { numericValue } from '../merge';
-  import type { SyncConfig, SyncRuleset, SyncRulesetBypassActor, SyncRulesetRules } from '../types';
-  import type { SyncSection } from '../routes';
+<!--
+@component
+One ruleset's own page. Every card speaks the settings row grammar: say
+on the left, value on the right, ghost clear at the end. A rule's
+parameters ARE its value, so they sit in the value column as chips
+beside Edit, and the row opens into a small staged form - fields
+stacked left, Cancel and Done on a hairline foot.
+-->
 
-  import ApplyBar from './ApplyBar.svelte';
+<script lang="ts">
+  import { globRuns } from '../glob-runs';
+  import { numericValue } from '../merge';
+  import { receipts } from '../receipts.svelte';
+  import type { SyncConfig, SyncRuleset, SyncRulesetBypassActor, SyncRulesetRules } from '../types';
+  import { SYNC_SECTION_LABELS, type SyncSection } from '../routes';
+
   import Button from './Button.svelte';
+  import Card from './Card.svelte';
   import FormError from './FormError.svelte';
   import Icon from './Icon.svelte';
+  import PageHeader from './PageHeader.svelte';
   import PanePath from './PanePath.svelte';
   import Popover from './Popover.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
@@ -137,19 +142,50 @@
     patch({ rules });
   }
 
+  /* What was deleted and where it stood, so the page can put it back. The document is
+     the only record of a ruleset, so a delete that left for the list took the way back
+     with it - and nothing has happened on GitHub yet, which is exactly the moment an
+     undo is worth offering. */
+  let removed = $state<{ ruleset: SyncRuleset; at: number } | null>(null);
+
   function deleteRuleset(): void {
-    if (frozen) return;
+    if (frozen || ruleset === null) return;
+    removed = { ruleset, at: rulesets.findIndex((held) => held.name === name) };
     onChangeDocument({
       ...stored,
       rulesets: rulesets.filter((held) => held.name !== name),
     });
-    onOpenSection('rulesets');
+    receipts.say(`${name} will be removed from every syncing repository by the next plan`, {
+      undo: restoreRuleset,
+    });
+  }
+
+  function restoreRuleset(): void {
+    const held = removed;
+    if (held === null || frozen) return;
+    const next = [...rulesets];
+    next.splice(Math.max(0, held.at), 0, held.ruleset);
+    removed = null;
+    onChangeDocument({ ...stored, rulesets: next });
+    receipts.say(`Put back - ${held.ruleset.name} stays`);
   }
 
   /* ---------- Where it applies ---------- */
 
   const include = $derived(ruleset?.conditions.include ?? []);
   const exclude = $derived(ruleset?.conditions.exclude ?? []);
+
+  const coverage = $derived(
+    ruleset === null && removed !== null
+      ? 'Pending removal - nothing has changed on GitHub yet'
+      : ruleset === null
+        ? 'No ruleset by this name - it may have been renamed or removed'
+        : include.length === 0
+          ? 'Covering no branches yet - add a pattern below'
+          : include.length === 1 && include[0] === '~DEFAULT_BRANCH'
+            ? 'Enforced on the default branch of every syncing repository'
+            : `Enforced on ${include.join(', ')} in every syncing repository`,
+  );
 
   let includeOpen = $state(false);
   let excludeOpen = $state(false);
@@ -367,7 +403,7 @@
     if (list === 'tools' && !scanTools.includes(value)) scanTools = [...scanTools, value];
   }
 
-  /* ---------- Who may step around it ---------- */
+  /* ---------- The bypass list ---------- */
 
   const actors = $derived(ruleset?.bypass_actors ?? []);
 
@@ -426,42 +462,32 @@
 </script>
 
 <div class="view-frame">
+  <!-- One crumb, to the row this page sits under. Sync is where that row lives,
+       not a second place to go back to. -->
   <PanePath
     segments={[
-      { label: 'Sync', href: sectionHref('overview'), onSelect: () => onOpenSection('overview') },
       {
-        label: 'Rulesets',
+        label: SYNC_SECTION_LABELS.rulesets,
         href: sectionHref('rulesets'),
         onSelect: () => onOpenSection('rulesets'),
       },
     ]}
   />
 
-  <header class="object-head">
-    <h2 class="mono-title">{name}</h2>
-    <p class="object-sub">
-      {#if ruleset === null}
-        No ruleset by this name - it may have been renamed or removed
-      {:else if include.length === 1 && include[0] === '~DEFAULT_BRANCH'}
-        Enforced on the default branch of every syncing repository
-      {:else if include.length === 0}
-        Covering no branches yet - add a pattern below
-      {:else}
-        Enforced on {include.join(', ')} in every syncing repository
-      {/if}
-    </p>
-  </header>
+  <PageHeader
+    id="sync-ruleset-heading"
+    section="Ruleset"
+    title={name}
+    mono
+    description={coverage}
+  />
 
   {#if problem !== null}
     <FormError message={problem} />
   {/if}
 
   {#if ruleset !== null}
-    <div
-      class="card group-card"
-      class:is-unsaved={partDirty('enforcement')}
-      data-unsaved={partDirty('enforcement') || undefined}
-    >
+    <Card unsaved={partDirty('enforcement')}>
       <div class="policy-rows">
         <div
           class="policy-row"
@@ -492,15 +518,11 @@
           </span>
         </div>
       </div>
-    </div>
+    </Card>
 
-    <div
-      class="card group-card"
-      class:is-unsaved={partDirty('conditions')}
-      data-unsaved={partDirty('conditions') || undefined}
-    >
-      <div class="group-head">
-        <h3 class="group-name">Where it applies</h3>
+    <Card unsaved={partDirty('conditions')}>
+      <div class="card-head">
+        <h2 class="card-title">Where it applies</h2>
       </div>
       <div class="policy-rows">
         <div
@@ -508,16 +530,26 @@
           class:is-unsaved={partDirty('conditions')}
           data-unsaved={partDirty('conditions') || undefined}
         >
-          <span class="setting-say"><span class="setting-name">Branches it covers</span></span>
+          <span class="setting-say"
+            ><span class="setting-name">Included branches</span>
+            <span class="setting-why"
+              ><span class="glob-meta">*</span> matches one segment,
+              <span class="glob-meta">**</span> crosses them</span
+            ></span
+          >
           <span class="policy-value">
             {#each include as pattern (pattern)}
               <span class="cond-chip"
-                ><span class="t">{pattern}</span>
+                ><span class="t"
+                  >{#each globRuns(pattern) as run, at (at)}{#if run.meta}<span class="glob-meta"
+                        >{run.text}</span
+                      >{:else}{run.text}{/if}{/each}</span
+                >
                 <button
                   aria-label="Remove {pattern}"
                   disabled={frozen}
                   onclick={() => removePattern('include', pattern)}
-                  ><Icon name="close" size={8} /></button
+                  ><Icon name="close" size="nano" /></button
                 ></span
               >
             {/each}
@@ -530,13 +562,13 @@
             >
               {#snippet trigger(attributes)}
                 <button {...attributes} class="add-chip" disabled={frozen}>
-                  <Icon name="plus" size={12} />
+                  <Icon name="plus" size="xs" />
                   <span class="t">Add a pattern</span>
                 </button>
               {/snippet}
               <div class="name-menu">
                 <div class="menu-search">
-                  <Icon name="search" size={12} />
+                  <Icon name="search" size="xs" />
                   <input
                     placeholder="releases/* or a branch name"
                     aria-label="Pattern to add"
@@ -557,19 +589,23 @@
           class:is-unsaved={partDirty('conditions')}
           data-unsaved={partDirty('conditions') || undefined}
         >
-          <span class="setting-say"><span class="setting-name">Branches it leaves out</span></span>
+          <span class="setting-say"><span class="setting-name">Excluded branches</span></span>
           <span class="policy-value">
             {#if exclude.length === 0}
               <span class="setting-unmanaged">None</span>
             {:else}
               {#each exclude as pattern (pattern)}
                 <span class="cond-chip"
-                  ><span class="t">{pattern}</span>
+                  ><span class="t"
+                    >{#each globRuns(pattern) as run, at (at)}{#if run.meta}<span class="glob-meta"
+                          >{run.text}</span
+                        >{:else}{run.text}{/if}{/each}</span
+                  >
                   <button
                     aria-label="Remove {pattern}"
                     disabled={frozen}
                     onclick={() => removePattern('exclude', pattern)}
-                    ><Icon name="close" size={8} /></button
+                    ><Icon name="close" size="nano" /></button
                   ></span
                 >
               {/each}
@@ -583,13 +619,13 @@
             >
               {#snippet trigger(attributes)}
                 <button {...attributes} class="add-chip" disabled={frozen}>
-                  <Icon name="plus" size={12} />
+                  <Icon name="plus" size="xs" />
                   <span class="t">Add a pattern</span>
                 </button>
               {/snippet}
               <div class="name-menu">
                 <div class="menu-search">
-                  <Icon name="search" size={12} />
+                  <Icon name="search" size="xs" />
                   <input
                     placeholder="releases/* or a branch name"
                     aria-label="Pattern to add"
@@ -606,16 +642,12 @@
           </span>
         </div>
       </div>
-    </div>
+    </Card>
 
-    <div
-      class="card group-card"
-      class:is-unsaved={partDirty('rules')}
-      data-unsaved={partDirty('rules') || undefined}
-    >
-      <div class="group-head">
-        <h3 class="group-name">What it enforces</h3>
-        <span class="group-tally">{onRules.length} of {RULE_CATALOGUE.length} rules on</span>
+    <Card unsaved={partDirty('rules')}>
+      <div class="card-head">
+        <h2 class="card-title">What it enforces</h2>
+        <span class="card-meta">{onRules.length} of {RULE_CATALOGUE.length} rules on</span>
       </div>
       <div class="policy-rows">
         {#each onRules as rule (rule.key)}
@@ -653,7 +685,7 @@
               disabled={frozen}
               onclick={() => ruleOff(rule.key)}
             >
-              <Icon name="close" size={10} />
+              <Icon name="close" size="micro" />
             </button>
             {#if editing === rule.key}
               <div class="rule-edit">
@@ -716,8 +748,8 @@
                         >
                           {#if prMethods.includes(method)}<Icon
                               name="check"
-                              size={12}
-                            />{:else}<Icon name="plus" size={12} />{/if}
+                              size="xs"
+                            />{:else}<Icon name="plus" size="xs" />{/if}
                           <span class="t">{method}</span>
                         </button>
                       {/each}
@@ -734,7 +766,7 @@
                             aria-label="Remove {context}"
                             onclick={() =>
                               (checksList = checksList.filter((held) => held !== context))}
-                            ><Icon name="close" size={8} /></button
+                            ><Icon name="close" size="nano" /></button
                           ></span
                         >
                       {/each}
@@ -747,13 +779,13 @@
                       >
                         {#snippet trigger(attributes)}
                           <button {...attributes} class="add-chip">
-                            <Icon name="plus" size={12} />
+                            <Icon name="plus" size="xs" />
                             <span class="t">Add a check</span>
                           </button>
                         {/snippet}
                         <div class="name-menu">
                           <div class="menu-search">
-                            <Icon name="search" size={12} />
+                            <Icon name="search" size="xs" />
                             <input
                               placeholder="test"
                               aria-label="Check to add"
@@ -807,7 +839,7 @@
                           <button
                             aria-label="Remove {tool}"
                             onclick={() => (scanTools = scanTools.filter((held) => held !== tool))}
-                            ><Icon name="close" size={8} /></button
+                            ><Icon name="close" size="nano" /></button
                           ></span
                         >
                       {/each}
@@ -820,13 +852,13 @@
                       >
                         {#snippet trigger(attributes)}
                           <button {...attributes} class="add-chip">
-                            <Icon name="plus" size={12} />
+                            <Icon name="plus" size="xs" />
                             <span class="t">Add a tool</span>
                           </button>
                         {/snippet}
                         <div class="name-menu">
                           <div class="menu-search">
-                            <Icon name="search" size={12} />
+                            <Icon name="search" size="xs" />
                             <input
                               placeholder="CodeQL"
                               aria-label="Tool to add"
@@ -861,7 +893,7 @@
             <span class="rest-picks">
               {#each offRules as rule (rule.key)}
                 <button class="add-chip" onclick={() => ruleOn(rule.key)}>
-                  <Icon name="plus" size={12} />
+                  <Icon name="plus" size="xs" />
                   <span class="t">{rule.label}</span>
                 </button>
               {/each}
@@ -876,22 +908,18 @@
               - {offRules.map((rule) => rule.label).join(', ')}</span
             >
             <Button tone="quiet" disabled={frozen} onclick={() => (pickingRule = true)}>
-              {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
+              {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
               Add a rule
             </Button>
           {/if}
         </div>
       {/if}
-    </div>
+    </Card>
 
-    <div
-      class="card group-card"
-      class:is-unsaved={partDirty('bypass_actors')}
-      data-unsaved={partDirty('bypass_actors') || undefined}
-    >
-      <div class="group-head">
-        <h3 class="group-name">Who may step around it</h3>
-        <span class="group-tally">{actors.length} {actors.length === 1 ? 'actor' : 'actors'}</span>
+    <Card unsaved={partDirty('bypass_actors')}>
+      <div class="card-head">
+        <h2 class="card-title">Bypass list</h2>
+        <span class="card-meta">{actors.length} {actors.length === 1 ? 'actor' : 'actors'}</span>
       </div>
       {#if actors.length > 0}
         <div class="policy-rows">
@@ -912,7 +940,7 @@
                 disabled={frozen}
                 onclick={() => removeActor(at)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
             </div>
           {/each}
@@ -930,9 +958,9 @@
                     class:is-held={actorType === kind.value}
                     onclick={() => (actorType = kind.value)}
                   >
-                    {#if actorType === kind.value}<Icon name="check" size={12} />{:else}<Icon
+                    {#if actorType === kind.value}<Icon name="check" size="xs" />{:else}<Icon
                         name="plus"
-                        size={12}
+                        size="xs"
                       />{/if}
                     <span class="t">{kind.label}</span>
                   </button>
@@ -970,205 +998,68 @@
           </div>
         {:else}
           <span class="rest-say"
-            >An actor here steps around every rule above, everywhere this ruleset applies</span
+            >Anyone here may push past every rule above, wherever this ruleset applies</span
           >
           <Button tone="quiet" disabled={frozen} onclick={() => (addingActor = true)}>
-            {#snippet icon()}<Icon name="plus" size={13} />{/snippet}
+            {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
             Add an actor
           </Button>
         {/if}
       </div>
-    </div>
+    </Card>
 
+    <!-- The one destructive act on the page, in the row grammar every other setting
+         here is written in: what it does on the left, the act on the right. -->
     {#if !readOnly}
-      <ApplyBar>
-        <span class="apply-note"
-          >Deleting removes this ruleset from every syncing repository on the next plan</span
-        >
-        <Button tone="stop-quiet" disabled={frozen} onclick={deleteRuleset}>
-          Delete this ruleset
-        </Button>
-      </ApplyBar>
+      <Card class="danger-zone">
+        <div class="card-head"><h2 class="card-title">Danger zone</h2></div>
+        <div class="setting-rows">
+          <div class="setting-row">
+            <span class="setting-say">
+              <span class="setting-name">Delete this ruleset</span>
+              <span class="setting-why"
+                >Removes {name} from every syncing repository on the next plan</span
+              >
+            </span>
+            <span class="setting-value">
+              <Button tone="stop-quiet" disabled={frozen} onclick={deleteRuleset}>
+                Delete this ruleset
+              </Button>
+            </span>
+          </div>
+        </div>
+      </Card>
     {/if}
+  {:else if removed !== null}
+    <!-- Deleted here, not yet on GitHub: the configuration has stopped carrying it and
+         the next applied plan is what removes it, so the way back is offered until
+         then rather than on the list this used to leave for. -->
+    <div class="state-panel is-warn">
+      <span
+        ><strong>Pending removal.</strong> The configuration no longer carries {name}; the next
+        applied plan removes it from every syncing repository. On GitHub it stays enforced until
+        that plan runs</span
+      >
+      <Button disabled={frozen} onclick={restoreRuleset}>Undo - keep this ruleset</Button>
+    </div>
   {/if}
 </div>
 
 <style>
+  /* The reading column is the sheet's; what is this page's own is the apply bar's seat,
+     measured by the slot after it. */
   .view-frame {
-    box-sizing: border-box;
-    inline-size: 100%;
-    margin-inline: auto;
-    max-width: var(--content-max);
-    min-inline-size: 0;
     timeline-scope: --bar-slot;
-  }
-
-  .object-head {
-    display: grid;
-    gap: var(--space-2);
-    margin-bottom: var(--space-4);
-  }
-
-  .mono-title {
-    font-family: var(--mono);
-    font-size: 1.375rem;
-    letter-spacing: -0.01em;
-    margin: 0;
-  }
-
-  .object-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-    max-width: 64ch;
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
   }
 
   .card.is-unsaved {
     border-color: color-mix(in srgb, var(--brand-action) 55%, var(--border-subtle));
   }
 
-  .card + .card {
-    margin-top: var(--space-4);
-  }
-
-  .group-head {
-    align-items: end;
-    display: flex;
-    gap: var(--space-3);
-    justify-content: space-between;
-    margin-bottom: var(--space-2);
-  }
-
-  .group-name {
-    font-size: var(--font-size-title);
-    font-weight: 600;
-    margin: 0;
-    min-block-size: 12px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .group-tally {
-    color: var(--text-muted);
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-    font-variant-numeric: tabular-nums;
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    padding: 0.5rem var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  /* Every row owns the line under itself; the last one keeps it only when
-     the off-rules remainder follows, where it doubles as that separator. */
-  .policy-row::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .policy-row:last-child::after {
-    content: none;
-  }
-
+  /* The remainder is a summary line and not a row, so the list still seams into it. */
   .policy-rows:has(+ .group-rest) > .policy-row:last-child::after {
     content: '';
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    /* The settings page's 12px, which is the design's - the 8px here made
-       every value column measure 4px per seam off the mock. */
-    gap: var(--space-3);
-    justify-content: end;
-    justify-self: end;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
+    inset-inline: var(--space-2);
   }
 
   /* ---------- Chips: a value, and a parameter said in a word ---------- */
@@ -1178,14 +1069,14 @@
   .cond-chip {
     align-items: center;
     background: var(--surface-inset);
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--r-chip);
     color: var(--text-secondary);
     display: inline-flex;
     font-family: var(--mono);
     font-size: var(--font-size-micro);
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 var(--space-2);
   }
 
@@ -1220,13 +1111,13 @@
   .param-chip {
     align-items: center;
     background: var(--surface-inset);
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--r-chip);
     color: var(--text-secondary);
     display: inline-flex;
     font-size: var(--font-size-micro);
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 var(--space-2);
   }
 
@@ -1282,8 +1173,8 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-ctl);
     display: grid;
+    flex-basis: 100%;
     gap: var(--space-3);
-    grid-column: 1 / -1;
     /* Back inside the halo's overhang, aligned with the card's text edge. */
     margin-block: var(--space-1) var(--space-2);
     margin-inline: var(--space-2);
@@ -1343,8 +1234,8 @@
 
   .text-inline:focus {
     border-color: var(--focus);
-    outline: 2px solid var(--focus);
-    outline-offset: -1px;
+    outline: var(--focus-ring-width) solid var(--focus);
+    outline-offset: var(--focus-ring-inset);
   }
 
   .num-input {
@@ -1425,48 +1316,13 @@
     color: var(--text-muted);
     font-size: var(--font-size-micro);
     font-variant-numeric: tabular-nums;
-    line-height: 16px;
+    line-height: var(--leading-tight);
     padding: var(--space-1) var(--space-3) var(--space-2);
-  }
-
-  .apply-note {
-    color: var(--text-secondary);
-    flex: 1;
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    text-box: trim-both cap alphabetic;
   }
 
   @media (max-width: 36rem) {
     .view-frame {
       overflow-x: hidden;
-    }
-
-    .card {
-      padding: var(--space-4);
-    }
-
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      min-inline-size: 0;
-    }
-
-    .policy-row .policy-value {
-      grid-column: 1 / -1;
-      grid-row: 2;
-      justify-content: start;
-      justify-self: stretch;
-      min-inline-size: 0;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
     }
 
     .group-rest {

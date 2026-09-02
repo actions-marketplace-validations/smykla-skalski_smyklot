@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { contrast, deltaE, oklch, over } from './color';
+import { contrast, deltaE, oklch, over, stateBand } from './color';
 import { palettes, type Palette } from './theme';
 
 /**
@@ -20,12 +20,14 @@ import { palettes, type Palette } from './theme';
  * own, so a sync surface and a sidebar row are held to one standard rather than two.
  */
 
-/** The bands the sidebar's approved pair set, read as a shared standard rather than restated. */
-function band(ground: string): { hover: [number, number]; press: [number, number] } {
-  return oklch(ground).L > 0.5
-    ? { hover: [2, 3], press: [4.5, 5.7] }
-    : { hover: [4.5, 6], press: [7, 9.5] };
-}
+/**
+ * The bands the sidebar's approved pair set, read as a shared standard rather than restated.
+ *
+ * Restated is what it was: the same four numbers were written here and in
+ * `control-states.test.ts`, so when the design system's overlays moved, one copy could be brought
+ * up to date and the other left saying the old thing. `stateBand` is the one definition.
+ */
+const band = stateBand;
 
 /** A translucent layer's colour and the alpha it paints at, from its declaration. */
 function layer(palette: Palette, token: string): { color: string; alpha: number } {
@@ -138,13 +140,14 @@ const SURFACES: readonly {
     paints: 'declared',
   },
   {
-    // A row inside the files card's own plate, which is what paints the ground under it.
+    // A row inside the files card's own plate, which is what paints the ground under it - and the
+    // card is the shared one now, so the sheet is what has to keep painting it.
     what: 'a named object row',
     file: 'SyncFilesPage.svelte',
     className: 'object-row',
     ground: 'surface-base',
     paints: 'inherited',
-    from: { file: 'SyncFilesPage.svelte', declares: 'background: var(--surface-base)' },
+    from: { file: 'app.css', declares: 'background: var(--surface-base)' },
   },
 ];
 
@@ -202,7 +205,7 @@ describe('sync surfaces [Unit]', () => {
             return over(color, ground, alpha);
           })();
           const pressed = ((): string => {
-            const { color, alpha } = layer(palette, 'press');
+            const { color, alpha } = layer(palette, 'interactive-pressed');
 
             return over(color, ground, alpha);
           })();

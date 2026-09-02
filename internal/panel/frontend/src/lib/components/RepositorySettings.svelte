@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BOOLEAN_FIELDS, CONFIG_KEYS } from '../config';
+  import { CONFIG_KEYS } from '../config';
   import { durationParts, formatDuration, type DurationUnit } from '../duration';
   import {
     FORMATTING_FIELDS,
@@ -16,7 +16,6 @@
     SyncOverrideControlId,
     SyncOverrideEditorEnvelope,
   } from '../repository-sync-override-settings';
-  import { REPOSITORY_SECTIONS, type RepositorySection } from '../routes';
   import type {
     ConfigKey,
     ConfigPatch,
@@ -25,26 +24,20 @@
     RepositoryFileStatus,
     RepositorySummary,
     SyncOverride,
+    SyncStatus,
   } from '../types';
+  import { repositorySentence } from '../repository-sentence';
   import ClippedLabel from './ClippedLabel.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
   import FormattingEditor from './FormattingEditor.svelte';
   import Icon from './Icon.svelte';
+  import Card from './Card.svelte';
+  import PageHeader from './PageHeader.svelte';
   import PanePath from './PanePath.svelte';
   import PatternEntries from './PatternEntries.svelte';
   import Popover from './Popover.svelte';
   import RepositorySyncPane from './RepositorySyncPane.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
-
-  /**
-   * One repository's own page.
-   *
-   * This was a dialog until it was three panes with a save bar in each, which is
-   * a screen someone works in rather than something standing over the list for a
-   * moment. It reads as any other object page of the panel does - a way back, a
-   * mono title with the switch beside it, then the pane - and it is addressable,
-   * so a link points at the pane a colleague was asked to look at.
-   */
 
   const FILE_STATUS_PILLS = {
     valid: 'pill-success',
@@ -66,16 +59,17 @@
   const {
     repository,
     detail,
-    section,
     failure = null,
     readOnly = false,
     busy = false,
     backHref,
     onBack,
-    onSection,
     onChange,
     onResetMigration,
-    sections = REPOSITORY_SECTIONS,
+    enablement = 'inherit',
+    onEnablement = () => {},
+    offersSync = true,
+    fleet = null,
     syncOverride = undefined,
     syncEnvelope = undefined,
     syncReadProblem = null,
@@ -86,29 +80,34 @@
   }: {
     repository: RepositorySummary;
     detail: RepositoryDetail | undefined;
-    section: RepositorySection;
     failure?: string | null;
     readOnly?: boolean;
     busy?: boolean;
     backHref: string;
     onBack: () => void;
-    onSection: (section: RepositorySection) => void;
     onChange: (
       next: RepositorySettingsDocument,
       controls: readonly RepositorySettingsControlId[],
     ) => void;
     onResetMigration: () => void;
+    /** Whether Smyklot answers here: on, off, or whatever the workspace says. */
+    enablement?: 'inherit' | 'enabled' | 'disabled';
+    onEnablement?: (next: string) => void;
     /**
-     * The panes this surface offers, in the order the switch shows them.
+     * Whether this surface draws the File sync card.
      *
-     * Handed in rather than worked out here, because which panes there are is
-     * a fact about where this is being drawn. The Root view of somebody else's
-     * installation has no sync pane: sync is configured on the installation's
-     * own page and has no Root address, so a pane offering to edit it there
-     * would be a pane whose every save is a 404.
+     * Handed in rather than worked out here, because it is a fact about where this is
+     * being drawn. The Root view of somebody else's workspace has none: sync is
+     * configured on the workspace's own page and has no Root address, so a card
+     * offering to edit it there would be one whose every save is a 404.
      */
-    sections?: readonly RepositorySection[];
-    /** Undefined until the pane is opened and the read comes back. */
+    offersSync?: boolean;
+    /**
+     * The fleet, for the sync half of the sentence under the name. Null until
+     * the read comes back, and on the surface that has no sync to read.
+     */
+    fleet?: SyncStatus | null;
+    /** Undefined until the read comes back. */
     syncOverride?: SyncOverride | undefined;
     syncEnvelope?: SyncOverrideEditorEnvelope | undefined;
     syncReadProblem?: string | null;
@@ -354,57 +353,18 @@
     stage({ ...document, config_patch: configPatch }, controlId(`config_patch.${key}`));
   }
 
-  /* The repository-file pane lists the behavior settings this repository
-     actually overrides, the way the approved design draws it: the file card, the
-     bypass control, then whatever this repo has changed. Someone reading the
-     file pane is asking "what does this repository do differently", and the
-     answer belongs on the same screen as the file. */
-  function overriddenBehaviorKeys(one: RepositoryDetail): ConfigKey[] {
-    return BOOLEAN_FIELDS.map((field) => field.key).filter((key) =>
-      Object.hasOwn(one.config_patch, key),
-    );
-  }
+  /* The file card used to repeat whatever this repository overrides, because Behavior was
+     behind a tab and a reader on the file pane could not see it. Both are on the page
+     now, so the repeat was the same rows twice on one screen. */
 
-  function sectionCount(
-    one: RepositoryDetail,
-    pane: 'behavior' | 'commands' | 'formatting',
-  ): number {
-    if (pane === 'formatting') return formattingOverrideCount(one.config_patch.formatting ?? {});
-    const keys: readonly ConfigKey[] =
-      pane === 'behavior'
-        ? BOOLEAN_FIELDS.map((field) => field.key)
-        : ['command_prefix', 'allowed_commands', 'command_aliases'];
+  /** What the switch's answer means here, said rather than left to the words on it. */
+  function enablementWhy(value: 'inherit' | 'enabled' | 'disabled'): string {
+    if (value === 'enabled') return 'On - commands and merges run in this repository';
+    if (value === 'disabled') return 'Off - Smyklot stands down here, whatever the workspace says';
 
-    return keys.filter((key) => Object.hasOwn(one.config_patch, key)).length;
-  }
-
-  /* How many of this repository's own settings a pane holds, where the number
-     is worth a badge. The file pane counts a broken file rather than settings,
-     and sync has nothing to count - what it holds is one switch and a list. */
-  function sectionBadge(one: RepositoryDetail, pane: RepositorySection): number | undefined {
-    if (pane === 'file') return one.config_file_error === undefined ? undefined : 1;
-    if (pane === 'sync') return undefined;
-
-    const count = sectionCount(one, pane);
-
-    return count === 0 ? undefined : count;
-  }
-
-  /* What each pane is called. Which panes exist is REPOSITORY_SECTIONS, which
-     keys this record, so a fifth one is a compile error here rather than a
-     switch quietly missing an option. Both the label under the switch and the
-     switch's own options read it. */
-  const SECTION_LABELS: Record<RepositorySection, string> = {
-    file: 'File',
-    behavior: 'Behavior',
-    commands: 'Commands',
-    formatting: 'Formatting',
-    sync: 'Sync',
-  };
-
-  /** Names the pane for a screen reader, which the switch above it does not. */
-  function sectionLabel(pane: RepositorySection): string {
-    return SECTION_LABELS[pane];
+    return repository.effective_enabled
+      ? 'The workspace has it on, so it runs here'
+      : 'The workspace has it off, so it stands down here';
   }
 
   function capitalize(value: string): string {
@@ -412,32 +372,28 @@
   }
 </script>
 
+<!--
+@component
+One repository's own page.
+
+This was a dialog until it was three panes with a save bar in each, which is
+a screen someone works in rather than something standing over the list for a
+moment. It reads as any other object page of the panel does - a way back, a
+mono title with the switch beside it, then the pane - and it is addressable,
+so a link points at the pane a colleague was asked to look at.
+-->
+
 <div class="view-frame">
   <section class="repository-page" aria-labelledby={titleId}>
     <PanePath segments={[{ label: 'Repositories', href: backHref, onSelect: onBack }]} />
 
-    <header class="object-head">
-      <h2 class="mono-title" id={titleId}>{repository.name}</h2>
-      <p class="object-sub">
-        Repository settings override workspace defaults and repository-file values
-      </p>
-    </header>
-
-    {#if detail !== undefined}
-      <div class="pane-tools">
-        <SegmentedControl
-          name="repository-{repository.id}-section"
-          label="Settings for {repository.name}"
-          options={sections.map((pane) => ({
-            value: pane,
-            label: SECTION_LABELS[pane],
-            badge: sectionBadge(detail, pane),
-          }))}
-          value={section}
-          onSelect={(next) => onSection(next as RepositorySection)}
-        />
-      </div>
-    {/if}
+    <PageHeader
+      id={titleId}
+      section="Repository"
+      title={repository.name}
+      mono
+      description={repositorySentence(repository, repository.effective_enabled, fleet, true)}
+    />
 
     {#if failure !== null}
       <p class="form-error repository-page-error" role="alert">{failure}</p>
@@ -446,9 +402,15 @@
     {#if detail === undefined}
       <p class="detail-loading" role="status">Reading repository settings…</p>
     {:else}
-      <section class="card group-card" aria-labelledby="repository-merge-ci">
-        <div class="group-head">
-          <h3 class="group-name" id="repository-merge-ci">Merge after CI</h3>
+      <!-- CONTROL FIRST: whether Smyklot answers here at all, and whether it reads the
+           repository's own file, come before anything either of them decides. Written
+           below with the rest of the detail and rendered here, because both halves of
+           that card need `detail` and this is where the page wants it read. -->
+      {@render controlCard()}
+
+      <Card labelledby="repository-merge-ci">
+        <div class="card-head">
+          <h2 class="card-title" id="repository-merge-ci">Merging</h2>
           {#if detail.pending_ci_gate !== undefined}
             <span class="pill {GATE_PILLS[detail.pending_ci_gate.readiness]}"
               ><span class="t">{capitalize(detail.pending_ci_gate.readiness)}</span></span
@@ -473,7 +435,7 @@
             {#if detail.pending_ci_mode_override === null}
               <span class="policy-value">
                 <span class="setting-unmanaged"
-                  >Follows workspace - {detail.pending_ci_mode_inherited}</span
+                  >From the workspace: {detail.pending_ci_mode_inherited}</span
                 >
               </span>
               <button
@@ -482,7 +444,7 @@
                 {disabled}
                 onclick={overrideMode}
               >
-                <Icon name="plus" size={10} />
+                <Icon name="plus" size="micro" />
               </button>
             {:else}
               <span class="policy-value">
@@ -497,7 +459,9 @@
                       {...attributes}
                       class="value-select"
                       type="button"
-                      aria-label="Repository protection"
+                      aria-label="{detail.pending_ci_mode_override === 'checks'
+                        ? 'Checks'
+                        : 'Labels'} - repository protection"
                       {disabled}
                     >
                       <span class="t"
@@ -516,7 +480,7 @@
                         <span class="menu-check">
                           {#if detail.pending_ci_mode_override === option.value}<Icon
                               name="check"
-                              size={16}
+                              size="base"
                             />{/if}
                         </span>
                         <ClippedLabel class="mi-label" text={option.label} />
@@ -531,7 +495,7 @@
                 {disabled}
                 onclick={() => setMode(null)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
             {/if}
           </div>
@@ -544,7 +508,6 @@
                 ),
               },
             ]}
-            class:policy-block={detail.pending_ci_branch_patterns_override !== null}
             data-unsaved={controlDirty(controlId('pending_ci_branch_patterns_override.include')) ||
               undefined}
           >
@@ -557,7 +520,7 @@
             {#if detail.pending_ci_branch_patterns_override === null}
               <span class="policy-value">
                 <span class="setting-unmanaged"
-                  >Follows workspace - {detail.pending_ci_branch_patterns_inherited.include.join(
+                  >From the workspace: {detail.pending_ci_branch_patterns_inherited.include.join(
                     ', ',
                   )}</span
                 >
@@ -568,7 +531,7 @@
                 {disabled}
                 onclick={overridePatterns}
               >
-                <Icon name="plus" size={10} />
+                <Icon name="plus" size="micro" />
               </button>
             {:else}
               <span class="policy-value"></span>
@@ -578,7 +541,7 @@
                 {disabled}
                 onclick={() => setPatterns(null)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
               <div class="pattern-line">
                 <PatternEntries
@@ -592,7 +555,7 @@
           {#if detail.pending_ci_branch_patterns_override !== null}
             <div
               class={[
-                'policy-row policy-block',
+                'policy-row',
                 {
                   'is-unsaved': controlDirty(
                     controlId('pending_ci_branch_patterns_override.exclude'),
@@ -630,11 +593,14 @@
           >
             <span class="setting-say">
               <label class="setting-name" for="repository-quiet-{repository.id}"
-                >Stable passing window</label
+                >Quiet period after checks pass</label
               >
-              <span class="setting-why">Seconds; leave blank to inherit</span>
+              <span class="setting-why"
+                >Checks must pass and stay green this long before Smyklot merges. Blank inherits</span
+              >
             </span>
-            <span class="policy-value">
+            <!-- The unit beside the number, as the workspace page says it. -->
+            <span class="policy-value entry-suffix">
               <input
                 id="repository-quiet-{repository.id}"
                 class="num-inline"
@@ -646,6 +612,7 @@
                 oninput={(event) => typeQuiet(event.currentTarget.value)}
                 onblur={finishQuiet}
               />
+              <span class="entry-unit">seconds</span>
             </span>
           </div>
           <div
@@ -657,15 +624,13 @@
               undefined}
           >
             <span class="setting-say">
-              <span class="setting-name">Path index</span>
-              <span class="setting-why"
-                >How often this repository's file list is read again for the finder and the plans</span
-              >
+              <span class="setting-name">File index</span>
+              <span class="setting-why">How often this repository's file list is read again</span>
             </span>
             {#if detail.path_index_interval_seconds_override === null}
               <span class="policy-value">
                 <span class="setting-unmanaged"
-                  >Follows the installation - every {formatDuration(
+                  >From the workspace: every {formatDuration(
                     durationParts(detail.path_index_interval_seconds_inherited, PATH_INDEX_UNITS),
                   )}</span
                 >
@@ -676,14 +641,14 @@
                 {disabled}
                 onclick={() => setPathIndex(detail.path_index_interval_seconds_inherited)}
               >
-                <Icon name="plus" size={10} />
+                <Icon name="plus" size="micro" />
               </button>
             {:else}
               <span class="policy-value">
                 <input
                   class="num-inline num-short"
                   inputmode="numeric"
-                  aria-label="Path index interval amount"
+                  aria-label="File index interval amount"
                   value={indexAmountShown}
                   disabled={readOnly}
                   oninput={(event) => typeIndexAmount(event.currentTarget.value)}
@@ -691,7 +656,7 @@
                 />
                 <Popover
                   role="listbox"
-                  label="Path index interval unit"
+                  label="File index interval unit"
                   align="end"
                   itemSelector=".menu-item"
                 >
@@ -700,7 +665,7 @@
                       {...attributes}
                       class="value-select"
                       type="button"
-                      aria-label="Path index interval unit"
+                      aria-label="{indexUnitShown} - file index interval unit"
                       {disabled}
                     >
                       <span class="t">{indexUnitShown}</span>
@@ -715,7 +680,7 @@
                         onclick={() => pickIndexUnit(unit)}
                       >
                         <span class="menu-check">
-                          {#if indexUnitShown === unit}<Icon name="check" size={16} />{/if}
+                          {#if indexUnitShown === unit}<Icon name="check" size="base" />{/if}
                         </span>
                         <ClippedLabel class="mi-label" text={unit} />
                       </button>
@@ -725,11 +690,11 @@
               </span>
               <button
                 class="setting-clear"
-                title="Stop answering - follow the installation"
+                title="Stop answering - take the value from the workspace"
                 {disabled}
                 onclick={() => setPathIndex(null)}
               >
-                <Icon name="close" size={10} />
+                <Icon name="close" size="micro" />
               </button>
             {/if}
           </div>
@@ -739,189 +704,174 @@
             {detail.pending_ci_gate.reason}
           </p>
         {/if}
-      </section>
+      </Card>
 
-      <div
-        class="repository-detail-content"
-        role="group"
-        aria-label="{sectionLabel(section)} settings for {repository.name}"
-      >
-        {#if section === 'file'}
-          <section class="card group-card" aria-labelledby="repository-file-head">
-            <div class="group-head">
-              <h3 class="group-name" id="repository-file-head">Repository file</h3>
-              <span class="pill {FILE_STATUS_PILLS[detail.repository.config_file_status]}"
-                ><span class="t">{capitalize(detail.repository.config_file_status)}</span></span
-              >
-            </div>
-            <p class="group-note">
-              Settings Smyklot reads from the repository itself, which override account defaults
-            </p>
-            <div class={['file-card', detail.config_file_error !== undefined && 'file-problem']}>
-              <!-- 14px glyph in an 18px slot, the same pairing every other icon
+      <!-- ONE SCROLL, NOT FIVE PANES. The switch over File / Behavior / Commands /
+           Formatting / Sync made a reader press four times to see what one repository
+           is set to, and hid from them that most of those panes were empty. The cards
+           are the same cards; they are all here at once - and the wrapper that used to
+           hold the open pane is gone with the panes, because it declared the page's own
+           grid and gap a second time. -->
+      {#snippet controlCard()}
+        <Card labelledby="repository-file-head">
+          <div class="card-head">
+            <h2 class="card-title" id="repository-file-head">Repository control</h2>
+            <span class="pill {FILE_STATUS_PILLS[detail.repository.config_file_status]}"
+              ><span class="t">{capitalize(detail.repository.config_file_status)}</span></span
+            >
+          </div>
+          <div class={['file-card', detail.config_file_error !== undefined && 'file-problem']}>
+            <!-- 14px glyph in an 18px slot, the same pairing every other icon
                  slot in the product uses. -->
-              <span class="file-card-icon status-{detail.repository.config_file_status}">
-                <Icon name="file" size={14} />
-              </span>
-              <div class="f-copy">
-                <strong>Configuration path</strong>
-                <!-- The file is looked for in four places plus a chosen one, so
+            <span class="file-card-icon status-{detail.repository.config_file_status}">
+              <Icon name="file" size="sm" />
+            </span>
+            <div class="f-copy">
+              <strong>Configuration path</strong>
+              <!-- The file is looked for in four places plus a chosen one, so
                    this names the one that won rather than the one that used to
                    be the only candidate. -->
-                <div><code class="mono">{detail.config_file_path || '—'}</code></div>
-                {#if detail.config_file_superseded !== undefined}
-                  <p class="f-note">
-                    Also present and not read: {detail.config_file_superseded.join(', ')}
-                  </p>
-                {/if}
-                {#if detail.config_file_error !== undefined}
-                  <p>{detail.config_file_error}</p>
-                {/if}
-                {#if detail.config_migration === 'proposed'}
-                  <p class="f-note">
-                    Smyklot proposed moving this to TOML{#if detail.config_migration_pr !== undefined}&nbsp;in
-                      #{detail.config_migration_pr}{/if}
-                  </p>
-                {:else if detail.config_migration !== 'none'}
-                  <p class="f-note">
-                    {detail.config_migration === 'declined'
-                      ? 'The TOML migration was closed, so Smyklot will not ask again'
-                      : 'GitHub refused the TOML migration, so Smyklot will not ask again'}
-                    <button
-                      type="button"
-                      class="f-again"
-                      disabled={readOnly || busy}
-                      onclick={onResetMigration}
-                    >
-                      Let it ask
-                    </button>
-                  </p>
-                {/if}
-              </div>
-            </div>
-            <div class="policy-rows">
-              <div
-                class={[
-                  'policy-row',
-                  { 'is-unsaved': controlDirty(controlId('ignore_repository_file')) },
-                ]}
-                data-unsaved={controlDirty(controlId('ignore_repository_file')) || undefined}
-              >
-                <span class="setting-say">
-                  <span class="setting-name">Bypass file</span>
-                  <span class="setting-why"
-                    >Repository-file settings are ignored and the exception is recorded in Audit</span
+              <div><code class="mono">{detail.config_file_path || '—'}</code></div>
+              {#if detail.config_file_superseded !== undefined}
+                <p class="f-note">
+                  Also present and not read: {detail.config_file_superseded.join(', ')}
+                </p>
+              {/if}
+              {#if detail.config_file_error !== undefined}
+                <p>{detail.config_file_error}</p>
+              {/if}
+              {#if detail.config_migration === 'proposed'}
+                <p class="f-note">
+                  Smyklot proposed moving this to TOML{#if detail.config_migration_pr !== undefined}&nbsp;in
+                    #{detail.config_migration_pr}{/if}
+                </p>
+              {:else if detail.config_migration !== 'none'}
+                <p class="f-note">
+                  {detail.config_migration === 'declined'
+                    ? 'The TOML migration was closed, so Smyklot will not ask again'
+                    : 'GitHub refused the TOML migration, so Smyklot will not ask again'}
+                  <button
+                    type="button"
+                    class="f-again"
+                    disabled={readOnly || busy}
+                    onclick={onResetMigration}
                   >
-                </span>
-                <span class="policy-value">
-                  <SegmentedControl
-                    name="repository-bypass-{repository.id}"
-                    label="Repository file handling"
-                    options={[
-                      { value: 'observe', label: 'Observe' },
-                      { value: 'bypass', label: 'Bypass' },
-                    ]}
-                    value={detail.ignore_repository_file ? 'bypass' : 'observe'}
-                    {disabled}
-                    compact
-                    onSelect={(value) => setBypass(value === 'bypass')}
-                  />
-                </span>
-              </div>
+                    Let it ask
+                  </button>
+                </p>
+              {/if}
             </div>
-            {#if overriddenBehaviorKeys(detail).length > 0}
-              <div class="file-overrides">
-                <ConfigEditor
-                  patch={detail.config_patch}
-                  inherited={detail.inherited_config}
-                  scope="repository"
-                  idPrefix="{repository.id}-file"
-                  section="behavior"
-                  only={overriddenBehaviorKeys(detail)}
+          </div>
+          <div class="policy-rows">
+            <div
+              class={['policy-row', { 'is-unsaved': controlDirty(controlId('enabled_override')) }]}
+              data-unsaved={controlDirty(controlId('enabled_override')) || undefined}
+            >
+              <span class="setting-say">
+                <span class="setting-name">Smyklot</span>
+                <span class="setting-why">{enablementWhy(enablement)}</span>
+              </span>
+              <span class="policy-value">
+                <!-- Three, not two. A repository can FOLLOW the workspace, and that is a
+                     different answer from being switched on here to the same value: the
+                     workspace changing carries the first and leaves the second alone. -->
+                <SegmentedControl
+                  name="repository-enabled-{repository.id}"
+                  label="Smyklot in {repository.name}"
+                  options={[
+                    { value: 'inherit', label: 'From the workspace' },
+                    { value: 'enabled', label: 'On' },
+                    { value: 'disabled', label: 'Off' },
+                  ]}
+                  value={enablement}
                   {disabled}
-                  dirtyKeys={dirtyConfigKeys}
-                  onChange={setConfig}
+                  compact
+                  onSelect={(next) => onEnablement(next)}
                 />
-              </div>
-            {/if}
-          </section>
-        {:else if section === 'sync'}
-          {#if syncOverride === undefined && syncReadProblem !== null}
-            <!-- A read that failed is not a read still going, and the two read
+              </span>
+            </div>
+            <div
+              class={[
+                'policy-row',
+                { 'is-unsaved': controlDirty(controlId('ignore_repository_file')) },
+              ]}
+              data-unsaved={controlDirty(controlId('ignore_repository_file')) || undefined}
+            >
+              <span class="setting-say">
+                <span class="setting-name">Repository file</span>
+                <span class="setting-why"
+                  >Bypassed, the file's settings are ignored and the exception is recorded in Audit</span
+                >
+              </span>
+              <span class="policy-value">
+                <SegmentedControl
+                  name="repository-bypass-{repository.id}"
+                  label="Repository file handling"
+                  options={[
+                    { value: 'observe', label: 'Followed' },
+                    { value: 'bypass', label: 'Bypassed' },
+                  ]}
+                  value={detail.ignore_repository_file ? 'bypass' : 'observe'}
+                  {disabled}
+                  compact
+                  onSelect={(value) => setBypass(value === 'bypass')}
+                />
+              </span>
+            </div>
+          </div>
+        </Card>
+      {/snippet}
+
+      <ConfigEditor
+        patch={detail.config_patch}
+        inherited={detail.inherited_config}
+        scope="repository"
+        idPrefix={repository.id}
+        {disabled}
+        dirtyKeys={dirtyConfigKeys}
+        onChange={setConfig}
+      />
+
+      <FormattingEditor
+        patch={detail.config_patch.formatting ?? {}}
+        inherited={detail.inherited_config.formatting}
+        scope="repository"
+        idPrefix={repository.id}
+        {disabled}
+        dirtyKeys={dirtyFormattingKeys}
+        onChange={setFormatting}
+        onValidity={onFormattingValidity}
+      />
+
+      {#if offersSync}
+        {#if syncOverride === undefined && syncReadProblem !== null}
+          <!-- A read that failed is not a read still going, and the two read
                  identically in a dim line saying "Reading…". -->
-            <p class="form-error" role="alert">{syncReadProblem}</p>
-          {:else if syncOverride === undefined}
-            <p class="detail-loading" role="status">Reading what this repository adjusts…</p>
-          {:else}
-            <RepositorySyncPane
-              stored={syncOverride}
-              repositoryId={repository.id}
-              envelope={syncEnvelope}
-              {readOnly}
-              {now}
-              dirtyEnabled={controlDirty(`repositories.${repository.id}.sync.files.enabled`)}
-              dirtyDocument={controlDirty(`repositories.${repository.id}.sync.files.document`)}
-              onChange={onChangeSync}
-            />
-          {/if}
-        {:else if section === 'formatting'}
-          <FormattingEditor
-            patch={detail.config_patch.formatting ?? {}}
-            inherited={detail.inherited_config.formatting}
-            scope="repository"
-            idPrefix={repository.id}
-            {disabled}
-            dirtyKeys={dirtyFormattingKeys}
-            onChange={setFormatting}
-            onValidity={onFormattingValidity}
-          />
+          <p class="form-error" role="alert">{syncReadProblem}</p>
+        {:else if syncOverride === undefined}
+          <p class="detail-loading" role="status">Reading what this repository adjusts…</p>
         {:else}
-          <ConfigEditor
-            patch={detail.config_patch}
-            inherited={detail.inherited_config}
-            scope="repository"
-            idPrefix={repository.id}
-            {section}
-            {disabled}
-            dirtyKeys={dirtyConfigKeys}
-            onChange={setConfig}
+          <RepositorySyncPane
+            stored={syncOverride}
+            repositoryId={repository.id}
+            envelope={syncEnvelope}
+            {readOnly}
+            {now}
+            dirtyEnabled={controlDirty(`repositories.${repository.id}.sync.files.enabled`)}
+            dirtyDocument={controlDirty(`repositories.${repository.id}.sync.files.document`)}
+            onChange={onChangeSync}
           />
         {/if}
-      </div>
+      {/if}
     {/if}
   </section>
 </div>
 
 <style>
-  .view-frame {
-    margin-inline: auto;
-    max-width: var(--content-max);
-  }
-
   .repository-page {
     display: grid;
     gap: var(--space-4);
     min-width: 0;
-  }
-
-  .object-head {
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  .mono-title {
-    font-family: var(--mono);
-    font-size: 1.375rem;
-    letter-spacing: -0.01em;
-    margin: 0;
-  }
-
-  .object-sub {
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: round(1.5em, 1px);
-    margin: 0;
-    max-width: 64ch;
   }
 
   .pane-tools {
@@ -943,19 +893,6 @@
     padding: var(--space-4) 0;
   }
 
-  .repository-detail-content {
-    display: grid;
-    gap: var(--space-4);
-    min-width: 0;
-  }
-
-  .card {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    padding: var(--space-5);
-  }
-
   .group-head {
     align-items: end;
     display: flex;
@@ -972,22 +909,15 @@
     text-box: trim-both cap alphabetic;
   }
 
-  .group-note {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    margin: 0 0 var(--space-2);
-    max-width: 60ch;
-  }
-
   .pill {
     align-items: center;
-    block-size: 20px;
+    block-size: var(--tier-mark);
     border-radius: var(--radius-chip);
     display: inline-flex;
     font-size: var(--font-size-micro);
     font-weight: 600;
     gap: 0.25rem;
-    line-height: 1;
+    line-height: var(--leading-flat);
     padding: 0 0.5rem;
   }
 
@@ -1016,121 +946,6 @@
     color: var(--text-muted);
   }
 
-  .policy-rows {
-    display: grid;
-  }
-
-  .policy-row {
-    align-items: center;
-    display: grid;
-    gap: var(--space-2) var(--space-4);
-    grid-template-columns: 1fr auto auto;
-    margin-inline: calc(var(--space-2) * -1);
-    min-block-size: 48px;
-    /* The air around a drawn hairline is the card's own padding, on both
-       sides; the edge rows shed it where no line follows, since the card
-       edge already carries that inset. */
-    padding: var(--space-5) var(--space-2);
-    position: relative;
-  }
-
-  .policy-row.is-unsaved {
-    background: color-mix(in srgb, var(--brand-action-tint) 45%, transparent);
-    box-shadow: inset 2px 0 var(--brand-action);
-  }
-
-  .policy-row:first-child {
-    padding-block-start: var(--space-2);
-  }
-
-  .policy-row:last-child {
-    padding-block-end: var(--space-2);
-  }
-
-  /* Every row owns the drawn hairline under itself; the last one stands
-     down, so the card ends on its own padding. */
-  .policy-row:not(:last-child)::after {
-    background: var(--border-subtle);
-    block-size: 1px;
-    bottom: 0;
-    content: '';
-    inset-inline: var(--space-2);
-    position: absolute;
-  }
-
-  .setting-say {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .setting-name {
-    font-size: var(--font-size-meta);
-    font-weight: 600;
-    min-block-size: 10px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    min-block-size: 9px;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-why code {
-    font-family: var(--mono);
-    font-size: var(--font-size-micro);
-  }
-
-  .policy-value {
-    align-items: center;
-    display: flex;
-    gap: var(--space-3);
-    justify-self: end;
-  }
-
-  .setting-unmanaged {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    font-style: normal;
-    /* Ink-true, so the padding around the hairlines measures to the glyphs
-       rather than to the line box's leading. */
-    text-box: trim-both cap alphabetic;
-  }
-
-  .setting-clear {
-    align-items: center;
-    background: transparent;
-    block-size: 26px;
-    border: 0;
-    border-radius: 50%;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: inline-flex;
-    inline-size: 26px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .setting-clear:hover {
-    background: var(--interactive-hover-layer);
-    color: var(--text-primary);
-  }
-
-  .setting-clear:active {
-    background: var(--interactive-pressed);
-  }
-
-  .policy-row .setting-clear {
-    opacity: 0.45;
-    transition: opacity var(--duration-fast) var(--ease-standard);
-  }
-
-  .policy-row:hover .setting-clear,
-  .policy-row:focus-within .setting-clear {
-    opacity: 1;
-  }
-
   .value-select {
     align-items: center;
     appearance: none;
@@ -1146,7 +961,7 @@
     cursor: pointer;
     display: inline-flex;
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 1.5rem 0 var(--space-2);
   }
 
@@ -1208,12 +1023,11 @@
     white-space: nowrap;
   }
 
-  /* A block row keeps the grid for its say and lays its entries on a
-     full-width second line. The extra breathing room lives INSIDE the row,
-     above the entries - the block padding stays the shared 8px so the air
-     around every hairline is the same on both sides. */
+  /* A block row keeps its sentence on the first line and lays the entries on a full-width
+     second one. `flex-basis: 100%` is what takes that line under the row law - the old
+     `grid-column: 1 / -1` addressed a grid the row no longer is. */
   .pattern-line {
-    grid-column: 1 / -1;
+    flex-basis: 100%;
     margin-block: var(--space-1) 0;
   }
 
@@ -1224,7 +1038,7 @@
     color: var(--text-primary);
     font-family: var(--mono);
     font-size: var(--font-size-control);
-    min-block-size: 28px;
+    min-block-size: var(--tier-quiet);
     padding: 0 var(--space-2);
     text-align: end;
     width: 8.5rem;
@@ -1240,7 +1054,7 @@
 
   .num-inline:focus-visible {
     border-color: var(--brand-action);
-    outline: 2px solid var(--brand);
+    outline: 2px solid var(--focus);
   }
 
   .gate-note {
@@ -1249,7 +1063,7 @@
     color: var(--text-secondary);
     font-size: var(--font-size-meta);
     /* Ink-true with even padding, so the words sit on the note's centre. */
-    line-height: round(1.5em, 1px);
+    line-height: var(--leading-meta);
     margin: var(--space-3) 0 0;
     padding: var(--space-3);
     text-box: trim-both cap alphabetic;
@@ -1315,7 +1129,7 @@
   .f-copy strong {
     display: block;
     font-size: var(--font-size-meta);
-    line-height: 1;
+    line-height: var(--leading-flat);
     text-box: trim-both cap alphabetic;
   }
 
@@ -1323,7 +1137,7 @@
     color: var(--text-muted);
     display: block;
     font-size: var(--font-size-compact);
-    line-height: 1;
+    line-height: var(--leading-flat);
     margin-top: 0.8rem;
     overflow-wrap: anywhere;
     text-box: trim-both cap alphabetic;
@@ -1335,7 +1149,7 @@
   .f-copy p {
     color: var(--danger);
     font-size: var(--font-size-compact);
-    line-height: 1;
+    line-height: var(--leading-flat);
     margin: 0.5rem 0 0;
     text-box: trim-both cap alphabetic;
   }
@@ -1377,17 +1191,9 @@
     border-top: 1px solid var(--border-subtle);
   }
 
-  .policy-rows:has(+ .file-overrides) > .policy-row:last-child {
-    padding-block-end: var(--space-5);
-  }
-
-  .file-overrides :global(.policy-rows > .policy-row:first-child) {
-    padding-block-start: var(--space-5);
-  }
-
   .file-problem strong,
   .form-error {
-    color: var(--stop);
+    color: var(--danger);
   }
 
   /* On a phone the head's three parts cannot share one line - the tally or
@@ -1395,30 +1201,6 @@
   @media (max-width: 30rem) {
     .group-head {
       flex-wrap: wrap;
-    }
-
-    /* The say keeps the line and the control moves under it - beside it,
-       the copy was down to a word a line while the control still ran off
-       the screen and took the layout viewport with it. */
-    .policy-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-    }
-
-    .policy-row .setting-say {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .policy-row .setting-clear {
-      grid-column: 2;
-      grid-row: 1;
-      opacity: 1;
-    }
-
-    .policy-row .policy-value {
-      flex-wrap: wrap;
-      grid-column: 1 / -1;
-      justify-self: start;
     }
   }
 </style>
