@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.51.0](https://github.com/smykla-skalski/smyklot/compare/v1.50.4...v1.51.0) (2026-09-02)
+
+### Features
+
+* **panel:** rebuild the sync plan on typed actions ([#350](https://github.com/smykla-skalski/smyklot/issues/350)) ([65c675f](https://github.com/smykla-skalski/smyklot/commit/65c675f4bb9dfa9c4e1d6637a902522fdee3a40d)), closes [#color](https://github.com/smykla-skalski/smyklot/issues/color) [#0e8a16](https://github.com/smykla-skalski/smyklot/issues/0e8a16)
+
+### Bug Fixes
+
+* **deps:** update module modernc.org/sqlite to v1.58.0 ([#349](https://github.com/smykla-skalski/smyklot/issues/349)) ([abf19ac](https://github.com/smykla-skalski/smyklot/commit/abf19ac861e70da8e6afa3c1654ea3e003294223))
+
 ## [1.50.4](https://github.com/smykla-skalski/smyklot/compare/v1.50.3...v1.50.4) (2026-09-02)
 
 ### Bug Fixes
