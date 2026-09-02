@@ -271,7 +271,7 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	content, ok := s.assets.files[relative]
 	if !ok {
 		// The generated patterns are written against an absolute, base-relative path.
-		if s.assets.routes.matches("/" + relative) {
+		if s.assets.routes.matches("/"+relative) || s.signedOutSeesSignIn(r, relative) {
 			s.writeIndex(w, r)
 		} else {
 			s.writePageError(w, r, http.StatusNotFound, "not_found", "panel route not found")
@@ -292,6 +292,47 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content) //nolint:gosec // Content comes only from the generated embedded bundle.
+}
+
+// signedOutSeesSignIn reports whether an address nothing here serves should be
+// answered with the shell anyway, because a reader with no session is shown the
+// sign-in card wherever they are and told what went wrong only once there is
+// somebody to tell.
+//
+// This is a RULE ABOUT WHEN ERRORS ARE SHOWN, not a secrecy control, and the
+// distinction is worth writing down because it was got wrong here first. The
+// original claim was that it hid the panel's route table: a known route shape
+// returned the shell, an unknown one the not-found page, and the difference is
+// readable by anybody with curl. Closing that difference hides nothing, because
+// the route table is in the client bundle. `index.html` is public by necessity -
+// the sign-in page is drawn by the same app - and it links the entry chunk,
+// which carries every route shape and matcher name as string literals. Two
+// requests still enumerate it, and no arrangement of this function changes that
+// while the panel is a single-page app.
+//
+// What it does buy is the reader's experience, which is what it is for: one
+// answer to every address until you are signed in, and the not-found page after,
+// when it is yours to see.
+//
+// Names were never the question and stay safe.
+// `/workspace/does-not-exist/sync/plan` and a real workspace's plan return the
+// same bytes to a stranger, because the route MATCHES either way and which
+// workspaces exist is decided behind the API.
+//
+// PAGE NAVIGATIONS ONLY, on both counts. Anything carrying an extension is a
+// file request, and a missing script answered with HTML is a module error rather
+// than a 404 - the service worker and the bootstrap both need the plain answer.
+// And anything that did not ask for a document keeps the JSON it parses: the
+// panel's own fetches reach unregistered API paths when a route is retired or a
+// method is wrong, and handing those a page turns a 404 a caller can read into a
+// `SyntaxError` it cannot.
+func (s *Server) signedOutSeesSignIn(r *http.Request, relative string) bool {
+	if path.Ext(relative) != "" || !wantsDocument(r) {
+		return false
+	}
+	_, _, err := s.viewerSession(r)
+
+	return err != nil
 }
 
 func (s *Server) writeIndex(w http.ResponseWriter, r *http.Request) {

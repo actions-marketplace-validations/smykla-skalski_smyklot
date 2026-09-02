@@ -2322,8 +2322,12 @@ func TestPanelOAuthStateIsBrowserBound(t *testing.T) {
 	if response := callback(pending[0].state, pending[0].cookie); response.Code != http.StatusFound {
 		t.Fatalf("unrelated starts invalidated first browser = %d %s", response.Code, response.Body.String())
 	}
-	if response := callback(pending[1].state, pending[2].cookie); response.Code != http.StatusUnauthorized {
-		t.Fatalf("cross-browser OAuth state = %d %s", response.Code, response.Body.String())
+	/* A refused sign-in now returns to the card carrying the reason, so the proof
+	   that the state is browser-bound is where it lands rather than its status. */
+	crossed := callback(pending[1].state, pending[2].cookie)
+	if crossed.Code != http.StatusFound ||
+		!strings.Contains(crossed.Header().Get("Location"), signInFailedParam+"=401") {
+		t.Fatalf("cross-browser OAuth state = %d %s", crossed.Code, crossed.Header().Get("Location"))
 	}
 	replacement := byte('A')
 	if pending[3].state[10] == replacement {
@@ -2334,13 +2338,16 @@ func TestPanelOAuthStateIsBrowserBound(t *testing.T) {
 	tampered := string(tamperedBytes)
 	tamperedCookie := *pending[3].cookie
 	tamperedCookie.Value = tampered
-	if response := callback(tampered, &tamperedCookie); response.Code != http.StatusUnauthorized {
-		t.Fatalf("tampered OAuth state = %d %s", response.Code, response.Body.String())
+	refused := func(t *testing.T, what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusFound ||
+			!strings.Contains(response.Header().Get("Location"), signInFailedParam+"=401") {
+			t.Fatalf("%s = %d %s", what, response.Code, response.Header().Get("Location"))
+		}
 	}
+	refused(t, "tampered OAuth state", callback(tampered, &tamperedCookie))
 	harness.server.now = func() time.Time { return harness.now.Add(DefaultStateTTL) }
-	if response := callback(pending[4].state, pending[4].cookie); response.Code != http.StatusUnauthorized {
-		t.Fatalf("expired OAuth state = %d %s", response.Code, response.Body.String())
-	}
+	refused(t, "expired OAuth state", callback(pending[4].state, pending[4].cookie))
 }
 
 func TestRepositoryEnablementDistinguishesOmittedFromNull(t *testing.T) {
@@ -2865,8 +2872,17 @@ func TestPanelRejectsAnotherOwnerAndCrossOriginWrites(t *testing.T) {
 	callback.AddCookie(stateCookie)
 	finished := httptest.NewRecorder()
 	nonOwner.handler.ServeHTTP(finished, callback)
-	if finished.Code != http.StatusForbidden {
-		t.Fatalf("non-owner callback = %d %s", finished.Code, finished.Body.String())
+	/* Refused, and told so on the front door rather than on a page of its own -
+	   the card offers "try a different account", which is the whole answer to
+	   this one. No session is issued either way, which is what the refusal means. */
+	if finished.Code != http.StatusFound ||
+		!strings.Contains(finished.Header().Get("Location"), signInFailedParam+"=403%3Aforbidden") {
+		t.Fatalf("non-owner callback = %d %s", finished.Code, finished.Header().Get("Location"))
+	}
+	for _, cookie := range finished.Result().Cookies() {
+		if cookie.Name == sessionCookieName && cookie.MaxAge > 0 {
+			t.Fatal("a refused account was given a session")
+		}
 	}
 
 	owner := newPanelHarness(t, "owner")
@@ -2966,6 +2982,7 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		strings.Contains(worker.Body.String(), versionSentinel) {
 		t.Fatalf("service worker response = %d %#v %s", worker.Code, worker.Header(), worker.Body.String())
 	}
+	session := harness.signIn(t)
 	for _, path := range []string{
 		"/panel/users",
 		"/panel/invitations",
@@ -3012,9 +3029,97 @@ func TestPanelServesRewrittenAssetsAndSPAFallback(t *testing.T) {
 		"/panel/invite/abcdefghijklmnopqrstuvwxyzABCDEFGH_01234567/extra",
 		"/panel/_app/missing.js",
 	} {
-		response := harness.request(t, http.MethodGet, path, nil, nil)
+		/* Signed in, because a stranger is told nothing: every page address answers
+		   with the shell so the route table cannot be read off which ones 404. The
+		   asset above is the exception that proves the shape of the rule - it
+		   carries an extension, so it 404s for everybody. */
+		response := harness.request(t, http.MethodGet, path, nil, session)
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("unknown panel route %s = %d %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+// A signed-out reader is shown the sign-in card wherever they are, and told what
+// went wrong only once there is somebody to tell.
+//
+// This is a rule about WHEN errors are shown, not a secrecy control: the route
+// table is in the client bundle, which is public because the sign-in page is
+// drawn by the same app, so no arrangement of the server hides it. What is
+// asserted here is what the rule actually promises - one answer to every page
+// address until you are signed in.
+//
+// Names were never the question and are checked so they stay safe: a workspace
+// that exists and one that does not answer identically, because which workspaces
+// exist is decided behind the API.
+func TestSignedOutReaderAlwaysSeesTheSignInPage(t *testing.T) {
+	harness := newPanelHarness(t, "owner")
+
+	page := func(t *testing.T, address string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, address, nil)
+		request.Header.Set("Sec-Fetch-Dest", "document")
+		request.Header.Set("Accept", "text/html")
+		response := httptest.NewRecorder()
+		harness.handler.ServeHTTP(response, request)
+
+		return response
+	}
+
+	answers := map[string]string{}
+	for _, address := range []string{
+		// A route that exists, one that does not, and a workspace that does not.
+		"/panel/workspace/smykla-skalski/sync/plan",
+		"/panel/workspace/does-not-exist/sync/plan",
+		"/panel/root/queue",
+		"/panel/nothing/here/at/all",
+		"/panel/workspace/smykla-skalski/help",
+	} {
+		response := page(t, address)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200 for a signed-out reader", address, response.Code)
+		}
+		answers[address] = response.Body.String()
+	}
+	first := ""
+	for address, body := range answers {
+		if first == "" {
+			first = body
+			continue
+		}
+		if body != first {
+			t.Fatalf("%s answers a stranger differently from the others", address)
+		}
+	}
+
+	// An asset is not a page: a missing script has to say so, or the bootstrap
+	// and the service worker get HTML where they asked for JavaScript.
+	if response := harness.request(
+		t, http.MethodGet, "/panel/_app/missing.js", nil, nil,
+	); response.Code != http.StatusNotFound {
+		t.Fatalf("missing asset = %d, want 404", response.Code)
+	}
+
+	/* AND NEITHER IS A FETCH. The panel's own requests reach unregistered API
+	   paths - a retired route, a method the mux does not have - and a caller
+	   parsing JSON gets a `SyntaxError` from a page rather than a 404 it can
+	   read. This is the case the rule cost when it was written without the
+	   check: signed out it answered 200 text/html, signed in 404 JSON. */
+	for _, address := range []string{
+		"/panel/api/v1/removed-endpoint",
+		"/panel/api/v1/sign-out", // registered POST-only, so a GET falls through
+	} {
+		request := httptest.NewRequest(http.MethodGet, address, nil)
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Sec-Fetch-Dest", "empty")
+		response := httptest.NewRecorder()
+		harness.handler.ServeHTTP(response, request)
+
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("signed-out %s = %d, want 404", address, response.Code)
+		}
+		if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Fatalf("signed-out %s content type = %q, want json", address, got)
 		}
 	}
 }
