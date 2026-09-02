@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.50.2](https://github.com/smykla-skalski/smyklot/compare/v1.50.1...v1.50.2) (2026-09-02)
+
+### Code Refactoring
+
+* **panel:** draw the panel from the design system it was built to ([#347](https://github.com/smykla-skalski/smyklot/issues/347)) ([0bfd4d3](https://github.com/smykla-skalski/smyklot/commit/0bfd4d39f89cca663cd202623328e4ca12e9ce5b))
+
 ## [1.50.1](https://github.com/smykla-skalski/smyklot/compare/v1.50.0...v1.50.1) (2026-08-31)
 
 ### Bug Fixes
