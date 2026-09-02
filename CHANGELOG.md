@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.50.4](https://github.com/smykla-skalski/smyklot/compare/v1.50.3...v1.50.4) (2026-09-02)
+
+### Bug Fixes
+
+* **panel:** stop the sync plan crashing on a profile timezone ([#348](https://github.com/smykla-skalski/smyklot/issues/348)) ([651641f](https://github.com/smykla-skalski/smyklot/commit/651641f3f2eee294371b2dcd4ca91390ba4be85e))
+
 ## [1.50.3](https://github.com/smykla-skalski/smyklot/compare/v1.50.2...v1.50.3) (2026-09-02)
 
 ### Bug Fixes
