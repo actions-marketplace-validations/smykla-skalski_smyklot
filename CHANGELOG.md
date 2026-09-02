@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.50.3](https://github.com/smykla-skalski/smyklot/compare/v1.50.2...v1.50.3) (2026-09-02)
+
+### Bug Fixes
+
+* **deps:** update dependency @tanstack/svelte-table to v9.2.4 ([#343](https://github.com/smykla-skalski/smyklot/issues/343)) ([1626f91](https://github.com/smykla-skalski/smyklot/commit/1626f9127e567ec9c7f4bd4b026ad86d7ccde28f))
+
 ## [1.50.2](https://github.com/smykla-skalski/smyklot/compare/v1.50.1...v1.50.2) (2026-09-02)
 
 ### Code Refactoring
