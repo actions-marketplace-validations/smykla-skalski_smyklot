@@ -2,7 +2,7 @@
   import { SvelteSet } from 'svelte/reactivity';
 
   import { formatDateTime, formatRelative, formatUntil } from '../format';
-  import { SYNC_KINDS, type SyncAction, type SyncPlan } from '../types';
+  import { SYNC_KINDS, type SyncAction, type SyncPlan, type SyncRulesetDetail } from '../types';
   import { SYNC_SECTION_LABELS } from '../routes';
 
   import ApplyBar from './ApplyBar.svelte';
@@ -11,8 +11,10 @@
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DiffBlock from './DiffBlock.svelte';
   import Icon from './Icon.svelte';
+  import LabelBadge from './LabelBadge.svelte';
   import PageHeader from './PageHeader.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
+  import { settingName } from './SyncSettingsPage.svelte';
 
   const {
     plan,
@@ -44,6 +46,23 @@
 
   /* ---------- The kind filter ---------- */
 
+  /**
+   * A FILTER IS NOT A DESTINATION, and the two want different words. The tree
+   * has to say "Repository options" because it navigates and no two rows in it
+   * may share a word; a segment beside four others, over a list that has just
+   * said what it is, only has to say which of the five. The long names took the
+   * control to 510px against the drawing's 412 and pushed the whole filter past
+   * half the content column.
+   *
+   * Nothing that navigates reads this - `SYNC_SECTION_LABELS` is still the one
+   * name for a section, and this is a shorter reading of two of them, held
+   * beside the control that wants it.
+   */
+  const FILTER_LABEL: Partial<Record<string, string>> = {
+    settings: 'Options',
+    files: 'Files',
+  };
+
   const KIND_LABEL: Record<string, string> = SYNC_SECTION_LABELS;
 
   let filter = $state('all');
@@ -52,7 +71,7 @@
     { value: 'all', label: 'All', badge: total },
     ...SYNC_KINDS.filter((kind) => actions.some((action) => action.kind === kind)).map((kind) => ({
       value: kind,
-      label: KIND_LABEL[kind] ?? kind,
+      label: FILTER_LABEL[kind] ?? KIND_LABEL[kind] ?? kind,
       badge: actions.filter((action) => action.kind === kind).length,
     })),
   ]);
@@ -119,13 +138,19 @@
   }
 
   /**
-   * The detail beside the subject. A file's before and after are the file
-   * itself, so its rows say how the change arrives instead of quoting it -
-   * the diff below the row is the quote.
+   * THE FALLBACK, not the reading.
+   *
+   * The service sends `detail` - the same facts with their shape intact - and a
+   * row draws that. This is what is left for an action whose payload the service
+   * could not decode, and for a kind that has no typed detail yet: a sentence
+   * somebody else formatted, printed as one.
+   *
+   * A file's before and after are the file itself, so its rows say how the
+   * change arrives instead of quoting it - the diff below the row is the quote.
    */
   function fromTo(action: SyncAction): string {
     if (action.kind === 'files') {
-      return action.operation === 'delete' ? '- retired above' : '- as a pull request';
+      return action.operation === 'delete' ? '- marked for removal above' : '- as a pull request';
     }
     if (action.operation === 'update') {
       return `${action.before ?? ''} → ${action.after ?? ''}`;
@@ -137,6 +162,47 @@
       return action.after === undefined ? '' : `- now managed, ${action.after}`;
     }
     return action.after === undefined ? '' : `- ${action.after}`;
+  }
+
+  /**
+   * What a row draws, decided once so the markup asks a name rather than a
+   * chain of conditions.
+   *
+   * `settings` is the only one that is a LIST: a settings change is one action,
+   * because GitHub replaces a repository's settings in one request and they
+   * succeed or fail together, and it is several facts. One action, one row, a
+   * line per field - so the counts still say what would be applied while the
+   * page says what would happen.
+   */
+  type RowShape = 'label' | 'settings' | 'ruleset' | 'file' | 'sentence';
+
+  function rowShape(action: SyncAction): RowShape {
+    const detail = action.detail;
+    if (detail === undefined) return 'sentence';
+    if (detail.label !== undefined) return 'label';
+    if (detail.ruleset !== undefined) return 'ruleset';
+    if (detail.file !== undefined) return 'file';
+    if (detail.settings !== undefined && detail.settings.length > 0) return 'settings';
+    return 'sentence';
+  }
+
+  /** How a file change arrives. Files land as a pull request; nothing else does. */
+  const fileArrival = (action: SyncAction): string =>
+    action.operation === 'delete' ? 'marked for removal above' : 'as a pull request';
+
+  /** What a ruleset enforces, as one line. Empty is worth saying out loud. */
+  function rulesetSummary(detail: SyncRulesetDetail): string {
+    const parts = [detail.target, detail.enforcement];
+    parts.push(
+      detail.rules === undefined || detail.rules.length === 0
+        ? 'enforcing nothing'
+        : detail.rules.join(', '),
+    );
+    if (detail.bypass > 0) {
+      parts.push(`${detail.bypass} ${detail.bypass === 1 ? 'bypass' : 'bypasses'}`);
+    }
+
+    return parts.join(' · ');
   }
 
   /* ---------- The expanded file diff ---------- */
@@ -326,76 +392,170 @@ the button.
       />
     </div>
 
-    {#each groups as group, index (group.repository)}
-      {@const visible = visibleOf(group)}
-      {@const counts = groupCounts(group)}
-      {@const groupFailed = failedOf(group)}
-      {@const open = isOpen(group.repository, index)}
-      <section class="repo-group" class:is-open={open}>
-        <button
-          type="button"
-          class="repo-group-head"
-          aria-expanded={open}
-          onclick={() => toggleGroup(group.repository)}
-        >
-          <span class="summary-icon"><Icon name="chevron-right" size="xs" /></span>
-          <span class="repo-group-name">{group.repository}</span>
-          {#if groupFailed > 0}
-            <span class="pill pill-danger"><span class="t">{groupFailed} failed</span></span>
-          {:else}
-            <span class="repo-group-counts">
-              {#if counts.add > 0}<span class="count-add">+{counts.add}</span>{/if}
-              {#if counts.chg > 0}<span class="count-chg">~{counts.chg}</span>{/if}
-              {#if counts.del > 0}<span class="count-del">−{counts.del}</span>{/if}
-            </span>
-          {/if}
-        </button>
-        {#if open}
-          <div class="action-rows">
-            {#each visible as action, at (keyOf(action))}
-              {@const firstOfRun = at === 0 || visible[at - 1]?.kind !== action.kind}
-              {#if expandable(action)}
-                <div
-                  class="action-row has-diff"
-                  class:is-expanded={expanded.has(keyOf(action))}
-                  data-kind={action.kind}
-                >
-                  <button type="button" class="action-row-line" onclick={() => toggle(action)}>
-                    <span class="action-op {opClass(action)}">{opWord(action)}</span>
-                    <span class="action-kind">{firstOfRun ? action.kind : ''}</span>
-                    <span class="action-what"
-                      >{action.subject}
-                      {#if fromTo(action) !== ''}<span class="from-to">{fromTo(action)}</span
-                        >{/if}</span
-                    >
-                  </button>
-                  {#if expanded.has(keyOf(action))}
-                    <div class="action-diff">
-                      <DiffBlock before={action.before ?? ''} after={action.after ?? ''} />
-                    </div>
-                  {/if}
-                </div>
-              {:else}
-                <div class="action-row" data-kind={action.kind}>
-                  <span class="action-op {opClass(action)}">{opWord(action)}</span>
-                  <span class="action-kind">{firstOfRun ? action.kind : ''}</span>
-                  <span class="action-what"
-                    >{action.subject}
-                    {#if fromTo(action) !== ''}<span class="from-to">{fromTo(action)}</span
-                      >{/if}</span
+    <!-- ONE CARD, and a repository is an OBJECT ROW in it. Each repository used
+         to be a card of its own, so three repositories were three frames and a
+         row grammar this app uses nowhere else - the rest of the panel is one
+         card holding an `.object-list`, and the plan had no reason to be the
+         exception. The disclosure body is a sibling of the row inside the same
+         `<li>`, which `display: contents` lets the list lay out as its own
+         band. -->
+    <!-- No head. `Plan`, `14 changes wait for you` and `3 repositories` were
+         three headings in the page's first 250px, and the third one counted
+         what the rows under it show and the Apply button already scopes. A list
+         card without one is grammar this app already has - `RootWorkspaces`
+         opens the same way. -->
+    <Card>
+      <ul class="object-list plan-repositories">
+        {#each groups as group, index (group.repository)}
+          {@const visible = visibleOf(group)}
+          {@const counts = groupCounts(group)}
+          {@const groupFailed = failedOf(group)}
+          {@const open = isOpen(group.repository, index)}
+          {@const rowsId = `plan-group-${index}`}
+          <li>
+            <button
+              type="button"
+              class="object-row repo-row"
+              class:is-open={open}
+              aria-expanded={open}
+              aria-controls={rowsId}
+              onclick={() => toggleGroup(group.repository)}
+            >
+              <span class="object-main">
+                <span class="object-name-row">
+                  <span class="object-name mono-name">{group.repository}</span>
+                </span>
+              </span>
+              <span class="object-side">
+                {#if groupFailed > 0}
+                  <span class="pill pill-danger"><span class="t">{groupFailed} failed</span></span>
+                {:else}
+                  <span class="repo-group-counts">
+                    {#if counts.add > 0}<span class="count-add">+{counts.add}</span>{/if}
+                    {#if counts.chg > 0}<span class="count-chg">~{counts.chg}</span>{/if}
+                    {#if counts.del > 0}<span class="count-del">−{counts.del}</span>{/if}
+                  </span>
+                {/if}
+                <span class="repo-caret"><Icon name="chevron-right" size="xs" /></span>
+              </span>
+            </button>
+            {#if open}
+              <div class="action-rows" id={rowsId}>
+                {#each visible as action, at (keyOf(action))}
+                  {@const firstOfRun = at === 0 || visible[at - 1]?.kind !== action.kind}
+                  {@const opens = expandable(action)}
+                  {@const showing = opens && expanded.has(keyOf(action))}
+                  {@const shape = rowShape(action)}
+                  <!-- ONE ROW, whatever it can do. A row that opens a diff used to be
+                   a second component - a 24px button beside a 40px div, holding
+                   the same three spans - so a list of six rows kept two rhythms
+                   and the only pressable one was the shortest. What it can do is
+                   the tag and a mark at its end, never a different row. -->
+                  <div
+                    class="action-row"
+                    class:has-diff={opens}
+                    class:is-expanded={showing}
+                    data-kind={action.kind}
                   >
-                  {#if action.error !== undefined}
-                    <span class="action-fail">{action.error}</span>
-                  {:else if action.blocker !== undefined}
-                    <span class="action-fail">not tried: {action.blocker} failed first</span>
-                  {/if}
-                </div>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-      </section>
-    {/each}
+                    <!-- The role is the tag's own, spelled out because the checker
+                     reads `onclick` on a `<svelte:element>` without being able
+                     to see that the tag beside it is `button` whenever the
+                     handler is there. -->
+                    <svelte:element
+                      this={opens ? 'button' : 'div'}
+                      class="action-row-line"
+                      type={opens ? 'button' : undefined}
+                      role={opens ? 'button' : undefined}
+                      aria-expanded={opens ? showing : undefined}
+                      onclick={opens ? () => toggle(action) : undefined}
+                    >
+                      <span class="action-op {opClass(action)}">{opWord(action)}</span>
+                      <span class="action-kind">{firstOfRun ? action.kind : ''}</span>
+                      {#if shape === 'label' && action.detail?.label !== undefined}
+                        {@const label = action.detail.label}
+                        {@const was = action.detail.previous_label}
+                        <span class="action-what"
+                          >{#if was !== undefined}<!-- A CHANGE SHOWS WHAT MOVED.
+                              Both badges, the arrow between them, and only the
+                              description that differs - a colour drift read as
+                              the same label printed twice without this.
+                            --><LabelBadge
+                              label={was}
+                              size="compact"
+                            /><span class="from-to label-arrow">→</span>{/if}<LabelBadge
+                            {label}
+                            size="compact"
+                          />{#if label.description && label.description !== was?.description}<span
+                              class="from-to label-description">{label.description}</span
+                            >{/if}</span
+                        >
+                      {:else if shape === 'settings' && action.detail?.settings !== undefined}
+                        <!-- ONE ACTION, a line per setting. GitHub replaces a
+                             repository's settings in one request, so they apply
+                             or fail together and stay one action - and they are
+                             still several facts, where one sentence naming every
+                             field at once was one. -->
+                        <span class="action-what action-settings">
+                          {#each action.detail.settings as setting (setting.field)}
+                            <span class="setting-line"
+                              >{settingName(setting.field)}<span class="from-to"
+                                >{setting.from} → {setting.to}</span
+                              ></span
+                            >
+                          {/each}
+                          {#each action.detail.follows ?? [] as follows (follows)}
+                            <span class="setting-line"
+                              >{settingName(follows)}<span class="from-to"
+                                >GitHub switches this off too</span
+                              ></span
+                            >
+                          {/each}
+                          {#each action.detail.withheld ?? [] as withheld (withheld.field)}
+                            <span class="setting-line"
+                              >{settingName(withheld.field)}<span class="from-to"
+                                >left alone: {withheld.reason}</span
+                              ></span
+                            >
+                          {/each}
+                        </span>
+                      {:else if shape === 'ruleset' && action.detail?.ruleset !== undefined}
+                        {@const ruleset = action.detail.ruleset}
+                        <span class="action-what"
+                          >{ruleset.name}<span class="from-to">{rulesetSummary(ruleset)}</span
+                          ></span
+                        >
+                      {:else if shape === 'file' && action.detail?.file !== undefined}
+                        <span class="action-what"
+                          >{action.detail.file.path}<span class="from-to"
+                            >{fileArrival(action)}</span
+                          ></span
+                        >
+                      {:else}
+                        <span class="action-what"
+                          >{action.subject}
+                          {#if fromTo(action) !== ''}<span class="from-to">{fromTo(action)}</span
+                            >{/if}</span
+                        >
+                      {/if}
+                    </svelte:element>
+                    {#if showing}
+                      <div class="action-diff">
+                        <DiffBlock before={action.before ?? ''} after={action.after ?? ''} />
+                      </div>
+                    {/if}
+                    {#if action.error !== undefined}
+                      <span class="action-fail">{action.error}</span>
+                    {:else if action.blocker !== undefined}
+                      <span class="action-fail">not tried: {action.blocker} failed first</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </Card>
 
     {#if approvable && !readOnly}
       <ApplyBar>
@@ -404,9 +564,15 @@ the button.
           {#if plan.counts.update > 0}<span class="count-chg">~{plan.counts.update}</span>{/if}
           {#if plan.counts.delete > 0}<span class="count-del">−{plan.counts.delete}</span>{/if}
         </span>
+        <!-- `&nbsp;` twice, written as the entity rather than as the character:
+             a bar this wide reflows at every sidebar width, and the two places
+             it can break are the one that starts a line with a dash and the one
+             that leaves `3` stranded from what it counts. A literal U+00A0 in
+             the source does the same thing and is invisible to whoever edits
+             the sentence next. -->
         <span class="apply-note"
-          >Nothing reaches GitHub until you apply - files arrive as pull requests, the rest lands
-          directly</span
+          >Nothing reaches GitHub until you apply the plan&nbsp;- files open pull requests and other
+          changes apply directly</span
         >
         <Button tone="quiet" disabled={discarding || approving} onclick={() => onDiscard(plan.id)}>
           {discarding ? 'Discarding' : 'Discard'}
@@ -416,8 +582,7 @@ the button.
           disabled={approving || discarding}
           onclick={() => (confirming = true)}
         >
-          Apply to {groups.length}
-          {groups.length === 1 ? 'repository' : 'repositories'}
+          Apply to {groups.length}&nbsp;{groups.length === 1 ? 'repository' : 'repositories'}
         </Button>
       </ApplyBar>
     {/if}
@@ -503,22 +668,29 @@ the button.
   /* No margin above: the frame's gap is what stands this off the head, and the 8px
      here was added to it - the one page whose head exited at 32 where every other
      exits at 24. */
+  /* ONE COLUMN, and the meta reads under the verdict rather than off in the
+     opposite corner. Freshness and expiry are the sentence that says how long
+     the count above them is true for; parked at the far right of the same line
+     they were a caption on nothing, and expiry - the fact that voids the whole
+     page - was the smallest type on it. */
   .hero {
-    align-items: end;
     display: grid;
-    gap: var(--space-4);
-    grid-template-columns: 1fr auto;
+    gap: var(--space-2);
+    grid-template-columns: minmax(0, 1fr);
     margin-block-end: var(--space-4);
   }
 
+  /* The verdict is CONTENT UNDER the page's h1, not a second page title. At the
+     page tier it measured the same 28px as `Plan` above it, and two headings of
+     one size in one corner leave the reading order to guesswork. 22px whole is
+     one full step down, which `--leading-title` is already the leading for. */
   .hero h2 {
-    /* The page tier, as on the sync overview's hero beside it. */
-    font-size: var(--font-size-page-title);
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    line-height: var(--leading-page);
+    font-size: 1.375rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: var(--leading-title);
     margin: 0;
-    min-block-size: 29px;
+    min-block-size: 19px;
     text-box: trim-both cap alphabetic;
   }
 
@@ -540,7 +712,9 @@ the button.
 
   .hero-meta {
     color: var(--text-muted);
-    font-size: var(--font-size-micro);
+    font-size: var(--font-size-meta);
+    min-block-size: 9px;
+    text-box: trim-both cap alphabetic;
   }
 
   .hero-meta strong {
@@ -551,7 +725,7 @@ the button.
   .hero-meta-lines {
     display: grid;
     gap: var(--space-1);
-    justify-items: end;
+    justify-items: start;
   }
 
   .hero-meta-lines > span {
@@ -628,74 +802,118 @@ the button.
     margin-block-start: var(--space-1);
   }
 
-  /* ---------- The groups ---------- */
+  /* ---------- The repositories ---------- */
 
-  /* A group is a card, not an outline: card material keeps the ladder whole -
-     canvas, card, opened action, code well. overflow clips the summary's
-     square hover to the rounded corners. */
-  .repo-group {
-    background: var(--surface-base);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-strip);
-    overflow: hidden;
+  /* A repository is an object row, so its material is the list's and nothing is
+     declared here but what a plan row has that other rows do not: a name in the
+     identifier face, and a caret that turns. */
+  /* No `width: 100%`. An object row bleeds 12px into the card's padding on each
+     side so its hover paints to the frame, and it does that by stretching in
+     the list's track and then wearing a negative inline margin. A declared
+     100% pins it to the track instead, so the row came out 24px narrower than
+     the well underneath it and the two disagreed down their whole length. A
+     grid item stretches on its own. */
+  /* THE LIST SHEDS ITS PADDING AT BOTH ENDS. `.object-list` already hands back
+     the last row's, so the last ink closes on the card's own frame; with no card
+     head above it the first row needs the same, or the card opens with 20px of
+     its own padding and 12px of the row's stacked - 34.7px of nothing before the
+     first name. The row keeps its padding, which is its hit area; what goes is
+     the card's, which the row is already standing in. */
+  .plan-repositories {
+    margin-block-start: calc(var(--row-pad-default) * -1);
   }
 
-  .repo-group + .repo-group {
-    margin-top: var(--space-3);
-  }
-
-  /* Not <details>: its panel is what the popover doctrine forbids building
-     on, and a managed section keeps first-open policy in one place. */
-  .repo-group-head {
-    align-items: center;
-    background: none;
-    border: 0;
-    /* Declared 40px, whole - was padding-derived at 40.39. */
-    block-size: 40px;
-    box-sizing: border-box;
-    color: inherit;
+  .repo-row {
     cursor: pointer;
-    display: flex;
     font: inherit;
-    gap: var(--space-3);
-    padding: 0 var(--space-4);
     text-align: start;
-    width: 100%;
   }
 
-  .repo-group-head:hover {
-    background: var(--row-hover);
+  .mono-name {
+    font-family: var(--mono);
+    font-size: var(--font-size-compact);
+    font-weight: 500;
   }
 
-  .summary-icon {
+  .repo-caret {
     color: var(--text-muted);
     display: inline-flex;
     transition: rotate var(--duration-fast) var(--ease-standard);
   }
 
-  .repo-group.is-open > .repo-group-head .summary-icon {
+  .repo-row.is-open .repo-caret {
     rotate: 90deg;
   }
 
-  .repo-group-name {
-    flex: 1;
-    font-family: var(--mono);
-    font-size: var(--font-size-compact);
-    font-weight: 500;
-    text-box: trim-both cap alphabetic;
+  /* An open row keeps `.object-row`'s hairline, hover and press - suppressing
+     them to stop it competing with the well left a header that answered nothing
+     at all. What it adds is REACH.
+
+     A hover paints the row's own rounded box, and the well below opens with
+     rounded top corners of its own, so the paint stopped at the row's bottom
+     curve and left two lit notches of card white in the corners between them.
+     The row squares the edge it shares with the well and carries the paint one
+     corner-radius further down, behind it - so the wash runs under the well's
+     curve and the corners come out solid. */
+  .repo-row.is-open {
+    border-end-end-radius: 0;
+    border-end-start-radius: 0;
   }
 
+  .repo-row.is-open::before {
+    block-size: var(--r-ctl);
+    content: '';
+    inset-block-start: 100%;
+    inset-inline: 0;
+    position: absolute;
+  }
+
+  :is(a, button).repo-row.is-open:hover::before {
+    background: var(--row-hover);
+  }
+
+  :is(a, button).repo-row.is-open:active::before {
+    background: var(--row-pressed);
+  }
+
+  /* THREE SLOTS, ALWAYS, and each operation keeps its own. Laid out as a flex
+     run the group was right-aligned, so a repository with no removals put its
+     `+3` where the repository above it put `~2`: scanning the rail, a green
+     number and a blue one shared a column and the sign was the only thing
+     saying which was which. A missing count leaves its slot empty rather than
+     closing the rank up.
+
+     The slot is a fixed 4ch and not content-derived, because each row is its
+     own grid: `auto` would size every row to ITS widest count and the rows
+     would disagree again. Mono and tabular make 4ch exact - a sign and three
+     digits - and identical on every row. */
   .repo-group-counts {
+    --count-slot: 4ch;
+
     color: var(--text-muted);
-    display: flex;
+    display: grid;
     font-family: var(--mono);
     font-size: var(--font-size-micro);
     font-variant-numeric: tabular-nums;
     gap: var(--space-3);
+    grid-template-columns: repeat(3, var(--count-slot));
   }
 
   .repo-group-counts > * {
+    justify-self: end;
     text-box: trim-both cap alphabetic;
+  }
+
+  .repo-group-counts .count-add {
+    grid-column: 1;
+  }
+
+  .repo-group-counts .count-chg {
+    grid-column: 2;
+  }
+
+  .repo-group-counts .count-del {
+    grid-column: 3;
   }
 
   .count-add {
@@ -710,30 +928,52 @@ the button.
     color: var(--diff-del-ink);
   }
 
+  /* The disclosure body, inset under the row it belongs to. A well rather than a
+     second card: the ladder is canvas, card, opened repository, opened action,
+     code - and giving this its own frame inside a card would put two frames
+     around one list. The negative inline margin is the object row's own, so the
+     well runs the full width of the card's content column. */
   .action-rows {
-    border-top: 1px solid var(--border-subtle);
-    display: grid;
-    padding: var(--space-2) var(--space-2);
-  }
-
-  .action-row {
-    align-items: baseline;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-ctl);
     display: grid;
-    font-size: var(--font-size-compact);
+    margin-block: 0 var(--space-3);
+    margin-inline: calc(var(--space-3) * -1);
+    padding: var(--space-2);
+    /* POSITIONED, so it paints over the header's reach strip by DOM order.
+       A negative z-index on the strip put it behind the card's own ground and
+       it never showed at all; two positioned siblings settle it by which comes
+       second, and the well does. */
+    position: relative;
+  }
+
+  /* The row owns the tracks and the padding; the line inside is a subgrid, so
+     the columns are declared ONCE and `.action-fail` on column 3 lands under
+     the subject without a calc that has to be kept in step with them. */
+  .action-row {
+    border-radius: var(--r-ctl);
+    display: grid;
     gap: var(--space-3);
-    grid-template-columns: 4.2rem 5.2rem 1fr;
-    padding: var(--row-pad-compact) var(--space-2);
+    font-size: var(--font-size-compact);
+    /* MEASURED, not estimated. The verb track holds `− remove` at 66.06px in
+       67.2 and is right. The kind track held 83.2 for a vocabulary of four
+       words - `labels`, `settings`, `rulesets`, `files` - whose widest is
+       `settings` at 46.48, so 36.7px of every row was a column that could
+       never be filled, sitting between the two halves of the sentence. 3rem
+       leaves the same 1.5px the verb track leaves, and hands the rest to the
+       subject. Declared rather than `max-content`: each row is its own grid,
+       and content sizing would let two rows disagree about where the sentence
+       starts - the same fault the counts had. */
+    grid-template-columns: 4.2rem 3rem 1fr;
+    padding: var(--space-3) var(--space-2);
   }
 
-  .action-row:hover {
+  /* Hover answers the POINTER, so only a row the pointer can do something with
+     wears it. Every row lighting up said all of them were pressable, and one in
+     six was. */
+  .action-row.has-diff:hover {
     background: var(--row-hover);
-  }
-
-  /* An expandable row's grid lives on its inner line - the outer box holds
-     the line and the diff under it, closed or open alike. */
-  .action-row.has-diff {
-    display: block;
   }
 
   /* An opened action gets its own ground, like a rule opened for editing -
@@ -742,9 +982,7 @@ the button.
     background: var(--surface-raised);
     border: 1px solid var(--border-subtle);
     border-radius: var(--r-ctl);
-    display: block;
     margin-block: var(--space-1);
-    padding: var(--space-2);
   }
 
   /* The open row keeps its raised ground; re-tinting the whole card on hover
@@ -754,25 +992,86 @@ the button.
     border-color: var(--control-border);
   }
 
+  /* DECLARED, so the row is 42px whatever it says - the drawing's height, and
+     the same reasoning as the group head's declared 40.
+
+     The three cells were each voting on it with their own font, and
+     `align-items: baseline` let them: the kind is sans against two mono
+     neighbours and its box sat a pixel higher, and an empty kind cell on a
+     continuation row had no box at all. Rows came out 39, 40 and 41 by content,
+     and the run read as a limp. `min-block-size` is the line the drawing has,
+     and centring puts the three cells on it whatever each of them measures. */
   .action-row-line {
-    align-items: baseline;
+    align-items: center;
     background: none;
     border: 0;
     color: inherit;
-    cursor: pointer;
     display: grid;
     font: inherit;
-    gap: var(--space-3);
-    grid-template-columns: 4.2rem 5.2rem 1fr;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    line-height: var(--leading-compact);
+    min-block-size: var(--leading-compact);
     padding: 0;
+    /* Inert on a desktop row, which is one band. A phone stacks the subject
+       under the verb, and only the LINE can space those two - a subgrid takes
+       its parent's gap for the axis it subgrids, and that is the columns. */
+    row-gap: var(--space-2);
+    /* Carries the hit layer below. */
+    position: relative;
     text-align: start;
     width: 100%;
   }
 
+  /* EVERY CELL IS ITS CAP BAND. Without this the verb and the kind are their
+     whole 18px line boxes while a stacked setting line is its 8.76px band, so
+     the row's ink sat half a pixel off the middle of its own surface - which is
+     the fault the vertical sweep exists to catch. `min-block-size` above is
+     what keeps a one-line row 42px once the cells no longer fill it. */
+  .action-row-line > * {
+    text-box: trim-both cap alphabetic;
+  }
+
+  /* A STACKED SUBJECT LEADS, it does not float. Centred against two or five
+     settings the verb sat in the middle of the block with nothing beside it,
+     reading as a label for the gap rather than for the first line. Start, so
+     `~ change` and `settings` sit on the first field's own band and the rest of
+     the fields hang under them.
+
+     Only where the subject stacks: a one-line row is centred in its declared
+     42px, and start-aligning that would push its band to the top of the line. */
+  .action-row-line:has(.action-settings) {
+    align-items: start;
+  }
+
+  button.action-row-line {
+    cursor: pointer;
+  }
+
+  /* THE PRESS REACHES THE WHOLE ROW. The row's padding is on the row, so the
+     button is only the line inside it - 18px of a 42px band that hovers, and
+     under the 24px floor a target has to clear. The hit is a layer rather than
+     a wrapper, the way `.row-hit` does it elsewhere: moving the padding onto
+     the button instead would take the tracks off the row, and the subgrid and
+     the failure line under it both read their columns from there.
+
+     Only as far as the line, never the diff: an opened row's file is content
+     to read, not a second place to press for closing it. */
+  button.action-row-line::before {
+    content: '';
+    inset-block: calc(var(--space-3) * -1);
+    inset-inline: calc(var(--space-2) * -1);
+    position: absolute;
+  }
+
   /* Inside the opened row's ground the diff runs full width - the ground
-     already says which row it belongs to. */
+     already says which row it belongs to. It is a child of the row's own grid
+     now, so it has to be told to cross it: left to flow it took column one and
+     came out 67px wide, the width of the verb. */
   .action-diff {
+    grid-column: 1 / -1;
     margin: var(--space-2) 0 0;
+    min-inline-size: 0;
   }
 
   .action-op {
@@ -803,6 +1102,55 @@ the button.
 
   .action-what .from-to {
     color: var(--text-muted);
+    /* The detail follows the subject with one space of its own, so the two do
+       not run together when the subject is drawn rather than written - a badge
+       is an element, and an element has no trailing space. */
+    margin-inline-start: 0.5ch;
+  }
+
+  /* A LABEL'S DESCRIPTION IS PROSE, and it was set in the same mono as the
+     label's own name beside it - two greys of the same face running together,
+     with only a space saying where the name stopped. The reading face is what
+     separates them, and it is what the description is: a sentence about the
+     label, not a second identifier.
+
+     The face alone, at the row's own size: a description set larger also raises
+     the line's ink band above the box it sits in, and the row came out 0.47px
+     off its own middle. */
+  .action-what .label-description {
+    font-family: var(--sans);
+    margin-inline-start: 1ch;
+  }
+
+  /* A settings action's several facts, stacked. The row's own line stays the
+     first of them, so a one-setting change is the same 42px as every other row
+     and only a change that really says more is taller. */
+  .action-settings {
+    display: grid;
+    gap: var(--space-2);
+    justify-items: start;
+  }
+
+  .setting-line {
+    text-box: trim-both cap alphabetic;
+  }
+
+  /* The badge sets no line height: it is 9px of disc in a 12px line, and a row
+     whose subject is drawn must measure the same as a row whose subject is
+     written. */
+  .action-what :global(.label-badge) {
+    vertical-align: baseline;
+  }
+
+  /* Between two badges, so it needs the space on BOTH sides. `.from-to` leads
+     with half a character and nothing after it, which is right where a detail
+     follows a subject and wrong where an arrow stands between two things. */
+  /* Selected through `.action-what` so it OUTRANKS the rule above rather than
+     tying with it: `.action-what .from-to` sets the start margin, and a bare
+     `.label-arrow` lost that half of the pair on source order - the arrow came
+     out 0.5ch from the badge before it and 1ch from the one after. */
+  .action-what .label-arrow {
+    margin-inline: 1ch;
   }
 
   /* The error belongs to ITS row: pulled to 4px under its own line, so the
@@ -930,18 +1278,9 @@ the button.
       overflow-x: hidden;
     }
 
-    .hero {
-      align-items: start;
-      grid-template-columns: minmax(0, 1fr);
-    }
-
     .hero h2 {
       font-size: 2rem;
       overflow-wrap: anywhere;
-    }
-
-    .hero-meta-lines {
-      justify-items: start;
     }
 
     .schedule-facts {
@@ -967,8 +1306,9 @@ the button.
       overflow-x: auto;
     }
 
-    .action-row,
-    .action-row-line {
+    /* The row still owns the tracks; the line is still the subgrid that reads
+       them, so only one of the two is restated here. */
+    .action-row {
       gap: var(--space-2);
       grid-template-columns: minmax(0, 1fr) auto;
     }
