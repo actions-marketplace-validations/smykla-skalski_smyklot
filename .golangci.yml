@@ -21,6 +21,7 @@ linters:
     - dupl
 
     # Best Practices
+    - depguard
     - gocritic
     - revive
     - misspell
@@ -29,6 +30,115 @@ linters:
     - unconvert
 
   settings:
+    # The point of the storage port is that nothing above it knows a database
+    # exists. That only stays true if something checks: the seam was clean
+    # before a second engine, and one convenient import would have ended it.
+    depguard:
+      rules:
+        storage-seam:
+          list-mode: lax
+          files:
+            - "!**/internal/storage/**"
+          deny:
+            - pkg: database/sql
+              desc: only internal/storage may speak SQL; depend on storage.Store instead
+            - pkg: modernc.org/sqlite
+              desc: engines belong to internal/storage; open a store with internal/storage/open
+            - pkg: github.com/jackc/pgx
+              desc: engines belong to internal/storage; open a store with internal/storage/open
+        # Above the factory, no caller picks an engine by name.
+        storage-engine-choice:
+          list-mode: lax
+          files:
+            - "!**/internal/storage/**"
+            - "!**/internal/storage/open/**"
+          deny:
+            - pkg: github.com/smykla-skalski/smyklot/internal/storage/sqlite
+              desc: name a database with SMYKLOT_DATABASE_URL and open it with internal/storage/open
+            - pkg: github.com/smykla-skalski/smyklot/internal/storage/postgres
+              desc: name a database with SMYKLOT_DATABASE_URL and open it with internal/storage/open
+        # Same rule, one layer over: pkg/github is the only place that knows
+        # which HTTP library talks to GitHub. Smyklot ran a hand-rolled client
+        # and go-github side by side for exactly as long as it took to finish
+        # the migration, and the way that state comes back is one caller
+        # reaching past the facade for one convenient type.
+        github-seam:
+          list-mode: lax
+          files:
+            - "!**/pkg/github/**"
+          deny:
+            - pkg: github.com/google/go-github
+              desc: only pkg/github may name the GitHub library; add a method to pkg/github.Client instead
+        # The other half of that seam. pkg/github carried sixteen labels
+        # spelled "smyklot:", the paths this bot's configuration file lives at
+        # and one method that was three of its own calls in a loop - each
+        # because the client was where the call already was. An import is what
+        # the next one looks like.
+        github-library:
+          list-mode: lax
+          files:
+            - "**/pkg/github/**"
+          allow:
+            - github.com/smykla-skalski/smyklot/pkg/github$
+          deny:
+            - pkg: github.com/smykla-skalski/smyklot/
+              desc: pkg/github is a GitHub client, not a Smyklot one; take what it needs as a parameter rather than importing the rest of the service
+        # pkg/webhook is a library any GitHub App can import, and the only thing
+        # that keeps it one is a check. It was carved out of this service, so
+        # every smyklot type it used to reach for is still one import away - the
+        # panel it announced to, the storage identifiers it namespaced with, the
+        # metrics registry it counted into. `run.tests: true` matters here too:
+        # the last coupling to go was a test importing internal/githubtest for
+        # one payload fixture.
+        webhook-library:
+          list-mode: lax
+          files:
+            - "**/pkg/webhook/**"
+          allow:
+            - github.com/smykla-skalski/smyklot/pkg/webhook$
+          deny:
+            - pkg: github.com/smykla-skalski/smyklot/
+              desc: pkg/webhook is a standalone library; take what it needs as a parameter, a callback or an option rather than importing the service
+            - pkg: github.com/prometheus/client_golang
+              desc: the library reports through webhook.Observer; a registry here would put its opinion about metric namespaces into every consumer
+        # internal/bot is what the Action, the cron poll and the service all
+        # stand on, and it is the layer that has to work with none of the rest
+        # of them present: a repository running the Action has no panel, no
+        # store to sweep and no worker to schedule. That only stays true while
+        # nothing here imports upwards. It would not announce itself if it
+        # stopped - the pending CI cycle this split removed compiled perfectly
+        # well for as long as cmd was the only place the two halves met.
+        bot-foundation:
+          list-mode: lax
+          files:
+            - "**/internal/bot/**"
+          deny:
+            - pkg: github.com/smykla-skalski/smyklot/internal/panel
+              desc: internal/bot runs where there is no panel; say what you need in an interface
+            - pkg: github.com/smykla-skalski/smyklot/internal/pendingci/gate
+              desc: internal/bot declares what it needs of the pending CI runtime and the gate implements it
+            - pkg: github.com/smykla-skalski/smyklot/internal/orgsync/apply
+              desc: org sync is a service worker; nothing an Action run reaches should name it
+        # The two workers the service starts share a store and nothing else.
+        # Neither has ever needed the other, and the first import between them
+        # would be somebody borrowing one helper - after which a sweep cannot be
+        # read one worker at a time, which is the only way anybody reads it. The
+        # panel is denied for a related reason: both of these run whether or not
+        # a deployment has one, and both report through the store it reads them
+        # from.
+        service-workers:
+          list-mode: lax
+          files:
+            - "**/internal/pendingci/gate/**"
+            - "**/internal/orgsync/apply/**"
+          deny:
+            - pkg: github.com/smykla-skalski/smyklot/internal/panel
+              desc: a worker records what it did in storage.Store; the panel reads it from there
+            - pkg: github.com/smykla-skalski/smyklot/internal/pendingci/gate
+              desc: the two service workers are independent; say what you need in an interface
+            - pkg: github.com/smykla-skalski/smyklot/internal/orgsync/apply
+              desc: the two service workers are independent; say what you need in an interface
+
     cyclop:
       max-complexity: 30
 
@@ -97,6 +207,8 @@ linters:
 
   exclusions:
     generated: strict
+    paths:
+      - internal/panel/frontend/node_modules
     rules:
       # Exclude some linters from test files
       - path: _test\.go
@@ -111,8 +223,15 @@ linters:
           - unused
           - revive  # Allow dot imports and unused parameters in tests
 
-      # Allow long functions in main.go (GitHub Actions handlers)
-      - path: cmd/github-action/main\.go
+      # main.go used to carry this, and what needed it was the comment, merge
+      # and reaction handlers rather than the file they happened to share. Each
+      # is one long branch over what a pull request turned out to be, and
+      # splitting one buys a name for a step nothing else will ever call.
+      #
+      # Narrower than what it replaces: the rest of internal/bot is held to the
+      # same lengths as everything else, and the file the cobra commands live
+      # in no longer needs an exemption at all.
+      - path: internal/bot/(command|reactions)\.go
         linters:
           - funlen
           - gocyclo
@@ -124,6 +243,31 @@ linters:
         text: "shadow: declaration of \"err\""
         linters:
           - govet
+
+      # The shared storage suite is test code that has to be importable by
+      # every engine package, so it cannot live in _test.go files and does not
+      # pick up the exclusions above. Same rules, same reasons.
+      - path: internal/storage/storagetest/
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - funlen
+          - goconst
+          - unparam
+          - staticcheck  # Ginkgo and Gomega are used as dot imports by design
+
+# Formatting is a lint, not a habit.
+#
+# golangci-lint v2 moved formatters out of `linters` into their own section, and
+# this file never grew one - so `lint (go)` reported 0 issues on a branch
+# carrying three unformatted files, and the only thing that would have caught
+# them was a local commit hook. gofumpt rather than gofmt because gofumpt is
+# what the repository is already written in.
+formatters:
+  enable:
+    - gofumpt
 
 issues:
   max-same-issues: 50

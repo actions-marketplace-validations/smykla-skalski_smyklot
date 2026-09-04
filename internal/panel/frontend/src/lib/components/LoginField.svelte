@@ -1,0 +1,229 @@
+<script lang="ts">
+  import { Combobox } from 'bits-ui';
+  import { untrack } from 'svelte';
+  import { useDebounce } from 'runed';
+
+  import type { PanelAccount } from '../types';
+  import Avatar from './Avatar.svelte';
+
+  let {
+    id,
+    value = $bindable(''),
+    label,
+    help,
+    refused = false,
+    suggest,
+    focusOnOpen = false,
+  }: {
+    id: string;
+    value: string;
+    label: string;
+    help?: string;
+    refused?: boolean;
+    suggest: (query: string) => Promise<PanelAccount[]>;
+    /**
+     * Takes focus once, when the dialog holding this field opens.
+     *
+     * It used to set a `data-modal-focus` attribute, which nothing read - not this
+     * app, not Bits UI, not a test - so the two dialogs that ask for it opened with
+     * the field unfocused and a reader had to reach for the mouse before typing the
+     * login the dialog exists to collect. The prop now does what it says.
+     */
+    focusOnOpen?: boolean;
+  } = $props();
+
+  let items = $state.raw<PanelAccount[]>([]);
+  let open = $state(false);
+  let selectedValue = $state('');
+  let field = $state<HTMLInputElement | null>(null);
+  let generation = 0;
+  let accepted = $state<string | null>(null);
+  const helpId = $derived(`${id}-help`);
+  const choices = $derived(
+    items.map((account) => ({
+      value: account.login,
+      label: account.display_name || account.login,
+    })),
+  );
+
+  /* Once, on mount - which for this field means when the dialog around it opened.
+     `queueMicrotask` because the input is bound after the effect first runs, and it
+     is the same wait the selection handler below already uses. */
+  $effect(() => {
+    if (!focusOnOpen) return;
+    untrack(() => queueMicrotask(() => field?.focus()));
+  });
+
+  const debouncedSuggest = useDebounce((query: string) => void load(query), 180);
+  $effect(() => {
+    const query = value.trim();
+    untrack(() => {
+      if (query.length < 2 || query === accepted) {
+        items = [];
+        open = false;
+        return;
+      }
+      void debouncedSuggest(query);
+    });
+  });
+
+  async function load(query: string): Promise<void> {
+    const mine = ++generation;
+    const found = await suggest(query);
+    if (mine !== generation || value.trim() !== query) return;
+    items = found;
+    open = found.length > 0;
+  }
+
+  function typed(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    accepted = null;
+    selectedValue = '';
+    value = input.value;
+  }
+
+  function choose(login: string): void {
+    const account = items.find((item) => item.login === login);
+    if (account === undefined) return;
+    accepted = account.login;
+    selectedValue = account.login;
+    value = account.login;
+    items = [];
+    open = false;
+    queueMicrotask(() => field?.focus());
+  }
+</script>
+
+<!--
+@component
+A GitHub account, typed and completed against the real thing. It suggests as the
+reader types rather than validating after, because a handle that does not exist is a
+mistake worth catching before the form is sent, not after it is refused.
+
+`refused` is the server's answer to what was typed, kept separate from the suggestion
+list: one is a guess about who they mean and the other is a fact about what happened.
+
+`focusOnOpen` takes focus once, when the dialog holding it opens. It used to set an
+attribute nothing read - not this app, not Bits UI, not a test - so both dialogs that
+ask for it opened unfocused and a reader had to reach for the mouse before typing.
+-->
+
+<div class="form-field login-field">
+  <label for={id}>{label}</label>
+  <Combobox.Root
+    type="single"
+    items={choices}
+    bind:open
+    bind:value={selectedValue}
+    inputValue={value}
+    onValueChange={choose}
+  >
+    <Combobox.Input
+      {id}
+      bind:ref={field}
+      class="text-input login-input"
+      autocomplete="off"
+      spellcheck="false"
+      autocapitalize="none"
+      placeholder="octocat"
+      aria-invalid={refused ? 'true' : undefined}
+      aria-describedby={help === undefined ? undefined : helpId}
+      oninput={typed}
+      required
+    />
+    <Combobox.Portal to=".app-shell">
+      <Combobox.Content class="suggestion-content" sideOffset={4} collisionPadding={8}>
+        <Combobox.Viewport class="suggestions" aria-label={label}>
+          {#each items as account (account.id)}
+            <Combobox.Item class="suggestion-item" value={account.login} label={account.login}>
+              <Avatar {account} size={18} />
+              <span class="suggestion-login">{account.login}</span>
+              {#if account.display_name !== '' && account.display_name !== account.login}
+                <span class="suggestion-name">{account.display_name}</span>
+              {/if}
+            </Combobox.Item>
+          {/each}
+        </Combobox.Viewport>
+      </Combobox.Content>
+    </Combobox.Portal>
+  </Combobox.Root>
+  {#if help !== undefined}
+    <small id={helpId} class="identity-help" class:refused>{help}</small>
+  {/if}
+</div>
+
+<style>
+  .form-field {
+    align-content: start;
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .form-field > label {
+    font: 600 0.75rem / var(--leading-flat) var(--sans);
+  }
+
+  :global(.login-input) {
+    width: 100%;
+  }
+
+  .identity-help {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: var(--leading-micro);
+    margin-top: -0.05rem;
+  }
+
+  .identity-help.refused {
+    color: var(--danger);
+    font-weight: 500;
+  }
+
+  :global(.suggestion-content) {
+    background: var(--popover-bg);
+    border: 1px solid var(--popover-border);
+    border-radius: var(--radius-popover);
+    box-shadow: var(--shadow-popover);
+    max-height: var(--bits-floating-available-height);
+    min-width: var(--bits-floating-anchor-width);
+    overflow: auto;
+    z-index: var(--layer-dialog-popover);
+  }
+
+  :global(.suggestions) {
+    display: grid;
+    gap: 2px;
+    padding: var(--space-1);
+  }
+
+  :global(.suggestion-item) {
+    align-items: center;
+    border-radius: var(--radius-control);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: grid;
+    gap: var(--space-2);
+    grid-template-columns: 1.25rem auto minmax(0, 1fr);
+    min-height: var(--control-height-compact);
+    outline: 0;
+    padding: 0 var(--space-2);
+  }
+
+  :global(.suggestion-item[data-highlighted]) {
+    background: var(--interactive-hover);
+    color: var(--text-primary);
+  }
+
+  :global(.suggestion-login) {
+    font: 600 var(--font-size-compact) / var(--leading-flat) var(--sans);
+  }
+
+  :global(.suggestion-name) {
+    color: var(--text-secondary);
+    font: var(--font-size-compact) / var(--leading-flat) var(--sans);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>

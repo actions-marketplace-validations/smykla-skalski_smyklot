@@ -1,18 +1,505 @@
-# mise configuration - tool version management
-#
-# Install tools: mise install
-# Update mise: mise self-update
+# mise configuration - pinned tools and native repository workflows
 
 [tools]
-go = "1.26.4"                              # Go 1.25.4 (latest stable)
-node = "24.17.0"                           # Node.js for semantic-release
-task = "3.51.1"                            # Task runner
-"npm:markdownlint-cli2" = "0.22.1"         # Markdown linter
-"go:github.com/onsi/ginkgo/v2/ginkgo" = "2.31.0" # Ginkgo test runner
-actionlint = "1.7.12"                       # GitHub Actions linter
-ginkgo = "2.31.0"                          # Ginkgo test runner
+go = "1.27.1"
+node = "24.20.0"
+"npm:markdownlint-cli2" = "0.23.2"
+"go:github.com/onsi/ginkgo/v2/ginkgo" = "2.32.1"
+actionlint = "1.7.12"
+golangci-lint = "2.13.2"
+helm = "4.2.4"
+shellcheck = "0.11.0"
+yq = "4.53.6"
 
 [env]
 GO111MODULE = "on"
 GOFLAGS = "-mod=readonly"
 CGO_ENABLED = "0"
+
+# -p, and everywhere. Ginkgo runs one suite at a time, and without it the specs
+# inside each are serial too - which is how the two slowest packages alone came
+# to take longer than the whole CI job is now allowed. Directories may be named
+# to run a subset; CI names one per job so the suites run concurrently, which is
+# the parallelism ginkgo itself does not have.
+[tasks.test]
+description = "Run the Go suite with race detection - every directory, or only the ones named"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = 'ginkgo -r -p --race --fail-on-empty {{arg(name="dirs", var=true, default=".")}}'
+
+[tasks."test:cover"]
+description = "Run the whole Go suite and write an HTML coverage report"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = '''
+mkdir -p tmp/coverage
+ginkgo -r -p --cover --race --output-dir=tmp/coverage --coverprofile=coverage.out
+go tool cover -html=tmp/coverage/coverage.out -o tmp/coverage/coverage.html
+'''
+
+[tasks."test:unit"]
+description = "Run Smyklot unit tests with race detection and coverage"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = '''
+mkdir -p tmp/coverage/unit
+ginkgo -r --focus='\[Unit\]' --fail-on-empty --cover --race \
+  --output-dir=tmp/coverage/unit --coverprofile=coverage.out
+'''
+
+[tasks."test:watch"]
+description = "Run tests in watch mode"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = "ginkgo watch -r"
+
+[tasks."test:update-filemerge-parity"]
+description = "Regenerate exact panel merge bytes from the backend formatter"
+env = { CGO_ENABLED = "1", SMYKLOT_UPDATE_FILEMERGE_PARITY = "1" }
+run = "ginkgo --focus='composes every case in the shared table' ./internal/orgsync/filemerge"
+
+[tasks."test:deploy"]
+description = "Run the deploy workflow's checks against canned flyctl answers"
+run = "./scripts/test-deploy-steps.sh"
+
+[tasks."test:storage"]
+description = "Run the shared storage suite against every engine"
+env = { CGO_ENABLED = "1" }
+run = "ginkgo -r --race --fail-on-empty ./internal/storage"
+
+[tasks."test:storage:postgres"]
+description = "Run the storage suite against PostgreSQL, failing if it skipped"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = '''
+set -eu
+
+if [ -z "${SMYKLOT_TEST_POSTGRES_DSN:-}" ]; then
+  echo "SMYKLOT_TEST_POSTGRES_DSN is not set; run 'mise run db:dev' first" >&2
+  exit 1
+fi
+
+mkdir -p tmp/storage
+ginkgo -p --race --fail-on-empty \
+  --json-report=postgres.json --output-dir=tmp/storage \
+  ./internal/storage/postgres
+
+# The suite skips itself when there is no server, and a skip is not proof.
+# --fail-on-empty does not cover this: the specs were found, they just did not
+# run. Without this check a misconfigured DSN would look exactly like a pass.
+report=tmp/storage/postgres.json
+skipped="$(jq '[.[].SpecReports[]? | select(.State == "skipped")] | length' "$report")"
+passed="$(jq '[.[].SpecReports[]? | select(.State == "passed")] | length' "$report")"
+
+if [ "$skipped" -gt 0 ]; then
+  echo "$skipped PostgreSQL spec(s) skipped; the engine was not actually tested" >&2
+  jq -r '.[].SpecReports[]? | select(.State == "skipped")
+    | "  " + (.ContainerHierarchyTexts | join(" ")) + " " + .LeafNodeText' "$report" >&2
+  exit 1
+fi
+if [ "$passed" -eq 0 ]; then
+  echo "no PostgreSQL specs passed" >&2
+  exit 1
+fi
+echo "$passed PostgreSQL specs passed, none skipped"
+
+# The copier only has a second engine to copy into when a server is present,
+# so its suite is proof of the same thing and belongs to the same check.
+ginkgo -p --race ./internal/storage/transfer
+'''
+
+# The layers above the port open whichever engine the environment names, so with
+# a DSN set this is their PostgreSQL pass. Their SQLite pass is `mise run test`,
+# which sets no DSN. Running both is the point: a suite that only ever saw one
+# engine proves nothing about the other.
+#
+# It refuses without a DSN rather than falling back. Nothing above the port
+# skips when there is no server - it opens SQLite instead and passes, which
+# looks exactly like a second engine having been tested.
+[tasks."test:postgres"]
+description = "Run the Go suite against PostgreSQL - every directory, or only the ones named"
+depends = ["panel:assets:generate"]
+env = { CGO_ENABLED = "1" }
+run = '''
+set -eu
+
+if [ -z "${SMYKLOT_TEST_POSTGRES_DSN:-}" ]; then
+  echo "SMYKLOT_TEST_POSTGRES_DSN is not set; run 'mise run db:dev' first" >&2
+  exit 1
+fi
+
+ginkgo -r -p --race --fail-on-empty {{arg(name="dirs", var=true, default=".")}}
+'''
+
+[tasks."db:dev"]
+description = "Start a local PostgreSQL for the storage suite and print its DSN"
+run = '''
+name=smyklot-pg-dev
+port=55432
+if [ -z "$(docker ps -aq -f name="^${name}$")" ]; then
+  docker run -d --name "$name" \
+    -e POSTGRES_USER=smyklot \
+    -e POSTGRES_PASSWORD=smyklot \
+    -e POSTGRES_DB=smyklot \
+    -p "${port}:5432" \
+    postgres:18-alpine >/dev/null
+else
+  docker start "$name" >/dev/null
+fi
+until docker exec "$name" pg_isready -U smyklot -q; do sleep 1; done
+echo "export SMYKLOT_TEST_POSTGRES_DSN='postgres://smyklot:smyklot@localhost:${port}/smyklot?sslmode=disable'"
+'''
+
+[tasks."db:backup"]
+description = "Pull a dump of the deployed database to this machine"
+run = "./scripts/backup-db.sh"
+
+[tasks.lint]
+description = "Run all Smyklot linters"
+depends = [
+  "lint:go",
+  "lint:markdown",
+  "lint:mod",
+  "lint:helm",
+  "lint:actions",
+  "lint:shell",
+  "lint:matrix",
+  "lint:release",
+]
+
+[tasks."lint:go"]
+description = "Lint Go code"
+run = '''
+if [ -n "${CI:-}" ]; then
+  echo "Skipping local golangci-lint; CI uses golangci-lint-action"
+else
+  golangci-lint run ./...
+fi
+'''
+
+[tasks."lint:markdown"]
+description = "Lint Markdown files"
+run = "markdownlint-cli2 '**/*.md'"
+
+[tasks."lint:mod"]
+description = "Verify Go module dependencies"
+run = "go mod verify"
+
+[tasks."lint:helm"]
+description = "Lint the Helm chart and prove each of its guards still refuses"
+run = '''
+set -eu
+
+valid="--set github.clientId=lint --set github.existingSecret=lint --set database.existingSecret=lint"
+
+# shellcheck disable=SC2086
+helm lint charts/smyklot $valid
+
+# A guard nothing tests is a comment. Each of these must fail to render, and
+# fail for its own reason: any broken template makes helm exit non-zero, so a
+# check that only asks whether rendering failed passes just as happily when the
+# guard has been deleted and something unrelated is what broke. That is the way
+# a guard retires without anybody noticing, which is what these exist to stop.
+refuses() {
+  what="$1"
+  because="$2"
+  shift 2
+  if output=$(helm template charts/smyklot "$@" 2>&1); then
+    echo "chart rendered $what" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$output" | grep -qF "$because"; then
+    echo "chart refused $what, but not over $because" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
+# shellcheck disable=SC2086
+refuses "more than one replica" "replicaCount cannot exceed 1" \
+  $valid --set replicaCount=2
+refuses "without a database" \
+  "database.url or database.existingSecret is required" \
+  --set github.clientId=lint --set github.existingSecret=lint
+# shellcheck disable=SC2086
+refuses "with two answers for where state lives" \
+  "set database.url or database.existingSecret, not both" \
+  $valid --set database.url=postgres://lint/lint
+'''
+
+[tasks."lint:actions"]
+description = "Lint GitHub Actions workflows"
+run = "actionlint"
+
+# actionlint shellchecks the run: blocks inside a workflow. Nothing was
+# shellchecking the scripts beside them until the deploy checks moved into one.
+[tasks."lint:shell"]
+description = "Shellcheck the repository's shell scripts"
+run = "shellcheck -x scripts/*.sh"
+
+# actionlint reads whether the workflow is valid. This reads whether it is
+# complete: the suites are run by a list of directories now, and a list is a
+# thing a new package can be left out of without anything going red.
+[tasks."lint:matrix"]
+description = "Check the test workflow's matrix runs every Go suite"
+run = "./scripts/check-test-matrix.sh"
+
+# The release config decides a version number, and a wrong one is invisible:
+# the release runs, the tag looks plausible, and the only symptom is a breaking
+# change reaching everyone pinned to the major it broke.
+[tasks."lint:release"]
+description = "Check a breaking change would release a major version"
+run = "./scripts/check-release-rules.sh"
+
+[tasks.build]
+description = "Build all Smyklot binaries"
+depends = ["build:smyklot"]
+
+[tasks."build:smyklot"]
+description = "Build the Smyklot service binary"
+depends = ["panel:assets:generate"]
+sources = [
+  "go.mod",
+  "go.sum",
+  "cmd/**/*.go",
+  "internal/**/*.go",
+  "pkg/**/*.go",
+  "internal/panelassets/generated/bundle.zip",
+]
+outputs = ["bin/smyklot"]
+run = "go build -o bin/smyklot ./cmd/smyklot"
+
+[tasks.deps]
+description = "Download and verify Go dependencies"
+run = '''
+go mod download
+go mod verify
+'''
+
+[tasks."deps:update"]
+description = "Update and tidy Go dependencies"
+env = { GOFLAGS = "" }
+run = '''
+go get -u ./...
+go mod tidy
+'''
+
+[tasks."deps:tidy"]
+description = "Tidy Go module metadata"
+env = { GOFLAGS = "" }
+run = "go mod tidy"
+
+[tasks.generate]
+description = "Run Go code generation"
+run = "go generate ./..."
+
+[tasks.clean]
+description = "Remove repository-local build artifacts while preserving shared caches"
+run = '''
+repo_root="$(git rev-parse --show-toplevel)"
+test -n "$repo_root" && test "$PWD" = "$repo_root"
+rm -rf -- bin tmp/coverage dist internal/panel/frontend/dist
+rm -f -- internal/panelassets/generated/bundle.zip
+'''
+
+[tasks."dev:setup"]
+description = "Install pinned tools and prepare dependencies"
+depends = ["deps", "panel:frontend:install"]
+run = "mise install"
+
+[tasks.fmt]
+description = "Format Go code"
+run = '''
+go fmt ./...
+git ls-files '*.go' | while IFS= read -r file; do
+  if [ -f "$file" ]; then
+    gofmt -s -w "$file"
+  fi
+done
+'''
+
+[tasks.ci]
+description = "Run the complete local CI dependency graph"
+run = [
+  { task = "lint" },
+  { task = "test" },
+  { task = "test:deploy" },
+  { task = "test:panel-install" },
+  { task = "panel:frontend:lint" },
+  { task = "panel:frontend:test" },
+  { task = "panel:frontend:test:browser" },
+  { task = "build" },
+]
+
+[tasks."docker:build"]
+description = "Build the Smyklot container image"
+run = "docker build -t smyklot:latest ."
+
+[tasks.info]
+description = "Show project and toolchain information"
+run = '''
+echo "Project: smyklot"
+echo "Module: $(go list -m)"
+echo "Go version: $(go version)"
+echo "Packages: $(go list ./... | wc -l | tr -d ' ')"
+echo "Files: $(git ls-files '*.go' | wc -l | tr -d ' ')"
+'''
+
+[tasks."panel:frontend:install"]
+description = "Install the panel frontend's pinned dependencies"
+sources = ["internal/panel/frontend/package.json", "internal/panel/frontend/package-lock.json"]
+# SvelteKit 3 writes the tsconfig every other one extends to `node_modules/$app`,
+# not to `.svelte-kit` - so naming the old path made mise warn on every run that the
+# task had produced nothing, and treat an install that had worked as incomplete.
+# `svelte-kit sync` writes this on install, and any `npm install` or `npm uninstall`
+# removes it again.
+outputs = [
+  "internal/panel/frontend/node_modules/.package-lock.json",
+  "internal/panel/frontend/node_modules/$app/tsconfig.json",
+]
+run = "./scripts/install-panel-frontend.sh"
+
+[tasks."test:panel-install"]
+description = "Test panel dependency cache restoration"
+run = "./scripts/test-install-panel-frontend.sh"
+
+[tasks."panel:frontend:build"]
+description = "Build the panel frontend"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+# Every real build input. `svelte.config.js` used to be listed and has never existed
+# here - all the Kit options are inlined into the `sveltekit()` call in
+# `vite.config.ts`. `build/` holds the route manifest and the sentinel check, both of
+# which the bundle depends on, and `static/` is copied into it wholesale.
+sources = [
+  "src/**/*",
+  "build/**/*",
+  "static/**/*",
+  "package.json",
+  "package-lock.json",
+  "vite.config.ts",
+]
+outputs = ["dist/**/*"]
+run = "npm run build"
+
+[tasks."panel:frontend:lint"]
+description = "Lint, format-check, and type-check the panel frontend"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run lint"
+
+[tasks."panel:frontend:format"]
+description = "Format the panel frontend"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run format"
+
+[tasks."panel:frontend:test"]
+description = "Run panel frontend unit tests"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm test"
+
+# Apart from the unit tests because it costs ten times what all of them cost put
+# together, and `npm test` is a loop worth running on every save. It drives
+# Chrome through Playwright's `channel`, so nothing is downloaded - the runner
+# image ships Chrome and so does a developer's machine.
+#
+# Named files rather than all of them is how the workflow splits this across
+# runners. Vitest fails on a filter that matches nothing, so a bucket naming a
+# file that has been renamed goes red rather than quietly running less.
+[tasks."panel:frontend:test:browser"]
+description = "Drive the panel in Chrome and fail on an address asked for too often"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = 'npm run test:browser -- {{arg(name="files", var=true, default="")}}'
+
+# The browser suites CI does not run, gathered so that not running them is a
+# decision somebody can read rather than a gap nobody notices.
+#
+# The Test workflow gives a runner to the sweeps and the budgets: the checks that
+# fail on code whose author was not thinking about them, across pages they were
+# not looking at. These are the other kind. Each drives one screen's own
+# behaviour, and the person who changes that screen is the person who will run
+# it - on every push to every branch, a runner re-proving the queue's columns to
+# somebody editing the sidebar buys nothing.
+#
+# `mise run ci` still runs the whole suite, so nothing here is unproven before a
+# release; `scripts/check-test-matrix.sh` fails if a file is in neither list or
+# in both.
+#
+# `mock-parity` is here for a different reason, and it is the one file CI could
+# not run however it was scheduled: it measures the app against the approved
+# mock, which lives outside the repository. Started at :8123, it answers; with
+# nothing there it says so and fails, which is what a developer who forgot wants
+# and what a runner cannot act on.
+#
+#   empty-states      what a list says when it has no rows
+#   file-formatting   backend render preview, mismatch actions, and exact repository output
+#   mock-parity       every page against the mock, which is not in this repository
+#   queue-list        the Queue against the approved design, to the pixel
+#   queue-live        the queue re-sorting under a reader, and holding still
+#   repository-page   a repository opened from its row, and its three panes
+#   schedules         Root and installation schedule policy, requests and phone layout
+#   signed-out-layout the sign-in page, and what is not drawn behind it
+#   sync-label-layout long names stay inside their row at desktop and phone widths
+[tasks."panel:frontend:test:browser:local"]
+description = "Drive the browser suites CI leaves to a developer"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = '''
+npm run test:browser -- \
+  tests/browser/empty-states.test.ts \
+  tests/browser/file-formatting.test.ts \
+  tests/browser/mock-parity.test.ts \
+  tests/browser/queue-list.test.ts \
+  tests/browser/queue-live.test.ts \
+  tests/browser/repository-page.test.ts \
+  tests/browser/schedules.test.ts \
+  tests/browser/signed-out-layout.test.ts \
+  tests/browser/sync-label-layout.test.ts
+'''
+
+[tasks."panel:assets:generate"]
+description = "Build and package panel assets for Go embedding"
+depends = ["panel:frontend:build"]
+sources = ["internal/panel/frontend/dist/**/*", "internal/panelassets/cmd/generate/**/*.go"]
+outputs = ["internal/panelassets/generated/bundle.zip"]
+run = "go run ./internal/panelassets/cmd/generate"
+
+[tasks."panel:dev"]
+description = "Serve the panel frontend without a mock API"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run dev"
+
+[tasks."panel:dev:mock"]
+# Raises no browser. `SMYKLOT_PANEL_DEV_OPEN=1` or `--open` asks for one.
+description = "Serve the panel frontend with deterministic mock data"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run dev:mock"
+
+# Deliberately not in `[tasks.ci]`. Nothing builds or runs the catalogue on a pull
+# request: `pages.yaml` publishes it on a schedule, off `main`. What holds the
+# stories to account per pull request is `panel:frontend:lint`, which type-checks
+# and format-checks `stories/` and `.storybook/` with everything else there.
+#
+# Port 6008 rather than Storybook's 6006, so it never argues with anything else on
+# a developer's machine. It runs with the mock enabled, which is what resolves the
+# base path to something real - and gives stories a working API for free, though
+# none of them lean on it.
+[tasks."panel:storybook"]
+description = "Serve the panel component catalogue"
+depends = ["panel:frontend:install"]
+dir = "internal/panel/frontend"
+run = "npm run storybook"
+
+# What `pages.yaml` publishes. The build goes through a script rather than the npm
+# script directly because `storybook build` reports success on a bundle that throws
+# on its first module - the site it wrote is a spinner, and no other check here
+# loads it. The script builds and then reads the output back.
+[tasks."panel:storybook:build"]
+description = "Build the panel catalogue as a static site"
+depends = ["panel:frontend:install"]
+run = "./scripts/build-panel-storybook.sh"

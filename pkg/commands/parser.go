@@ -43,7 +43,10 @@ var (
 	}
 
 	// ErrContradictingCommands indicates contradicting commands were found
-	ErrContradictingCommands = errors.New("contradicting commands found: cannot use approve/merge with unapprove")
+	ErrContradictingCommands = errors.New(
+		"contradicting commands found: choose one merge method " +
+			"and do not combine approval or merge with unapprove",
+	)
 
 	// ErrCleanupWithOtherCommands indicates cleanup was used with other commands
 	ErrCleanupWithOtherCommands = errors.New("cleanup command cannot be combined with other commands")
@@ -119,6 +122,10 @@ func ParseCommand(commentBody string, cfg *config.Config) (Command, error) {
 
 	// Convert map to slice (deduplicated and ordered)
 	commands := buildCommandList(commandsFound)
+
+	// Record what the comment asked for before validation can reject it, so
+	// callers reporting on a comment can still name its commands
+	cmd.Detected = commands
 
 	// Check for contradicting commands
 	if hasContradictingCommands(commands) {
@@ -405,21 +412,26 @@ func buildCommandList(commandsFound map[CommandType]bool) []CommandType {
 }
 
 // hasContradictingCommands checks if the command list contains contradicting commands
-// Returns true if both unapprove and (approve or merge) are present
+// Returns true for multiple merge methods or unapprove combined with a state
+// transition that grants approval or merges.
 func hasContradictingCommands(commands []CommandType) bool {
 	hasUnapprove := false
 	hasApproveOrMerge := false
+	mergeCommands := 0
 
 	for _, cmd := range commands {
 		if cmd == CommandUnapprove {
 			hasUnapprove = true
 		}
-		if cmd == CommandApprove || cmd == CommandMerge {
+		if cmd == CommandApprove || isMergeCommand(cmd) {
 			hasApproveOrMerge = true
+		}
+		if isMergeCommand(cmd) {
+			mergeCommands++
 		}
 	}
 
-	return hasUnapprove && hasApproveOrMerge
+	return mergeCommands > 1 || hasUnapprove && hasApproveOrMerge
 }
 
 // hasCleanupWithOtherCommands checks if cleanup is combined with other commands
@@ -479,6 +491,39 @@ func detectRequiredChecksModifier(text string) bool {
 // isMergeCommand checks if a command type is a merge-related command
 func isMergeCommand(cmdType CommandType) bool {
 	return cmdType == CommandMerge || cmdType == CommandSquash || cmdType == CommandRebase
+}
+
+// isStateChangingCommand checks if a command type changes the pull request's
+// approval or merge state
+//
+// Stated as an exclusion so a command added later qualifies by default: help
+// only prints usage, and cleanup deletes its own triggering comment
+func isStateChangingCommand(cmdType CommandType) bool {
+	switch cmdType {
+	case CommandHelp, CommandCleanup, CommandUnknown:
+		return false
+	default:
+		return true
+	}
+}
+
+// StateChangingCommands returns the detected commands that change the pull
+// request's approval or merge state
+//
+// Reads Detected rather than Commands, so a comment rejected by validation
+// still reports what it asked for. Returns nil when the comment carries no such
+// command, which is the case for plain discussion comments as well as for
+// /help and /cleanup
+func (c Command) StateChangingCommands() []CommandType {
+	var stateChanging []CommandType
+
+	for _, cmdType := range c.Detected {
+		if isStateChangingCommand(cmdType) {
+			stateChanging = append(stateChanging, cmdType)
+		}
+	}
+
+	return stateChanging
 }
 
 // hasMergeCommand checks if any merge-related command is present

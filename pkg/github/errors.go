@@ -3,6 +3,7 @@ package github
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -19,6 +20,10 @@ var (
 
 	// ErrResponseParse is returned when parsing a response fails
 	ErrResponseParse = errors.New("failed to parse GitHub API response")
+
+	// ErrIncompletePagination is returned instead of treating a partial list as
+	// an authoritative GitHub snapshot.
+	ErrIncompletePagination = errors.New("incomplete GitHub API pagination")
 )
 
 // APIError represents an error from the GitHub API
@@ -28,6 +33,13 @@ type APIError struct {
 	Method     string
 	Path       string
 	Detail     string
+
+	// retryable records what GitHub said, when it said anything. A typed rate
+	// limit error is authoritative in a way a status code is not: 403 alone is
+	// as likely to be a permission the App was never granted, which no amount
+	// of retrying will produce. Nil means nothing authoritative was available
+	// and Retryable falls back to reading the status code.
+	retryable *bool
 }
 
 // NewAPIError creates a new API error
@@ -83,4 +95,35 @@ func (e *APIError) Is(target error) bool {
 	}
 
 	return errors.Is(e.Op, target)
+}
+
+// Retryable reports whether repeating the API operation can reasonably change
+// its outcome. Consumers do not need to know GitHub's status-code policy.
+//
+// This is the single policy. The transport used to carry a second, narrower one
+// that retried only 429 and 5xx, so a secondary-rate-limit 403 was abandoned by
+// the client and would have been retried by the delivery layer had it ever got
+// there. One policy, read in both places, is what stops those drifting apart
+// again.
+func (e *APIError) Retryable() bool {
+	if e.retryable != nil {
+		return *e.retryable
+	}
+
+	if e.StatusCode == 0 {
+		return true
+	}
+	if e.StatusCode == http.StatusForbidden {
+		detail := strings.ToLower(e.Detail)
+
+		return strings.Contains(detail, "rate limit") ||
+			strings.Contains(detail, "secondary limit") ||
+			strings.Contains(detail, "abuse")
+	}
+
+	return e.StatusCode == http.StatusRequestTimeout ||
+		e.StatusCode == http.StatusConflict ||
+		e.StatusCode == http.StatusTooEarly ||
+		e.StatusCode == http.StatusTooManyRequests ||
+		e.StatusCode >= http.StatusInternalServerError
 }

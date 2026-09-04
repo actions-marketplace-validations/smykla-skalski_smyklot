@@ -1,5 +1,103 @@
 package github
 
+import "time"
+
+// Installation represents one installation of the GitHub App
+type Installation struct {
+	// ID identifies the installation, and is what an installation token is
+	// minted for
+	ID int64
+
+	// AccountID is the immutable GitHub id of the installation owner.
+	AccountID int64
+
+	// Account is the login of the user or organization that installed the App
+	Account string
+
+	// AccountType is either Organization or User.
+	AccountType string
+
+	// AvatarURL is the public avatar of the installation owner.
+	AvatarURL string
+
+	// Permissions is what this installation has granted, keyed by GitHub's own
+	// name for each - "administration", "issues", "contents" - against the level
+	// granted.
+	//
+	// Read from the installation listing, which already carries it, so knowing
+	// whether the App may do something costs no request. That matters because
+	// the alternative is finding out by being refused: an installation that has
+	// not approved a new permission is the ordinary state during a rollout, and
+	// discovering it one 403 at a time would fill an operator's history with
+	// failures that are really a question nobody has been asked yet.
+	//
+	// Empty means GitHub answered without the field. That is not a legitimate
+	// "granted nothing" - the field is required on the installation object - so
+	// it means the answer was malformed, and Grants says nothing was granted.
+	Permissions map[string]string
+}
+
+// Permission levels that let Smyklot write, as GitHub spells them.
+//
+// Read is not among them and is not named: every other level answers the same
+// way, so a constant for one of them would suggest a list that has to be kept
+// complete.
+const (
+	PermissionWrite = "write"
+
+	// PermissionAdmin is a level GitHub returns for a handful of permissions -
+	// repository and organization projects among them - and never for the four
+	// Smyklot reads, which are only ever read or write. It is accepted anyway,
+	// because a permission added here later may use it and a silent false would
+	// be the wrong direction to be wrong in.
+	PermissionAdmin = "admin"
+)
+
+// Grants reports whether an installation may write through a permission.
+//
+// An installation whose permissions are unknown grants nothing. GitHub marks
+// the field required, so its absence means a malformed or degraded answer
+// rather than an installation that granted none - and proceeding on an answer
+// that could not be read means writing to somebody's repositories on a guess.
+// A 403 is a smaller problem than that.
+func (i Installation) Grants(permission string) bool {
+	switch i.Permissions[permission] {
+	case PermissionWrite, PermissionAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+// Repository identifies a repository an installation can reach
+type Repository struct {
+	// ID is the immutable GitHub repository id.
+	ID int64
+
+	// Owner is the repository owner's login
+	Owner string
+
+	// Name is the repository name
+	Name string
+
+	// FullName is GitHub's canonical owner/name spelling.
+	FullName string
+
+	// Private reports whether repository contents require authentication.
+	Private bool
+
+	// DefaultBranch is the branch GitHub treats as the repository default.
+	DefaultBranch string
+}
+
+// User is one immutable GitHub identity resolved by login.
+type User struct {
+	ID        int64
+	Login     string
+	Name      *string
+	AvatarURL *string
+}
+
 // MergeableState represents the merge state of a PR from GitHub REST API
 type MergeableState string
 
@@ -31,6 +129,9 @@ type PRInfo struct {
 	// Mergeable indicates whether the PR can be merged (no conflicts)
 	Mergeable bool
 
+	// Draft reports whether the pull request is still a draft.
+	Draft bool
+
 	// MergeableState provides detailed merge state (clean, dirty, blocked, unstable, unknown)
 	MergeableState MergeableState
 
@@ -50,72 +151,64 @@ type PRInfo struct {
 	BaseBranch string
 }
 
+// PullRequestState is the live state needed by background reconciliation.
+// Unlike PRInfo it deliberately omits reviews and avoids that extra API call.
+type PullRequestState struct {
+	Number     int
+	Open       bool
+	Merged     bool
+	Draft      bool
+	HeadSHA    string
+	BaseBranch string
+	Labels     []string
+}
+
 // ReactionType represents the type of emoji reaction
 type ReactionType string
 
+// The eight contents GitHub accepts, spelled the way GitHub spells them. What
+// a reaction means to the application putting it there is the application's
+// word, not this package's.
 const (
-	// ReactionSuccess represents success (✅)
-	ReactionSuccess ReactionType = "+1"
+	// ReactionPlusOne is 👍
+	ReactionPlusOne ReactionType = "+1"
 
-	// ReactionError represents error (❌)
-	ReactionError ReactionType = "-1"
+	// ReactionMinusOne is 👎
+	ReactionMinusOne ReactionType = "-1"
 
-	// ReactionWarning represents warning (⚠️)
-	ReactionWarning ReactionType = "confused"
+	// ReactionLaugh is 😄
+	ReactionLaugh ReactionType = "laugh"
 
-	// ReactionEyes represents acknowledgment (👀)
+	// ReactionConfused is 😕
+	ReactionConfused ReactionType = "confused"
+
+	// ReactionHeart is ❤️
+	ReactionHeart ReactionType = "heart"
+
+	// ReactionHooray is 🎉
+	ReactionHooray ReactionType = "hooray"
+
+	// ReactionRocket is 🚀
+	ReactionRocket ReactionType = "rocket"
+
+	// ReactionEyes is 👀
 	ReactionEyes ReactionType = "eyes"
-
-	// ReactionApprove represents approve command (👍)
-	ReactionApprove ReactionType = "+1"
-
-	// ReactionMerge represents merge command (🚀)
-	ReactionMerge ReactionType = "rocket"
-
-	// ReactionCleanup represents cleanup command (❤️)
-	ReactionCleanup ReactionType = "heart"
-
-	// ReactionPendingCI represents waiting for CI (👀)
-	ReactionPendingCI ReactionType = "eyes"
 )
 
 // Reaction represents a reaction on a comment
 type Reaction struct {
+	// ID is GitHub's immutable identifier for this reaction.
+	ID int64
+
 	// Type is the reaction type
 	Type ReactionType
 
 	// User is the username of the user who reacted
 	User string
+
+	// CreatedAt is GitHub's durable authorization timestamp for the reaction.
+	CreatedAt time.Time
 }
-
-const (
-	// LabelReactionApprove indicates PR was approved via 👍 reaction
-	LabelReactionApprove = "smyklot:reaction-approve"
-
-	// LabelReactionMerge indicates PR was merged via 🚀 reaction
-	LabelReactionMerge = "smyklot:reaction-merge"
-
-	// LabelReactionCleanup indicates cleanup was triggered via ❤️ reaction
-	LabelReactionCleanup = "smyklot:reaction-cleanup"
-
-	// LabelPendingCIMerge indicates PR is waiting for CI before merge
-	LabelPendingCIMerge = "smyklot:pending-ci"
-
-	// LabelPendingCISquash indicates PR is waiting for CI before squash merge
-	LabelPendingCISquash = "smyklot:pending-ci:squash"
-
-	// LabelPendingCIRebase indicates PR is waiting for CI before rebase merge
-	LabelPendingCIRebase = "smyklot:pending-ci:rebase"
-
-	// LabelPendingCIMergeRequired indicates PR is waiting for required CI only before merge
-	LabelPendingCIMergeRequired = "smyklot:pending-ci:required"
-
-	// LabelPendingCISquashRequired indicates PR is waiting for required CI only before squash merge
-	LabelPendingCISquashRequired = "smyklot:pending-ci:squash:required"
-
-	// LabelPendingCIRebaseRequired indicates PR is waiting for required CI only before rebase merge
-	LabelPendingCIRebaseRequired = "smyklot:pending-ci:rebase:required"
-)
 
 // MergeMethod represents the type of merge method to use
 type MergeMethod string
@@ -131,8 +224,29 @@ const (
 	MergeMethodRebase MergeMethod = "rebase"
 )
 
-// CheckStatus represents the status of CI checks on a commit
+// CIState is the exhaustive aggregate state of CI for one commit.
+type CIState string
+
+const (
+	CIStatePassing       CIState = "passing"
+	CIStatePending       CIState = "pending"
+	CIStateFailing       CIState = "failing"
+	CIStateNoChecks      CIState = "no_checks"
+	CIStateIndeterminate CIState = "indeterminate"
+)
+
+// RequiredCheck identifies a branch-protection requirement. AppID is nil for
+// legacy contexts that any status producer may satisfy.
+type RequiredCheck struct {
+	Context string
+	AppID   *int64
+}
+
+// CheckStatus represents the aggregate state of Checks and commit statuses.
 type CheckStatus struct {
+	// State is the authoritative aggregate state.
+	State CIState
+
 	// AllPassing indicates all checks have completed successfully
 	AllPassing bool
 
@@ -156,4 +270,10 @@ type CheckStatus struct {
 
 	// InProgress is the number of check runs still running
 	InProgress int
+
+	// Unknown is the number of contexts whose state Smyklot cannot classify.
+	Unknown int
+
+	// Missing is the number of required contexts not reported for this head.
+	Missing int
 }

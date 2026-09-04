@@ -161,6 +161,29 @@ func NewNoCodeownersFile() *Feedback {
 	}
 }
 
+// NewRepoConfigInvalid creates error feedback for an unparseable repository
+// configuration file
+//
+// The bot refuses to act rather than falling back to defaults: the file is
+// where a repository narrows what commands are allowed, so ignoring it would
+// quietly restore commands the repository had turned off. Saying so on the pull
+// request is the only signal whoever owns the file will see.
+func NewRepoConfigInvalid(reason string) *Feedback {
+	message := fmt.Sprintf(
+		"❌ **Invalid Configuration File**\n\n"+
+			"`.github/smyklot.yaml` on the default branch could not be parsed, "+
+			"so no command will run in this repository until it is fixed.\n\n"+
+			"**Reason:** %s",
+		reason,
+	)
+
+	return &Feedback{
+		Type:    Error,
+		Emoji:   "❌",
+		Message: message,
+	}
+}
+
 // NewApprovalSuccess creates success feedback for a successful PR approval
 //
 // The message acknowledges the approver and indicates the approval was successful
@@ -416,14 +439,18 @@ func NewReactionMergeSuccess(author string, quietReactions bool) *Feedback {
 
 // NewCommentDeleted creates feedback for when a command comment was deleted
 //
-// The message informs that the user deleted the comment that triggered actions
-func NewCommentDeleted(author string, commentID int) *Feedback {
+// The message lists the commands the deleted comment carried. It says
+// "contained" rather than "triggered" because the bot may never have acted on
+// them - an unauthorized author or a merge still waiting on CI both leave a
+// command comment that changed nothing.
+func NewCommentDeleted(author string, commentID int, deletedCommands []string) *Feedback {
 	message := fmt.Sprintf(
 		"⚠️ **Command Comment Deleted**\n\n"+
-			"User `%s` deleted comment #%d that triggered bot actions.\n\n"+
+			"User `%s` deleted comment #%d, which contained: %s\n\n"+
 			"If this was unintentional, you can re-post the command.",
 		author,
 		commentID,
+		formatCommandList(deletedCommands),
 	)
 
 	return &Feedback{
@@ -511,6 +538,19 @@ func NewPendingCIFailed(reason string) *Feedback {
 	}
 }
 
+// NewPendingCICancelled explains a non-CI safety cancellation.
+func NewPendingCICancelled(reason string) *Feedback {
+	message := fmt.Sprintf(
+		"⚠️ **Pending Merge Cancelled**\n\n"+
+			"The pending merge has been cancelled.\n\n"+
+			"**Reason:** %s\n\n"+
+			"Mark the pull request ready and issue a new merge command to continue.",
+		reason,
+	)
+
+	return &Feedback{Type: Warning, Emoji: warningEmoji, Message: message}
+}
+
 // NewHelp creates help feedback with usage instructions
 func NewHelp() *Feedback {
 	message := "ℹ️ **Smyklot Bot - Help**\n\n" +
@@ -585,6 +625,17 @@ func formatApproverList(approvers []string) string {
 	}
 
 	return strings.TrimSuffix(builder.String(), "\n")
+}
+
+// formatCommandList formats command names as an inline, comma-separated list
+// of code spans (e.g. "`approve`, `merge`")
+func formatCommandList(commandNames []string) string {
+	quoted := make([]string, 0, len(commandNames))
+	for _, name := range commandNames {
+		quoted = append(quoted, fmt.Sprintf("`%s`", name))
+	}
+
+	return strings.Join(quoted, ", ")
 }
 
 // CombineFeedback combines multiple feedback items into a single feedback

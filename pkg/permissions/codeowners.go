@@ -61,13 +61,15 @@ func parseEntries(scanner *bufio.Scanner) []CodeownersEntry {
 //   - Owners start with @ (e.g., @username, @org/team)
 //
 // Example:
-//   # Global owners
-//   * @global-owner1 @global-owner2
-//   /docs/ @doc-team
-//   *.js @js-team
 //
-// For Phase 1, this parser focuses on global owners (pattern: *)
-// Path-specific ownership will be implemented in later phases
+//	# Global owners
+//	* @global-owner1 @global-owner2
+//	/docs/ @doc-team
+//	*.js @js-team
+//
+// Only the global * pattern is acted on. Lines naming a path parse without
+// error and are then ignored, so a repository can keep them for GitHub's own
+// review assignment without changing who this bot lets approve.
 func ParseCodeownersContent(content string) (*CodeownersFile, error) {
 	if content == "" {
 		return nil, ErrEmptyContent
@@ -95,13 +97,15 @@ func ParseCodeownersContent(content string) (*CodeownersFile, error) {
 //   - Owners start with @ (e.g., @username, @org/team)
 //
 // Example:
-//   # Global owners
-//   * @global-owner1 @global-owner2
-//   /docs/ @doc-team
-//   *.js @js-team
 //
-// For Phase 1, this parser focuses on global owners (pattern: *)
-// Path-specific ownership will be implemented in later phases
+//	# Global owners
+//	* @global-owner1 @global-owner2
+//	/docs/ @doc-team
+//	*.js @js-team
+//
+// Only the global * pattern is acted on. Lines naming a path parse without
+// error and are then ignored, so a repository can keep them for GitHub's own
+// review assignment without changing who this bot lets approve.
 func ParseCodeownersFile(filePath string) (*CodeownersFile, error) {
 	if filePath == "" {
 		return nil, ErrEmptyFilePath

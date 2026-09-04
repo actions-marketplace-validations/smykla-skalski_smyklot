@@ -1,0 +1,164 @@
+/**
+ * Where the sidebar draws the row it has selected.
+ *
+ * The thumb is an absolutely positioned box measured onto the current row from script, so where
+ * the selection is drawn is a pair of pixel values written by hand rather than a rule in the
+ * stylesheet - the same shape of problem as the segmented control's indicator, and unreachable by
+ * a stylesheet test for the same reason.
+ *
+ * The measurement used to be `offsetTop` and `offsetHeight`, which are rounded to whole pixels,
+ * and the thumb was drawn a fifth of a pixel above every row it was supposed to be the ground of.
+ * Every distance in the tree is a whole number today - the leading scale is in px and the rows
+ * are a declared 34 - so a placement measured the rounded way would AGREE with this file, and no
+ * arrangement of the live sidebar can tell the two apart. The rounding is refused at the source
+ * instead, and what is measured here is that the thumb lands on its row at rest and after it
+ * travels.
+ */
+import { readFileSync } from 'node:fs';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Page } from 'playwright-core';
+
+import { SETTLE_MS, startPanel, visit, type Panel } from './harness';
+
+/** A box in the viewport's coordinates, which is the only ruler both of these share. */
+interface Box {
+  top: number;
+  height: number;
+}
+
+interface Selection {
+  thumb: Box;
+  row: Box;
+  label: string;
+  /** Whether the sidebar is drawing its full rows, which is what puts them on a fraction. */
+  expanded: boolean;
+}
+
+const VIEWPORT = { width: 1500, height: 950 };
+
+let page: Page;
+let panel: Panel;
+let landed: Selection;
+let moved: Selection;
+let requestParentSelected: boolean;
+let queueSelectionCount: number;
+
+beforeAll(async () => {
+  panel = await startPanel();
+  page = await panel.browser.newPage({ viewport: VIEWPORT });
+  await visit(page, `${panel.origin}/root/access/users`);
+  await page
+    .locator('.tree .tree-row.is-active')
+    .first()
+    .waitFor({ state: 'visible', timeout: 30_000 });
+  await expand(page);
+  await rest(page);
+  landed = await measure(page);
+
+  /* Then somewhere else, because arriving and travelling are two different writes of the same two
+     values and only one of them is covered by the state the page loads in. */
+  // Slept through rather than waited out: the thumb travels on a transition, and no request
+  // reports the end of one.
+  await page.locator('.tree a.tree-row:not(.is-active)').first().click();
+  await rest(page);
+  moved = await measure(page);
+
+  await visit(page, `${panel.origin}/root/queue/request/pending-ci-0`);
+  const requestParent = page.locator('.tree-row.is-active');
+  await requestParent.waitFor({ state: 'visible' });
+  requestParentSelected = (await requestParent.textContent())?.includes('Queue') === true;
+
+  await visit(page, `${panel.origin}/root/queue`);
+  queueSelectionCount = await page.locator('.tree [aria-current="page"]').count();
+}, 60_000);
+
+afterAll(async () => {
+  await panel?.close();
+});
+
+/**
+ * The sidebar as this is written about it: expanded. A collapsed strip draws icon rows on its own
+ * grid, and the trimmed header is the whole reason the full rows stand on a fraction - so the
+ * precondition below would measure a whole pixel and the two checks after it would pass over
+ * nothing. Expanded through the sidebar's own fold control rather than by seeding the preference:
+ * what a reader does to see this is what the test should do.
+ */
+async function expand(target: Page): Promise<void> {
+  const trigger = target.locator('.side-fold');
+  if ((await trigger.getAttribute('aria-expanded')) === 'true') return;
+  await trigger.click();
+  // The sidebar opens on a transition, and the thumb is measured onto a row that is still moving.
+  await target.waitForTimeout(SETTLE_MS);
+}
+
+/**
+ * The pointer off the tree, and the transitions done.
+ *
+ * A selected row LIFTS its ground a pixel under the pointer, and a click leaves the
+ * pointer exactly there - so a reading taken straight after one measures the hover
+ * state and reports the thumb a pixel above its row. Where the selection rests is
+ * what this file is about.
+ */
+async function rest(target: Page): Promise<void> {
+  await target.mouse.move(VIEWPORT.width - 4, VIEWPORT.height - 4);
+  await target.waitForTimeout(SETTLE_MS);
+}
+
+async function measure(target: Page): Promise<Selection> {
+  return target.evaluate(() => {
+    const box = (element: Element | null): { top: number; height: number } => {
+      if (element === null) return { top: -1, height: -1 };
+      const rect = element.getBoundingClientRect();
+
+      return { top: rect.top, height: rect.height };
+    };
+    const row = document.querySelector('.tree .tree-row.is-active');
+
+    return {
+      thumb: box(document.querySelector('.tree .nav-thumb')),
+      row: box(row),
+      label: row?.querySelector('.t')?.textContent ?? '',
+      expanded: document.querySelector('.app-shell.sidebar-collapsed') === null,
+    };
+  });
+}
+
+describe("the Root console sidebar's selection", () => {
+  it('measures the row it grounds, never the rounded offset of one', () => {
+    // The precondition, stated rather than assumed: the sidebar has to be drawing full rows at
+    // all, which a collapsed one is not.
+    expect(landed.expanded, 'the sidebar is collapsed, so it draws no full rows').toBe(true);
+    // And the rounding itself, refused where it was written - the live tree is all whole numbers
+    // now, so nothing measurable in the browser can tell a rect from an offset.
+    const source = readFileSync(
+      new URL('../../src/lib/components/Sidebar.svelte', import.meta.url),
+      'utf8',
+    );
+    const placement = /async function place\([\s\S]*?\n {4}\}/u.exec(source)?.[0] ?? '';
+    expect(placement).toContain('getBoundingClientRect');
+    expect(placement).not.toMatch(/\boffsetTop\b|\boffsetHeight\b/u);
+  });
+
+  it('grounds the row it arrives on, exactly', () => {
+    expect(landed.label, 'nothing was selected when the console loaded').not.toBe('');
+    // Under a twentieth of a pixel, not the one pixel a placement test would allow: whole-pixel
+    // rounding is the defect, so a tolerance of a pixel is a tolerance of the defect.
+    expect(Math.abs(landed.thumb.top - landed.row.top)).toBeLessThan(0.05);
+    expect(Math.abs(landed.thumb.height - landed.row.height)).toBeLessThan(0.05);
+  });
+
+  it('grounds the row it travels to, exactly', () => {
+    expect(moved.label, 'choosing another section selected nothing').not.toBe(landed.label);
+    expect(Math.abs(moved.thumb.top - moved.row.top)).toBeLessThan(0.05);
+    expect(Math.abs(moved.thumb.height - moved.row.height)).toBeLessThan(0.05);
+  });
+
+  it('selects the parent row while a detail route has no selected child', () => {
+    expect(requestParentSelected).toBe(true);
+  });
+
+  it('draws one Queue selection instead of a selected parent and legacy child', () => {
+    expect(queueSelectionCount).toBe(1);
+  });
+});

@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 
@@ -45,8 +46,63 @@ var _ = Describe("GitHub Client [Unit]", func() {
 		})
 	})
 
+	Describe("GetUser", func() {
+		It("resolves the canonical login and stable identity", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.Method).To(Equal(http.MethodGet))
+				Expect(r.URL.Path).To(Equal("/users/SomeUser"))
+				Expect(r.Header.Get("Authorization")).To(Equal("token test-token"))
+				name := "Some User"
+				avatar := "https://avatars.example/42"
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": 42, "login": "someuser", "name": name, "avatar_url": avatar,
+				})
+			}))
+			client, err := github.NewClient("test-token", server.URL)
+			Expect(err).NotTo(HaveOccurred())
+
+			user, err := client.GetUser(context.Background(), " SomeUser ")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(user.ID).To(Equal(int64(42)))
+			Expect(user.Login).To(Equal("someuser"))
+			Expect(user.Name).To(HaveValue(Equal("Some User")))
+			Expect(user.AvatarURL).To(HaveValue(Equal("https://avatars.example/42")))
+		})
+	})
+
 	Describe("AddReaction", func() {
 		Context("when adding reaction to a comment", func() {
+			It("returns and removes the exact durable reaction", func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.Method {
+					case http.MethodPost:
+						_ = json.NewEncoder(w).Encode(map[string]interface{}{
+							"id": 77, "content": "hooray", "created_at": "2026-08-25T08:04:01Z",
+							"user": map[string]any{"login": "smyklot[bot]"},
+						})
+					case http.MethodDelete:
+						Expect(r.URL.Path).To(Equal(
+							"/repos/owner/repo/issues/comments/123/reactions/77",
+						))
+						w.WriteHeader(http.StatusNoContent)
+					default:
+						Fail("unexpected request method: " + r.Method)
+					}
+				}))
+				client, err := github.NewClient("test-token", server.URL)
+				Expect(err).NotTo(HaveOccurred())
+
+				reaction, err := client.AddReactionState(
+					context.Background(), "owner", "repo", 123, github.ReactionHooray,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(reaction.ID).To(Equal(int64(77)))
+				Expect(reaction.CreatedAt.IsZero()).To(BeFalse())
+				Expect(client.RemoveCommentReaction(
+					context.Background(), "owner", "repo", 123, reaction.ID,
+				)).To(Succeed())
+			})
+
 			It("should add success reaction", func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					Expect(r.Method).To(Equal("POST"))
@@ -68,7 +124,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionPlusOne)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -88,7 +144,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 456, github.ReactionError)
+				err = client.AddReaction(context.Background(), "owner", "repo", 456, github.ReactionMinusOne)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -103,10 +159,76 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				client, err := github.NewClient("test-token", server.URL)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 123, github.ReactionPlusOne)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("401"))
 			})
+		})
+	})
+
+	Describe("RemoveReactionByUser", func() {
+		It("preserves matching reactions from other users", func() {
+			var deleted []string
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					Expect(r.URL.Path).To(Equal("/repos/owner/repo/issues/comments/123/reactions"))
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 1, "content": "eyes", "user": map[string]any{"login": "smyklot[bot]"}},
+						{"id": 2, "content": "eyes", "user": map[string]any{"login": "reviewer"}},
+						{"id": 3, "content": "+1", "user": map[string]any{"login": "smyklot[bot]"}},
+					})
+				case http.MethodDelete:
+					deleted = append(deleted, r.URL.Path)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					Fail("unexpected request method: " + r.Method)
+				}
+			}))
+			client, err := github.NewClient("test-token", server.URL)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.RemoveReactionByUser(
+				context.Background(), "owner", "repo", 123,
+				github.ReactionEyes, "smyklot[bot]",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(Equal([]string{
+				"/repos/owner/repo/issues/comments/123/reactions/1",
+			}))
+		})
+	})
+
+	// GitHub answers thirty comments and the bot's own are the newest, so an
+	// unpaginated read finds none of them on exactly the busy pull requests
+	// where cleanup and the pending-CI reaction swap have work to do
+	Describe("GetPRComments", func() {
+		It("reads past the first page", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.URL.Path).To(Equal("/repos/owner/repo/issues/7/comments"))
+
+				if r.URL.Query().Get("page") == "2" {
+					_ = json.NewEncoder(w).Encode([]map[string]any{
+						{"id": 2, "body": "second", "user": map[string]any{"login": "smyklot[bot]"}},
+					})
+
+					return
+				}
+
+				w.Header().Set("Link",
+					fmt.Sprintf(`<%s/repos/owner/repo/issues/7/comments?page=2>; rel="next"`, server.URL))
+				_ = json.NewEncoder(w).Encode([]map[string]any{
+					{"id": 1, "body": "first", "user": map[string]any{"login": "reviewer"}},
+				})
+			}))
+			client, err := github.NewClient("test-token", server.URL)
+			Expect(err).NotTo(HaveOccurred())
+
+			comments, err := client.GetPRComments(context.Background(), "owner", "repo", 7)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(comments).To(HaveLen(2))
+			Expect(comments[1].ID).To(Equal(int64(2)))
+			Expect(comments[1].User.Login).To(Equal("smyklot[bot]"))
 		})
 	})
 
@@ -260,6 +382,57 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				err = client.MergePR(context.Background(), "owner", "repo", 1, github.MergeMethodMerge)
 				Expect(err).To(HaveOccurred())
 			})
+
+			It("should reject a successful response that did not merge", func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"merged":  false,
+						"message": "Head branch was modified",
+					})
+				}))
+
+				client, err := github.NewClient("test-token", server.URL)
+				Expect(err).NotTo(HaveOccurred())
+				err = client.MergePR(context.Background(), "owner", "repo", 1, github.MergeMethodMerge)
+				Expect(err).To(MatchError(ContainSubstring("Head branch was modified")))
+			})
+
+			It("should send the expected head SHA for a checked merge", func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var body map[string]interface{}
+					Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+					Expect(body).To(Equal(map[string]interface{}{
+						"merge_method": "squash",
+						"sha":          "abc123",
+					}))
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"merged": true})
+				}))
+
+				client, err := github.NewClient("test-token", server.URL)
+				Expect(err).NotTo(HaveOccurred())
+				err = client.MergePRAtHead(
+					context.Background(), "owner", "repo", 1, github.MergeMethodSquash, "abc123",
+				)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("should not replay an exact-head merge after a server error", func() {
+				attempts := 0
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					attempts++
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"message":"server error"}`))
+				}))
+
+				client, err := github.NewClient("test-token", server.URL)
+				Expect(err).NotTo(HaveOccurred())
+				err = client.MergePRAtHead(
+					context.Background(), "owner", "repo", 1, github.MergeMethodSquash, "abc123",
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(attempts).To(Equal(1))
+			})
 		})
 	})
 
@@ -280,6 +453,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 							"number":    1,
 							"state":     "open",
 							"mergeable": true,
+							"draft":     true,
 							"title":     "Test PR",
 							"body":      "Test description",
 							"user": map[string]interface{}{
@@ -310,6 +484,7 @@ var _ = Describe("GitHub Client [Unit]", func() {
 				Expect(info.Number).To(Equal(1))
 				Expect(info.State).To(Equal("open"))
 				Expect(info.Mergeable).To(BeTrue())
+				Expect(info.Draft).To(BeTrue())
 				Expect(info.Title).To(Equal("Test PR"))
 				Expect(info.Author).To(Equal("testuser"))
 				Expect(info.ApprovedBy).To(ConsistOf("reviewer1"))
@@ -480,189 +655,6 @@ var _ = Describe("GitHub Client [Unit]", func() {
 		})
 	})
 
-	Describe("GetCheckStatus", func() {
-		Context("when getting CI check status", func() {
-			It("should return all passing when all checks succeed", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					Expect(r.Method).To(Equal("GET"))
-					Expect(r.URL.Path).To(Equal("/repos/owner/repo/commits/abc123/check-runs"))
-					Expect(r.Header.Get("Authorization")).To(Equal("token test-token"))
-
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 3,
-						"check_runs": []map[string]interface{}{
-							{"status": "completed", "conclusion": "success"},
-							{"status": "completed", "conclusion": "success"},
-							{"status": "completed", "conclusion": "skipped"},
-						},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status).NotTo(BeNil())
-				Expect(status.AllPassing).To(BeTrue())
-				Expect(status.Pending).To(BeFalse())
-				Expect(status.Failing).To(BeFalse())
-				Expect(status.Total).To(Equal(3))
-				Expect(status.Passed).To(Equal(3))
-				Expect(status.Failed).To(Equal(0))
-				Expect(status.InProgress).To(Equal(0))
-				Expect(status.Summary).To(Equal("3/3 checks passing"))
-			})
-
-			It("should return pending when checks are in progress", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 4,
-						"check_runs": []map[string]interface{}{
-							{"status": "completed", "conclusion": "success"},
-							{"status": "completed", "conclusion": "success"},
-							{"status": "in_progress", "conclusion": nil},
-							{"status": "queued", "conclusion": nil},
-						},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.AllPassing).To(BeFalse())
-				Expect(status.Pending).To(BeTrue())
-				Expect(status.Failing).To(BeFalse())
-				Expect(status.Total).To(Equal(4))
-				Expect(status.Passed).To(Equal(2))
-				Expect(status.InProgress).To(Equal(2))
-				Expect(status.Summary).To(ContainSubstring("2/4 checks passing"))
-				Expect(status.Summary).To(ContainSubstring("2 in progress"))
-			})
-
-			It("should return failing when checks have failed", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 3,
-						"check_runs": []map[string]interface{}{
-							{"status": "completed", "conclusion": "success"},
-							{"status": "completed", "conclusion": "failure"},
-							{"status": "completed", "conclusion": "cancelled"},
-						},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.AllPassing).To(BeFalse())
-				Expect(status.Pending).To(BeFalse())
-				Expect(status.Failing).To(BeTrue())
-				Expect(status.Total).To(Equal(3))
-				Expect(status.Passed).To(Equal(1))
-				Expect(status.Failed).To(Equal(2))
-				Expect(status.Summary).To(ContainSubstring("1/3 checks passing"))
-				Expect(status.Summary).To(ContainSubstring("2 failed"))
-			})
-
-			It("should handle empty check runs", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 0,
-						"check_runs":  []map[string]interface{}{},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.AllPassing).To(BeFalse())
-				Expect(status.Pending).To(BeFalse())
-				Expect(status.Failing).To(BeFalse())
-				Expect(status.Total).To(Equal(0))
-			})
-
-			It("should handle API errors", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusNotFound)
-					_ = json.NewEncoder(w).Encode(map[string]string{
-						"message": "Not Found",
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				_, err = client.GetCheckStatus(context.Background(), "owner", "repo", "invalid-ref", nil)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("404"))
-			})
-
-			It("should handle all conclusion types correctly", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 8,
-						"check_runs": []map[string]interface{}{
-							{"status": "completed", "conclusion": "success"},
-							{"status": "completed", "conclusion": "skipped"},
-							{"status": "completed", "conclusion": "neutral"},
-							{"status": "completed", "conclusion": "failure"},
-							{"status": "completed", "conclusion": "cancelled"},
-							{"status": "completed", "conclusion": "timed_out"},
-							{"status": "completed", "conclusion": "action_required"},
-							{"status": "in_progress", "conclusion": nil},
-						},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.Passed).To(Equal(3))
-				Expect(status.Failed).To(Equal(4))
-				Expect(status.InProgress).To(Equal(1))
-			})
-
-			It("should handle all status types correctly", func() {
-				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"total_count": 5,
-						"check_runs": []map[string]interface{}{
-							{"status": "completed", "conclusion": "success"},
-							{"status": "queued", "conclusion": nil},
-							{"status": "in_progress", "conclusion": nil},
-							{"status": "pending", "conclusion": nil},
-							{"status": "waiting", "conclusion": nil},
-						},
-					})
-				}))
-
-				client, err := github.NewClient("test-token", server.URL)
-				Expect(err).NotTo(HaveOccurred())
-
-				status, err := client.GetCheckStatus(context.Background(), "owner", "repo", "abc123", nil)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(status.InProgress).To(Equal(4))
-				Expect(status.Passed).To(Equal(1))
-				Expect(status.Pending).To(BeTrue())
-			})
-		})
-	})
-
 	Describe("GetPRHeadRef", func() {
 		Context("when getting PR head ref", func() {
 			It("should return head SHA successfully", func() {
@@ -724,11 +716,19 @@ var _ = Describe("GitHub Client [Unit]", func() {
 	Describe("Error Handling", func() {
 		Context("when handling various error conditions", func() {
 			It("should handle network errors", func() {
-				// Create client with invalid URL
-				client, err := github.NewClient("test-token", "http://invalid-url-that-does-not-exist.local")
+				// An address nothing is listening on, rather than a hostname
+				// nothing resolves: a name that does not exist costs seconds to
+				// establish on a machine with mDNS, and resolves to a landing
+				// page on any network running a wildcard DNS, which would make
+				// this pass for the wrong reason.
+				dead := httptest.NewServer(http.NotFoundHandler())
+				address := dead.URL
+				dead.Close()
+
+				client, err := github.NewClient("test-token", address)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = client.AddReaction(context.Background(), "owner", "repo", 1, github.ReactionSuccess)
+				err = client.AddReaction(context.Background(), "owner", "repo", 1, github.ReactionPlusOne)
 				Expect(err).To(HaveOccurred())
 			})
 

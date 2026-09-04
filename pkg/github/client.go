@@ -1,39 +1,74 @@
-// Package github provides a GitHub API client for Smyklot operations.
+// Package github is a GitHub API client over REST v3 and GraphQL.
 //
-// It supports PR operations (approve, merge, info), comment posting, and
-// emoji reactions through the GitHub REST API v3.
+// It knows GitHub and nothing about the application calling it; depguard
+// denies it every other package in this module.
 package github
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	gogithub "github.com/google/go-github/v90/github"
 )
 
 const (
-	defaultBaseURL        = "https://api.github.com"
-	userAgent             = "smyklot-github-app"
-	defaultTimeout        = 30 * time.Second
-	maxIdleConns          = 100
-	maxIdleConnsPerHost   = 10
-	idleConnTimeout       = 90 * time.Second
-	maxRetries            = 3
-	maxCodeownersSize     = 1024 * 1024 // 1MB
-	maxCommentBodyLength  = 10000       // 10KB
+	defaultBaseURL      = "https://api.github.com"
+	userAgent           = "smyklot-github-app"
+	maxIdleConns        = 100
+	maxIdleConnsPerHost = 10
+	idleConnTimeout     = 90 * time.Second
+	maxCodeownersSize   = 1024 * 1024 // 1MB
+
+	// schemeToken authenticates as a user or an App installation
+	schemeToken = "token"
+
+	// schemeBearer authenticates as the App itself, with a JWT. GitHub rejects
+	// the "token" scheme on app-level endpoints such as GET /app/installations
+	schemeBearer = "Bearer"
+
+	// pageSize is the maximum GitHub allows on the paginated endpoints this
+	// client reads
+	pageSize = 100
+
+	// maxPages bounds a pagination loop so a misbehaving endpoint cannot spin
+	// forever. At 100 items per page this covers GitHub's documented
+	// 100,000-repository organization and account limit. Reaching the bound
+	// without proving the snapshot complete returns an error.
+	maxPages = 1000
 )
 
+// sharedTransport is the connection pool every client draws on.
+//
+// A Transport is safe for concurrent use and owns the keep-alive pool, so one
+// per process means a client built for a single call reuses a connection
+// somebody else opened. A Transport per client would hand every short-lived
+// client an empty pool to fill and then abandon, and the abandoned one holds
+// its idle connections until they time out on their own.
+var sharedTransport = &http.Transport{
+	MaxIdleConns:        maxIdleConns,
+	MaxIdleConnsPerHost: maxIdleConnsPerHost,
+	IdleConnTimeout:     idleConnTimeout,
+}
+
 // Client is a GitHub API client
+//
+// The exported surface is the whole contract: nothing outside this package
+// names go-github, and a depguard rule in .golangci.yml keeps it that way. That
+// is what let the transport underneath change without touching the hundred call
+// sites above it, and what keeps a second client from growing back one
+// convenient import at a time.
 type Client struct {
 	httpClient *http.Client
+	gh         *gogithub.Client
 	token      string
 	baseURL    string
+	authScheme string
 }
 
 // NewClient creates a new GitHub API client
@@ -41,6 +76,19 @@ type Client struct {
 // The token parameter is required and must not be empty. The baseURL parameter
 // is optional; if empty, the default GitHub API URL will be used.
 func NewClient(token, baseURL string) (*Client, error) {
+	return newClient(token, baseURL, schemeToken)
+}
+
+// NewAppClient creates a client authenticated as the GitHub App itself.
+//
+// The jwt parameter is a GitHub App JWT, not an installation token. Use this
+// only for app-level endpoints such as ListInstallations; every repository
+// operation needs an installation token and NewClient.
+func NewAppClient(jwt, baseURL string) (*Client, error) {
+	return newClient(jwt, baseURL, schemeBearer)
+}
+
+func newClient(token, baseURL, authScheme string) (*Client, error) {
 	if token == "" {
 		return nil, ErrEmptyToken
 	}
@@ -49,83 +97,37 @@ func NewClient(token, baseURL string) (*Client, error) {
 		baseURL = defaultBaseURL
 	}
 
-	return &Client{
-		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        maxIdleConns,
-				MaxIdleConnsPerHost: maxIdleConnsPerHost,
-				IdleConnTimeout:     idleConnTimeout,
-			},
+	// Every path this client builds starts with a slash, so a trailing one
+	// would produce a double slash in the request URL
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	// No Timeout here: it would bound the whole RoundTrip, and retry now lives
+	// inside the transport. The deadline is applied per attempt instead, in
+	// retryTransport.attempt.
+	httpClient := &http.Client{
+		Transport: authTransport{
+			base: retryTransport{base: sharedTransport},
+
+			scheme: authScheme,
+			token:  token,
 		},
-		token:   token,
-		baseURL: baseURL,
+	}
+
+	gh, err := newGoGitHub(httpClient, baseURL)
+	if err != nil {
+		return nil, NewAPIError(ErrAPIRequest, 0, "", "", err)
+	}
+
+	return &Client{
+		httpClient: httpClient,
+		gh:         gh,
+		token:      token,
+		baseURL:    baseURL,
+		authScheme: authScheme,
 	}, nil
 }
 
-// AddReaction adds an emoji reaction to a comment
-//
-// The reaction parameter should be one of the ReactionType constants
-// (ReactionSuccess, ReactionError, ReactionWarning, ReactionEyes).
-func (c *Client) AddReaction(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-	reaction ReactionType,
-) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID)
-
-	body := map[string]string{
-		"content": string(reaction),
-	}
-
-	_, err := c.makeRequest(ctx, "POST", path, body)
-	return err
-}
-
-// RemoveReaction removes an emoji reaction from a comment
-//
-// The reaction parameter should be one of the ReactionType constants.
-// This retrieves all reactions on the comment and deletes matching ones.
-func (c *Client) RemoveReaction(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-	reaction ReactionType,
-) error {
-	// First, get all reactions on the comment
-	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-
-	var reactions []map[string]interface{}
-	if err := json.Unmarshal(data, &reactions); err != nil {
-		return NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Find and delete matching reactions
-	for _, r := range reactions {
-		if content, ok := r["content"].(string); ok && content == string(reaction) {
-			if id, ok := r["id"].(float64); ok {
-				deletePath := fmt.Sprintf(
-					"/repos/%s/%s/issues/comments/%d/reactions/%d",
-					owner,
-					repo,
-					commentID,
-					int(id),
-				)
-				if _, err := c.makeRequest(ctx, "DELETE", deletePath, nil); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
+// Reaction operations live in reactions.go.
 
 // PostComment posts a comment on a pull request
 //
@@ -137,179 +139,14 @@ func (c *Client) PostComment(ctx context.Context, owner, repo string, prNumber i
 
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
 
-	payload := map[string]string{
-		"body": body,
-	}
+	_, _, err := c.gh.Issues.CreateComment(ctx, owner, repo, prNumber, &gogithub.IssueComment{
+		Body: gogithub.Ptr(body),
+	})
 
-	_, err := c.makeRequest(ctx, "POST", path, payload)
-	return err
+	return wrapError(ErrAPIRequest, http.MethodPost, path, err)
 }
 
-// ApprovePR approves a pull request
-//
-// This creates a review with the APPROVE event.
-func (c *Client) ApprovePR(ctx context.Context, owner, repo string, prNumber int) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
-
-	payload := map[string]string{
-		"event": "APPROVE",
-	}
-
-	_, err := c.makeRequestWithRetry(ctx, "POST", path, payload)
-	return err
-}
-
-// DismissReview dismisses all approved reviews by the authenticated user.
-//
-// Deprecated: This method calls GetAuthenticatedUser which fails with GitHub App
-// installation tokens (403 "Resource not accessible by integration").
-// Use DismissReviewByUsername instead.
-func (c *Client) DismissReview(ctx context.Context, owner, repo string, prNumber int) error {
-	username, err := c.GetAuthenticatedUser(ctx)
-	if err != nil {
-		return err
-	}
-
-	return c.DismissReviewByUsername(ctx, owner, repo, prNumber, username)
-}
-
-// DismissReviewByUsername dismisses all approved reviews by the specified username
-//
-// This finds all APPROVED reviews by the specified user and dismisses them.
-// Recommended for GitHub App installations to avoid GET /user permission issues.
-func (c *Client) DismissReviewByUsername(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-	username string,
-) error {
-	reviews, err := c.getPullRequestReviews(ctx, owner, repo, prNumber)
-	if err != nil {
-		return err
-	}
-
-	return c.dismissApprovedReviews(ctx, owner, repo, prNumber, username, reviews)
-}
-
-// GetAuthenticatedUser retrieves the authenticated user's username.
-//
-// Deprecated: This method calls GET /user which fails with GitHub App installation
-// tokens (403 "Resource not accessible by integration"). Use the configured
-// bot username (RuntimeConfig.BotUsername) instead. For GitHub Apps, the username
-// format is "{app-slug}[bot]" (e.g., "smyklot[bot]").
-func (c *Client) GetAuthenticatedUser(ctx context.Context) (string, error) {
-	userPath := "/user"
-	userData, err := c.makeRequest(ctx, "GET", userPath, nil)
-	if err != nil {
-		return "", err
-	}
-
-	var user map[string]interface{}
-	if err := json.Unmarshal(userData, &user); err != nil {
-		return "", NewAPIError(ErrResponseParse, 0, "GET", userPath, err)
-	}
-
-	username, ok := user["login"].(string)
-	if !ok {
-		return "", NewAPIError(ErrResponseParse, 0, "GET", userPath, fmt.Errorf("unable to get username"))
-	}
-
-	return username, nil
-}
-
-// getPullRequestReviews retrieves all reviews for a pull request
-func (c *Client) getPullRequestReviews(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-) ([]map[string]interface{}, error) {
-	reviewsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
-	reviewsData, err := c.makeRequest(ctx, "GET", reviewsPath, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var reviews []map[string]interface{}
-	if err := json.Unmarshal(reviewsData, &reviews); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", reviewsPath, err)
-	}
-
-	return reviews, nil
-}
-
-// dismissApprovedReviews dismisses all approved reviews by the specified user
-func (c *Client) dismissApprovedReviews(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-	username string,
-	reviews []map[string]interface{},
-) error {
-	for _, review := range reviews {
-		if err := c.dismissReviewIfApprovedByUser(ctx, owner, repo, prNumber, username, review); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// dismissReviewIfApprovedByUser dismisses a review if it's approved by the specified user
-func (c *Client) dismissReviewIfApprovedByUser(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-	username string,
-	review map[string]interface{},
-) error {
-	state, ok := review["state"].(string)
-	if !ok || state != "APPROVED" {
-		return nil
-	}
-
-	reviewUser, ok := review["user"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	reviewUsername, ok := reviewUser["login"].(string)
-	if !ok || reviewUsername != username {
-		return nil
-	}
-
-	reviewID, ok := review["id"].(float64)
-	if !ok {
-		return nil
-	}
-
-	dismissPath := fmt.Sprintf(
-		"/repos/%s/%s/pulls/%d/reviews/%d/dismissals",
-		owner,
-		repo,
-		prNumber,
-		int(reviewID),
-	)
-	payload := map[string]string{
-		"message": "Review dismissed",
-	}
-
-	_, err := c.makeRequest(ctx, "PUT", dismissPath, payload)
-	return err
-}
-
-// MergePR merges a pull request using the specified merge method
-//
-// Supported merge methods: merge, squash, rebase
-func (c *Client) MergePR(ctx context.Context, owner, repo string, prNumber int, method MergeMethod) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, prNumber)
-
-	body := map[string]interface{}{
-		"merge_method": string(method),
-	}
-
-	_, err := c.makeRequestWithRetry(ctx, "PUT", path, body)
-	return err
-}
+// Review operations live in reviews.go.
 
 // EnableAutoMerge enables auto-merge for a pull request
 //
@@ -321,27 +158,9 @@ func (c *Client) EnableAutoMerge(
 	prNumber int,
 	method MergeMethod,
 ) error {
-	// Get PR node ID first (required for GraphQL)
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
-	data, err := c.makeRequest(ctx, "GET", path, nil)
+	nodeID, err := c.pullRequestNodeID(ctx, owner, repo, prNumber)
 	if err != nil {
 		return err
-	}
-
-	var prData map[string]interface{}
-	if err := json.Unmarshal(data, &prData); err != nil {
-		return NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	nodeID, ok := prData["node_id"].(string)
-	if !ok {
-		return NewAPIError(
-			ErrResponseParse,
-			0,
-			"GET",
-			path,
-			fmt.Errorf("no node_id in response"),
-		)
 	}
 
 	// Map merge method to GraphQL enum
@@ -358,160 +177,60 @@ func (c *Client) EnableAutoMerge(
 	}
 
 	// Enable auto-merge via GraphQL (using parameterized query to prevent injection)
-	graphqlPath := "/graphql"
-	query := map[string]interface{}{
-		"query": `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+	const mutation = `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
 			enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
 				clientMutationId
 			}
-		}`,
-		"variables": map[string]interface{}{
-			"pullRequestId": nodeID,
-			"mergeMethod":   gqlMethod,
-		},
-	}
+		}`
 
-	_, err = c.makeRequest(ctx, "POST", graphqlPath, query)
-	return err
+	return c.graphql(ctx, mutation, map[string]any{
+		"pullRequestId": nodeID,
+		"mergeMethod":   gqlMethod,
+	}, nil)
 }
 
-// parseReactions parses raw reaction data into Reaction structs
-func parseReactions(rawReactions []map[string]interface{}) []Reaction {
-	reactions := make([]Reaction, 0, len(rawReactions))
-
-	for _, r := range rawReactions {
-		reaction := Reaction{}
-
-		if content, ok := r["content"].(string); ok {
-			reaction.Type = ReactionType(content)
-		}
-
-		if user, ok := r["user"].(map[string]interface{}); ok {
-			if login, ok := user["login"].(string); ok {
-				reaction.User = login
-			}
-		}
-
-		if reaction.Type != "" && reaction.User != "" {
-			reactions = append(reactions, reaction)
-		}
-	}
-
-	return reactions
-}
-
-// GetPRReactions retrieves all reactions for a pull request (issue)
-//
-// Returns a slice of Reaction structs containing user and reaction type information.
-// This gets reactions on the PR description/body, not on comments.
-func (c *Client) GetPRReactions(ctx context.Context, owner, repo string, prNumber int) ([]Reaction, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, prNumber)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var rawReactions []map[string]interface{}
-	if err := json.Unmarshal(data, &rawReactions); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	return parseReactions(rawReactions), nil
-}
-
-// GetCommentReactions retrieves all reactions for a comment
-//
-// Returns a slice of Reaction structs containing user and reaction type information.
-func (c *Client) GetCommentReactions(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-) ([]Reaction, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var rawReactions []map[string]interface{}
-	if err := json.Unmarshal(data, &rawReactions); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	return parseReactions(rawReactions), nil
-}
-
-// AddLabel adds a label to a pull request
-func (c *Client) AddLabel(ctx context.Context, owner, repo string, prNumber int, label string) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, prNumber)
-
-	payload := map[string][]string{
-		"labels": {label},
-	}
-
-	_, err := c.makeRequest(ctx, "POST", path, payload)
-	return err
-}
-
-// RemoveLabel removes a label from a pull request
-func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, prNumber int, label string) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, prNumber, label)
-
-	_, err := c.makeRequest(ctx, "DELETE", path, nil)
-	return err
-}
-
-// GetLabels retrieves all labels from a pull request
-func (c *Client) GetLabels(ctx context.Context, owner, repo string, prNumber int) ([]string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, prNumber)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var rawLabels []map[string]interface{}
-	if err := json.Unmarshal(data, &rawLabels); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	labels := make([]string, 0, len(rawLabels))
-	for _, l := range rawLabels {
-		if name, ok := l["name"].(string); ok {
-			labels = append(labels, name)
-		}
-	}
-
-	return labels, nil
-}
+// Label operations live in labels.go.
 
 // GetCodeowners fetches the CODEOWNERS file content from the repository
 //
 // Returns the decoded content of .github/CODEOWNERS file.
 // Returns empty string (not error) if file doesn't exist (404).
 func (c *Client) GetCodeowners(ctx context.Context, owner, repo string) (string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/contents/.github/CODEOWNERS", owner, repo)
-
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
+	decoded, err := c.GetFileContent(ctx, owner, repo, ".github/CODEOWNERS", "", maxCodeownersSize)
 	if err != nil {
-		// Return empty string if CODEOWNERS doesn't exist (404)
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			return "", nil
-		}
 		return "", err
 	}
 
-	var response map[string]interface{}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return "", NewAPIError(ErrResponseParse, 0, "GET", path, err)
+	return string(decoded), nil
+}
+
+// GetFileContent reads a file through the contents API, at ref when one is
+// given and from the default branch otherwise. Returns nil content (not an
+// error) when the file does not exist, so callers can treat "no such file" as
+// "nothing configured".
+func (c *Client) GetFileContent(
+	ctx context.Context,
+	owner, repo, filePath, ref string,
+	maxSize int,
+) ([]byte, error) {
+	path := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, filePath)
+	if ref != "" {
+		path += "?" + url.Values{"ref": []string{ref}}.Encode()
+	}
+
+	response, err := doJSON[map[string]interface{}](ctx, c, http.MethodGet, path, nil)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+
+		return nil, err
 	}
 
 	content, ok := response["content"].(string)
 	if !ok {
-		return "", NewAPIError(
+		return nil, NewAPIError(
 			ErrResponseParse,
 			0,
 			"GET",
@@ -523,21 +242,302 @@ func (c *Client) GetCodeowners(ctx context.Context, owner, repo string) (string,
 	// GitHub API returns base64-encoded content, decode it
 	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content, "\n", ""))
 	if err != nil {
-		return "", NewAPIError(ErrResponseParse, 0, "GET", path, err)
+		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
 	}
 
 	// Validate decoded content size to prevent memory exhaustion
-	if len(decoded) > maxCodeownersSize {
-		return "", NewAPIError(
+	if len(decoded) > maxSize {
+		return nil, NewAPIError(
 			ErrResponseParse,
 			0,
 			"GET",
 			path,
-			fmt.Errorf("CODEOWNERS file too large: %d bytes (max: %d)", len(decoded), maxCodeownersSize),
+			fmt.Errorf("%s too large: %d bytes (max: %d)", filePath, len(decoded), maxSize),
 		)
 	}
 
-	return string(decoded), nil
+	return decoded, nil
+}
+
+// DirectoryEntry is one entry the contents API lists for a directory.
+type DirectoryEntry struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+}
+
+// ListRepositoryRoot lists the top level of a repository through the contents
+// API.
+//
+// The 404 is returned rather than read as emptiness, unlike GetFileContent: a
+// repository whose root is absent is one with no commits, which is a different
+// thing from a repository that does not hold a particular file.
+func (c *Client) ListRepositoryRoot(
+	ctx context.Context,
+	owner, repo string,
+) ([]DirectoryEntry, error) {
+	path := fmt.Sprintf("/repos/%s/%s/contents", owner, repo)
+
+	return doJSON[[]DirectoryEntry](ctx, c, http.MethodGet, path, nil)
+}
+
+// Ping reports whether the GitHub API answers and accepts these credentials.
+//
+// Requires a client created with NewAppClient. GET /app is the cheapest call
+// that proves both: it returns the App this JWT belongs to, and it fails on a
+// key that has been revoked or a clock that has drifted too far.
+//
+// GET /rate_limit would look like the better choice, being exempt from the
+// limit it reports, and it is what this used to send. GitHub answers it 401 for
+// an App JWT, whatever the key - only an installation or user token gets a
+// reading. A probe built on it can never report ready.
+//
+// Sent without the retry every other call gets: a readiness probe wants the
+// current answer, not a patient one.
+func (c *Client) Ping(ctx context.Context) error {
+	return doRequest(withoutRetry(ctx), c, http.MethodGet, "/app", nil)
+}
+
+// AppID returns the stable identity of the App represented by this App JWT.
+func (c *Client) AppID(ctx context.Context) (int64, error) {
+	response, err := doJSON[struct {
+		ID int64 `json:"id"`
+	}](ctx, c, http.MethodGet, "/app", nil)
+	if err != nil {
+		return 0, err
+	}
+	if response.ID <= 0 {
+		return 0, NewAPIError(
+			ErrResponseParse,
+			0,
+			http.MethodGet,
+			"/app",
+			errors.New("GitHub App response has no id"),
+		)
+	}
+
+	return response.ID, nil
+}
+
+// GetUser resolves a GitHub login to its stable numeric identity.
+func (c *Client) GetUser(ctx context.Context, login string) (User, error) {
+	login = strings.TrimSpace(login)
+	if login == "" {
+		return User{}, errors.New("GitHub login must not be empty")
+	}
+	path := "/users/" + url.PathEscape(login)
+	response, err := doJSON[struct {
+		ID        int64   `json:"id"`
+		Login     string  `json:"login"`
+		Name      *string `json:"name"`
+		AvatarURL *string `json:"avatar_url"`
+	}](ctx, c, http.MethodGet, path, nil)
+	if err != nil {
+		return User{}, err
+	}
+
+	return User{
+		ID: response.ID, Login: response.Login, Name: response.Name, AvatarURL: response.AvatarURL,
+	}, nil
+}
+
+// ListInstallations retrieves every installation of the GitHub App.
+//
+// Requires a client created with NewAppClient - this endpoint accepts only a
+// GitHub App JWT.
+func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) {
+	raw, err := paginate(ctx, "/app/installations",
+		func(ctx context.Context, opts *gogithub.ListOptions) ([]*gogithub.Installation, *gogithub.Response, error) {
+			return c.gh.Apps.ListInstallations(ctx, opts)
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	installations := make([]Installation, 0, len(raw))
+
+	for _, item := range raw {
+		// A suspended installation cannot mint a token, so polling it only
+		// produces errors
+		if item.SuspendedAt != nil {
+			continue
+		}
+
+		installations = append(installations, Installation{
+			ID:          item.GetID(),
+			AccountID:   item.GetAccount().GetID(),
+			Account:     item.GetAccount().GetLogin(),
+			AccountType: item.GetAccount().GetType(),
+			AvatarURL:   item.GetAccount().GetAvatarURL(),
+			Permissions: installationPermissions(item.GetPermissions()),
+		})
+	}
+
+	return installations, nil
+}
+
+// installationPermissions reads the permissions an installation granted.
+//
+// Only the ones Smyklot acts on. go-github models every permission GitHub has
+// as its own field, and carrying all of them would mean a map nothing reads and
+// a line to maintain each time GitHub adds one.
+func installationPermissions(granted *gogithub.InstallationPermissions) map[string]string {
+	if granted == nil {
+		return nil
+	}
+
+	permissions := map[string]string{}
+	for name, level := range map[string]string{
+		"administration": granted.GetAdministration(),
+		"checks":         granted.GetChecks(),
+		"contents":       granted.GetContents(),
+		"issues":         granted.GetIssues(),
+		"merge_queues":   granted.GetMergeQueues(),
+		"pull_requests":  granted.GetPullRequests(),
+		"statuses":       granted.GetStatuses(),
+
+		// Contents is not enough for one directory. GitHub keeps workflow files
+		// behind this and refuses the push that writes one without it, so an
+		// installation that granted it and had it dropped here would be told
+		// for ever that it had not.
+		rulesetWorkflows: granted.GetWorkflows(),
+	} {
+		if level != "" {
+			permissions[name] = level
+		}
+	}
+
+	return permissions
+}
+
+// ListInstallationRepos retrieves every repository the installation can reach.
+//
+// Requires a client holding an installation token.
+func (c *Client) ListInstallationRepos(ctx context.Context) ([]Repository, error) {
+	var repos []Repository
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/installation/repositories?per_page=%d&page=%d", pageSize, page)
+
+		// Unlike most list endpoints this one wraps its results in an object
+		response, err := doJSON[struct {
+			TotalCount   *int `json:"total_count"`
+			Repositories []struct {
+				ID            int64  `json:"id"`
+				Name          string `json:"name"`
+				FullName      string `json:"full_name"`
+				Private       bool   `json:"private"`
+				DefaultBranch string `json:"default_branch"`
+				Owner         struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repositories"`
+		}](ctx, c, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range response.Repositories {
+			repos = append(repos, Repository{
+				ID:            item.ID,
+				Owner:         item.Owner.Login,
+				Name:          item.Name,
+				FullName:      item.FullName,
+				Private:       item.Private,
+				DefaultBranch: item.DefaultBranch,
+			})
+		}
+
+		if len(response.Repositories) < pageSize {
+			if response.TotalCount != nil && len(repos) < *response.TotalCount {
+				return nil, NewAPIError(
+					ErrIncompletePagination,
+					0,
+					"GET",
+					path,
+					fmt.Errorf("received %d of %d repositories", len(repos), *response.TotalCount),
+				)
+			}
+
+			return repos, nil
+		}
+		if page == maxPages {
+			if response.TotalCount != nil && len(repos) >= *response.TotalCount {
+				return repos, nil
+			}
+
+			return nil, NewAPIError(
+				ErrIncompletePagination,
+				0,
+				"GET",
+				path,
+				fmt.Errorf("repository list still incomplete after %d items", len(repos)),
+			)
+		}
+	}
+
+	return repos, nil
+}
+
+// ListOrganizationAdmins retrieves every organization member with the admin
+// role. Requires an installation token with read-only organization Members
+// permission.
+func (c *Client) ListOrganizationAdmins(ctx context.Context, organization string) ([]User, error) {
+	return c.listOrganizationMembers(ctx, organization, "admin")
+}
+
+// ListOrganizationMembers retrieves every member of the organization, whatever
+// their role. Requires the same read-only organization Members permission as
+// ListOrganizationAdmins.
+//
+// This is the roster the panel completes logins against. GitHub's user search is
+// not one of the endpoints an installation token may call, and the panel holds
+// no other credential - it reads the signed-in person's profile once and throws
+// the OAuth token away rather than keeping one per session. The people who can
+// be added to an installation are its organization's members anyway, so the
+// narrower list is also the more useful one.
+func (c *Client) ListOrganizationMembers(ctx context.Context, organization string) ([]User, error) {
+	return c.listOrganizationMembers(ctx, organization, "")
+}
+
+func (c *Client) listOrganizationMembers(
+	ctx context.Context,
+	organization, role string,
+) ([]User, error) {
+	organization = strings.TrimSpace(organization)
+	if organization == "" {
+		return nil, errors.New("GitHub organization must not be empty")
+	}
+
+	op := fmt.Sprintf("/orgs/%s/members", url.PathEscape(organization))
+
+	raw, err := paginate(ctx, op,
+		func(ctx context.Context, opts *gogithub.ListOptions) ([]*gogithub.User, *gogithub.Response, error) {
+			return c.gh.Organizations.ListMembers(ctx, organization, &gogithub.ListMembersOptions{
+				Role: role, ListOptions: *opts,
+			})
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	members := make([]User, 0, len(raw))
+	for _, item := range raw {
+		members = append(members, User{
+			ID:        item.GetID(),
+			Login:     item.GetLogin(),
+			AvatarURL: stringPointer(item.GetAvatarURL()),
+		})
+	}
+
+	return members, nil
+}
+
+func stringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+
+	return &value
 }
 
 // GetPRInfo retrieves information about a pull request
@@ -547,14 +547,9 @@ func (c *Client) GetCodeowners(ctx context.Context, owner, repo string) (string,
 func (c *Client) GetPRInfo(ctx context.Context, owner, repo string, prNumber int) (*PRInfo, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
 
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
+	response, err := doJSON[map[string]interface{}](ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	var response map[string]interface{}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
 	}
 
 	info := &PRInfo{
@@ -567,6 +562,10 @@ func (c *Client) GetPRInfo(ctx context.Context, owner, repo string, prNumber int
 
 	if mergeable, ok := response["mergeable"].(bool); ok {
 		info.Mergeable = mergeable
+	}
+
+	if draft, ok := response["draft"].(bool); ok {
+		info.Draft = draft
 	}
 
 	if mergeableState, ok := response["mergeable_state"].(string); ok {
@@ -599,238 +598,28 @@ func (c *Client) GetPRInfo(ctx context.Context, owner, repo string, prNumber int
 	return info, nil
 }
 
-// getApprovers retrieves the list of users who have approved a PR
-func (c *Client) getApprovers(ctx context.Context, owner, repo string, prNumber int) []string {
-	reviews, err := c.getPullRequestReviews(ctx, owner, repo, prNumber)
-	if err != nil {
-		// Return empty slice if we can't get reviews
-		return []string{}
-	}
-
-	approvers := make([]string, 0)
-	approverSet := make(map[string]bool)
-
-	for _, review := range reviews {
-		login := c.extractApproverFromReview(review)
-		if login == "" {
-			continue
-		}
-
-		// Use a set to deduplicate approvers
-		if !approverSet[login] {
-			approverSet[login] = true
-			approvers = append(approvers, login)
-		}
-	}
-
-	return approvers
-}
-
-// extractApproverFromReview extracts the approver username from a review
-func (c *Client) extractApproverFromReview(review map[string]interface{}) string {
-	state, ok := review["state"].(string)
-	if !ok || state != "APPROVED" {
-		return ""
-	}
-
-	user, ok := review["user"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	login, ok := user["login"].(string)
-	if !ok {
-		return ""
-	}
-
-	return login
-}
-
-// GetPRComments retrieves all comments on a pull request
-//
-// Returns a slice of comment data including ID, user, and body.
-func (c *Client) GetPRComments(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-) ([]map[string]interface{}, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
-
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var comments []map[string]interface{}
-	if err := json.Unmarshal(data, &comments); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	return comments, nil
-}
-
 // DeleteComment deletes a comment from a pull request
 func (c *Client) DeleteComment(ctx context.Context, owner, repo string, commentID int) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID)
 
-	_, err := c.makeRequest(ctx, "DELETE", path, nil)
-	return err
-}
+	_, err := c.gh.Issues.DeleteComment(ctx, owner, repo, int64(commentID))
 
-// UpdatePendingCIReaction finds comments with the bot's "eyes" reaction and replaces with "+1"
-//
-// This is used after a pending-ci merge succeeds to update the visual feedback.
-// It searches all comments on the PR, finds ones with "eyes" reaction from the bot,
-// removes the "eyes" reaction, and adds a "+1" (thumbs up) reaction.
-func (c *Client) UpdatePendingCIReaction(
-	ctx context.Context,
-	owner, repo string,
-	prNumber int,
-	botUsername string,
-) error {
-	// Get all comments on the PR
-	comments, err := c.GetPRComments(ctx, owner, repo, prNumber)
-	if err != nil {
-		return err
-	}
-
-	// Check each comment for bot's "eyes" reaction
-	for _, comment := range comments {
-		commentIDFloat, ok := comment["id"].(float64)
-		if !ok {
-			continue
-		}
-
-		commentID := int(commentIDFloat)
-
-		// Get reactions for this comment
-		reactions, err := c.GetCommentReactions(ctx, owner, repo, commentID)
-		if err != nil {
-			continue // Skip comments we can't get reactions for
-		}
-
-		// Check if bot has an "eyes" reaction on this comment
-		hasBotEyesReaction := false
-
-		for _, reaction := range reactions {
-			if reaction.User == botUsername && reaction.Type == ReactionPendingCI {
-				hasBotEyesReaction = true
-
-				break
-			}
-		}
-
-		if hasBotEyesReaction {
-			// Remove the "eyes" reaction
-			_ = c.RemoveReactionByUser(ctx, owner, repo, commentID, ReactionPendingCI, botUsername)
-
-			// Add "+1" (thumbs up) reaction
-			_ = c.AddReaction(ctx, owner, repo, commentID, ReactionSuccess)
-		}
-	}
-
-	return nil
-}
-
-// RemoveReactionByUser removes a specific reaction from a comment, but only if it belongs to the specified user
-func (c *Client) RemoveReactionByUser(
-	ctx context.Context,
-	owner, repo string,
-	commentID int,
-	reaction ReactionType,
-	username string,
-) error {
-	// Get all reactions on the comment
-	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-
-	var reactions []map[string]interface{}
-	if err := json.Unmarshal(data, &reactions); err != nil {
-		return NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Find and delete matching reactions from the specific user
-	for _, r := range reactions {
-		content, contentOK := r["content"].(string)
-		user, userOK := r["user"].(map[string]interface{})
-
-		if !contentOK || !userOK {
-			continue
-		}
-
-		login, loginOK := user["login"].(string)
-		if !loginOK {
-			continue
-		}
-
-		if content == string(reaction) && login == username {
-			if id, ok := r["id"].(float64); ok {
-				deletePath := fmt.Sprintf(
-					"/repos/%s/%s/issues/comments/%d/reactions/%d",
-					owner,
-					repo,
-					commentID,
-					int(id),
-				)
-
-				if _, err := c.makeRequest(ctx, "DELETE", deletePath, nil); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// GetOpenPRs retrieves all open pull requests in a repository
-//
-// Returns a slice of PR data including number, title, and state.
-func (c *Client) GetOpenPRs(ctx context.Context, owner, repo string) ([]map[string]interface{}, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
-
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var prs []map[string]interface{}
-	if err := json.Unmarshal(data, &prs); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Filter only open PRs
-	var openPRs []map[string]interface{}
-	for _, pr := range prs {
-		if state, ok := pr["state"].(string); ok && state == "open" {
-			openPRs = append(openPRs, pr)
-		}
-	}
-
-	return openPRs, nil
+	return wrapError(ErrAPIRequest, http.MethodDelete, path, err)
 }
 
 // HasWritePermission checks if the user has write/admin permission to the repository
 func (c *Client) HasWritePermission(ctx context.Context, owner, repo, username string) (bool, error) {
 	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission", owner, repo, username)
 
-	data, err := c.makeRequest(ctx, "GET", path, nil)
+	response, err := doJSON[map[string]interface{}](ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		// If user is not a collaborator, return false (not an error)
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			return false, nil
 		}
-		return false, err
-	}
 
-	var response map[string]interface{}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return false, NewAPIError(ErrResponseParse, 0, "GET", path, err)
+		return false, err
 	}
 
 	permission, ok := response["permission"].(string)
@@ -855,25 +644,21 @@ func (c *Client) HasWritePermission(ctx context.Context, owner, repo, username s
 func (c *Client) IsTeamMember(ctx context.Context, org, teamSlug, username string) (bool, error) {
 	path := fmt.Sprintf("/orgs/%s/teams/%s/memberships/%s", org, teamSlug, username)
 
-	data, err := c.makeRequest(ctx, "GET", path, nil)
+	response, err := doJSON[map[string]interface{}](ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
 			// 404 means user is not a member
-			if apiErr.StatusCode == 404 {
+			if apiErr.StatusCode == http.StatusNotFound {
 				return false, nil
 			}
 			// 403 likely means insufficient permissions (missing read:org or members:read)
-			if apiErr.StatusCode == 403 {
+			if apiErr.StatusCode == http.StatusForbidden {
 				return false, fmt.Errorf("insufficient permissions to check team membership (need read:org or members:read scope): %w", err)
 			}
 		}
-		return false, err
-	}
 
-	var response map[string]interface{}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return false, NewAPIError(ErrResponseParse, 0, "GET", path, err)
+		return false, err
 	}
 
 	// Check if membership is active (not pending)
@@ -891,165 +676,29 @@ func (c *Client) IsTeamMember(ctx context.Context, org, teamSlug, username strin
 	return state == "active", nil
 }
 
-// IsMergeQueueEnabled checks if merge queue is enabled for a branch
+// IsMergeQueueEnabled checks GitHub's branch-specific merge queue rather than
+// inferring one from unrelated branch-protection fields. Merge queues are a
+// GraphQL repository property and are absent when the branch has no queue.
 func (c *Client) IsMergeQueueEnabled(ctx context.Context, owner, repo, branch string) (bool, error) {
-	path := fmt.Sprintf("/repos/%s/%s/branches/%s/protection", owner, repo, branch)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		// 404 means branch protection not enabled
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			return false, nil
+	const query = `query($owner: String!, $repo: String!, $branch: String!) {
+		repository(owner: $owner, name: $repo) {
+			mergeQueue(branch: $branch) { id }
 		}
+	}`
+	var response struct {
+		Repository struct {
+			MergeQueue *struct {
+				ID string `json:"id"`
+			} `json:"mergeQueue"`
+		} `json:"repository"`
+	}
+	if err := c.graphql(ctx, query, map[string]any{
+		"owner": owner, "repo": repo, "branch": branch,
+	}, &response); err != nil {
 		return false, err
 	}
 
-	var protection map[string]interface{}
-	if err := json.Unmarshal(data, &protection); err != nil {
-		return false, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Check if merge queue is enabled
-	if mergeQueue, ok := protection["required_pull_request_reviews"].(map[string]interface{}); ok {
-		if enabled, ok := mergeQueue["require_last_push_approval"].(bool); ok && enabled {
-			return true, nil
-		}
-	}
-
-	// Also check for the merge_queue field directly
-	if mergeQueue, ok := protection["merge_queue"].(map[string]interface{}); ok {
-		if enabled, ok := mergeQueue["enabled"].(bool); ok {
-			return enabled, nil
-		}
-	}
-
-	return false, nil
-}
-
-// GetRequiredStatusChecks retrieves the list of required status check names from branch protection
-//
-// Returns empty slice if branch protection is not enabled or no required checks configured.
-func (c *Client) GetRequiredStatusChecks(ctx context.Context, owner, repo, branch string) ([]string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/branches/%s/protection/required_status_checks", owner, repo, branch)
-
-	data, err := c.makeRequest(ctx, "GET", path, nil)
-	if err != nil {
-		// 404 means branch protection not enabled or no required status checks
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			return []string{}, nil
-		}
-
-		return nil, err
-	}
-
-	var response struct {
-		Contexts []string `json:"contexts"` // Legacy required checks
-		Checks   []struct {
-			Context string `json:"context"` // New required checks format
-		} `json:"checks"`
-	}
-
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Combine both legacy contexts and new checks format
-	required := make([]string, 0, len(response.Contexts)+len(response.Checks))
-	required = append(required, response.Contexts...)
-
-	for _, check := range response.Checks {
-		required = append(required, check.Context)
-	}
-
-	return required, nil
-}
-
-// GetCheckStatus retrieves the CI check status for a commit
-//
-// Returns a CheckStatus struct indicating whether all checks pass, are pending, or failing.
-// Uses the GitHub REST API: GET /repos/{owner}/{repo}/commits/{ref}/check-runs
-//
-// If requiredOnly is specified (non-empty slice), only checks matching those names are considered.
-func (c *Client) GetCheckStatus(
-	ctx context.Context,
-	owner, repo, ref string,
-	requiredOnly []string,
-) (*CheckStatus, error) {
-	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", owner, repo, ref)
-
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var response struct {
-		TotalCount int `json:"total_count"`
-		CheckRuns  []struct {
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-		} `json:"check_runs"`
-	}
-
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, NewAPIError(ErrResponseParse, 0, "GET", path, err)
-	}
-
-	// Build map for quick required check lookup
-	requiredMap := make(map[string]bool)
-	for _, name := range requiredOnly {
-		requiredMap[name] = true
-	}
-
-	status := &CheckStatus{
-		Total: response.TotalCount,
-	}
-
-	// If filtering by required checks only, reset total to count only required
-	if len(requiredOnly) > 0 {
-		status.Total = 0
-	}
-
-	for _, run := range response.CheckRuns {
-		// If filtering by required checks, skip non-required checks
-		if len(requiredOnly) > 0 && !requiredMap[run.Name] {
-			continue
-		}
-
-		// Count this check toward the total if filtering
-		if len(requiredOnly) > 0 {
-			status.Total++
-		}
-
-		switch run.Status {
-		case "completed":
-			switch run.Conclusion {
-			case "success", "skipped", "neutral":
-				status.Passed++
-			case "failure", "cancelled", "timed_out", "action_required":
-				status.Failed++
-			}
-		case "queued", "in_progress", "pending", "waiting":
-			status.InProgress++
-		}
-	}
-
-	status.AllPassing = status.Total > 0 && status.Failed == 0 && status.InProgress == 0
-	status.Pending = status.InProgress > 0
-	status.Failing = status.Failed > 0
-
-	status.Summary = fmt.Sprintf("%d/%d checks passing", status.Passed, status.Total)
-	if status.InProgress > 0 {
-		status.Summary += fmt.Sprintf(", %d in progress", status.InProgress)
-	}
-
-	if status.Failed > 0 {
-		status.Summary += fmt.Sprintf(", %d failed", status.Failed)
-	}
-
-	return status, nil
+	return response.Repository.MergeQueue != nil, nil
 }
 
 // GetPRHeadRef retrieves the head commit SHA of a pull request
@@ -1062,19 +711,11 @@ func (c *Client) GetPRHeadRef(
 ) (string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, prNumber)
 
-	data, err := c.makeRequestWithRetry(ctx, "GET", path, nil)
+	// pullRequestStateResponse already models this shape, and reusing it keeps
+	// one description of a pull request's head rather than two.
+	response, err := doJSON[pullRequestStateResponse](ctx, c, http.MethodGet, path, nil)
 	if err != nil {
 		return "", err
-	}
-
-	var response struct {
-		Head struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	}
-
-	if err := json.Unmarshal(data, &response); err != nil {
-		return "", NewAPIError(ErrResponseParse, 0, "GET", path, err)
 	}
 
 	if response.Head.SHA == "" {
@@ -1088,98 +729,4 @@ func (c *Client) GetPRHeadRef(
 	}
 
 	return response.Head.SHA, nil
-}
-
-// makeRequestWithRetry makes an HTTP request with retry logic and exponential backoff
-func (c *Client) makeRequestWithRetry(
-	ctx context.Context,
-	method, path string,
-	payload interface{},
-) ([]byte, error) {
-	var lastErr error
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		data, err := c.makeRequest(ctx, method, path, payload)
-		if err == nil {
-			return data, nil
-		}
-
-		lastErr = err
-
-		// Check for rate limiting (429) or server errors (5xx)
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			if apiErr.StatusCode == 429 || (apiErr.StatusCode >= 500 && apiErr.StatusCode < 600) {
-				// Exponential backoff: 1s, 2s, 4s
-				backoff := time.Duration(1<<uint(attempt)) * time.Second
-				time.Sleep(backoff)
-				continue
-			}
-		}
-
-		// For other errors, don't retry
-		return nil, err
-	}
-
-	return nil, lastErr
-}
-
-// makeRequest makes an HTTP request to the GitHub API
-func (c *Client) makeRequest(ctx context.Context, method, path string, payload interface{}) ([]byte, error) {
-	url := c.baseURL + path
-
-	var body io.Reader
-	if payload != nil {
-		jsonData, err := json.Marshal(payload)
-		if err != nil {
-			return nil, NewAPIError(ErrAPIRequest, 0, method, path, err)
-		}
-		body = bytes.NewBuffer(jsonData)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return nil, NewAPIError(ErrAPIRequest, 0, method, path, err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("token %s", c.token))
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := c.httpClient.Do(req) //nolint:gosec // URL is constructed from trusted baseURL config + internal path
-	if err != nil {
-		return nil, NewAPIError(ErrAPIRequest, 0, method, path, err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, NewAPIError(ErrAPIRequest, resp.StatusCode, method, path, err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errMsg := fmt.Sprintf("status code %d", resp.StatusCode)
-
-		var errResp map[string]interface{}
-		if json.Unmarshal(data, &errResp) == nil {
-			if message, ok := errResp["message"].(string); ok {
-				errMsg = message
-			}
-		}
-
-		return nil, NewAPIError(
-			ErrAPIRequest,
-			resp.StatusCode,
-			method,
-			path,
-			fmt.Errorf("%s", errMsg),
-		)
-	}
-
-	return data, nil
 }

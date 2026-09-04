@@ -2,45 +2,374 @@ name: Test
 
 on:
   push:
-    branches: [main, feat/**]
+    branches: [main]
   pull_request:
     branches: [main]
+  # The release gate is this workflow, called. A release must have passed what a
+  # pull request passes, and writing that list down a second time is writing a
+  # list that drifts from this one.
+  workflow_call:
+    inputs:
+      concurrency-group:
+        description: >-
+          The group this run keys its concurrency on. Required, because the
+          default below is keyed on the ref and a caller shares its ref with the
+          runs this workflow starts for itself: a release dispatched on main
+          would queue behind the push run for the same commit, and the push
+          after that would cancel it while it waited.
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+# A superseded pull request run is a run nobody is waiting for any more. Pushes
+# to main are left alone: a release is cut from a commit that has proved itself,
+# so cancelling one would leave main with nothing to have proved it. A called
+# run is left alone for the same reason and a plainer one - a release is blocked
+# on it, so nothing about it is superseded.
+concurrency:
+  group: ${{ inputs.concurrency-group || format('test-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !inputs.concurrency-group }}
+
 jobs:
-  test:
-    name: Test
+  # One job per area, because ginkgo runs one suite at a time. Giving each area
+  # its own runner is the only parallelism available between suites, and `-p`
+  # inside each is the only parallelism available within one.
+  #
+  # The areas are split by what they cost rather than by what they mean:
+  # cmd/smyklot and internal/panel are each about as expensive as
+  # everything under pkg put together.
+  #
+  # `ginkgo -r` recurses from every directory it is given, so an area naming a
+  # parent has already named everything beneath it. Naming a child as well runs
+  # that child twice, and naming it from a second area runs it on a second
+  # runner - neither of which shows up as anything but a slow job.
+  # `scripts/check-test-matrix.sh` fails on both.
+  go:
+    name: go (${{ matrix.area }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - area: service
+            dirs: ./cmd/smyklot
+          - area: panel
+            dirs: ./internal/panel ./internal/panelassets
+          - area: storage
+            dirs: ./internal/storage
+          - area: packages
+            dirs: >-
+              ./pkg ./internal/pendingci ./internal/orgsync ./internal/configgen
+              ./internal/bot ./internal/workqueue
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
 
-      - name: Install mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
         with:
-          cache: true
+          go-cache: ${{ matrix.area }}
 
-      - name: Cache Go modules
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      # No DSN, so this is the SQLite pass.
+      - name: Run the suite
+        run: mise run test ${{ matrix.dirs }}
+
+  # The second engine. Everything above the port opens whichever one the
+  # environment names, so these are the same suites again against PostgreSQL -
+  # which is the only thing that proves the port is a port.
+  postgres:
+    name: postgres (${{ matrix.area }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The storage suite skips itself when there is no server, and a skip
+          # is not proof, so this task fails when one skipped.
+          - area: storage
+            task: test:storage:postgres
+            dirs: ''
+          - area: service
+            task: test:postgres
+            dirs: ./cmd/smyklot
+          # Four of the pending CI suites open a store, and until they moved out
+          # of cmd the service entry above was running them. check-test-matrix
+          # deliberately reads only the SQLite matrix, so nothing would have
+          # said the second engine had quietly stopped covering them.
+          - area: pendingci
+            task: test:postgres
+            dirs: ./internal/pendingci/gate
+          - area: panel
+            task: test:postgres
+            dirs: ./internal/panel
+
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+        env:
+          POSTGRES_USER: smyklot
+          POSTGRES_PASSWORD: smyklot
+          POSTGRES_DB: smyklot
+          # The cluster lives in RAM and is built without waiting for a disk it
+          # does not have. Every spec above the port creates a schema and replays
+          # the migration series into it, which is almost all write, and a test
+          # database has nothing to survive a crash for - the next run builds it
+          # again from nothing either way.
+          PGDATA: /dev/shm/pgdata
+          POSTGRES_INITDB_ARGS: --no-sync
+        ports:
+          - 5432:5432
+        # A one second interval, not five: the container is ready long before the
+        # first check under a five second one, and every job here waits for it
+        # before its first step runs. The shared memory is sized for the cluster
+        # above, which the 64MB default is far too small for.
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U smyklot"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 60
+
+    env:
+      SMYKLOT_TEST_POSTGRES_DSN: postgres://smyklot:smyklot@localhost:5432/smyklot?sslmode=disable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          fetch-depth: 1
 
-      - name: Run tests
-        run: ginkgo -r --cover
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
+        with:
+          go-cache: postgres-${{ matrix.area }}
+
+      - name: Run the suite
+        run: mise run ${{ matrix.task }} ${{ matrix.dirs }}
+
+  lint:
+    name: lint (go)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
+        with:
+          go-cache: lint
 
       - name: Run linters
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: latest
+          # Pinned, and matching .mise.toml, so a local run sees what CI sees.
+          # On "latest" a new upstream rule fails a pull request that never
+          # touched the code it fires on
+          version: v2.13.2
+
+  # The checks that cost seconds each. They are one job because the runner takes
+  # longer to acquire than all of them take to run.
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
+        with:
+          go-cache: checks
 
       - name: Verify modules
-        run: go mod verify
+        run: mise run lint:mod
+
+      - name: Lint the Helm chart
+        run: mise run lint:helm
+
+      - name: Lint shell scripts
+        run: mise run lint:shell
+
+      - name: Lint the workflows
+        run: mise run lint:actions
+
+      # actionlint above says the workflow is valid. This says it is complete:
+      # the go matrix names the directories it runs, and a new package can be
+      # left out of that list without anything here going red.
+      - name: Check the matrix runs every suite
+        run: mise run lint:matrix
+
+      # A release config that swallows a breaking change ships one to everybody
+      # pinned to the major it broke, and the release itself looks fine.
+      - name: Check a breaking change releases a major
+        run: mise run lint:release
+
+      - name: Lint Markdown
+        run: mise run lint:markdown
+
+      # The deploy workflow's own checks. Nothing else runs them until a
+      # release does, and by then the only thing they can report is that the
+      # release failed.
+      - name: Test the deploy checks
+        run: mise run test:deploy
+
+      - name: Test panel dependency cache restoration
+        run: mise run test:panel-install
+
+  # Two jobs rather than one step after the other, because together they were
+  # 67s of the last release and either one alone is half of that. They share
+  # nothing but the restored `node_modules`, so there was never an order between
+  # them - only a runner.
+  frontend:
+    name: frontend (${{ matrix.area }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - area: lint
+            task: panel:frontend:lint
+          - area: unit
+            task: panel:frontend:test
+          # `storybook build` is the only thing that runs the catalogue's
+          # production bundle, and it exits 0 on one that throws before it
+          # renders. Without this the whole build-only failure class is green on
+          # every pull request and first reported by the next morning's cron on
+          # `main`, with `pages.yaml`'s deploy gated behind it so the published
+          # site silently stays stale. Ten seconds on a warm `node_modules`.
+          - area: catalogue
+            task: panel:storybook:build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
+
+      # The install script stamps node_modules with the manifest it installed
+      # from, so a restored directory makes `npm ci` a no-op rather than a
+      # repeat.
+      - name: Restore the panel's dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: internal/panel/frontend/node_modules
+          key: ${{ runner.os }}-panel-npm-${{ hashFiles('internal/panel/frontend/package-lock.json') }}
+
+      - name: Check the panel
+        run: mise run ${{ matrix.task }}
+
+  # The panel driven in Chrome. Its own job because it costs ten times what the
+  # unit tests cost, and because it is the only check here that needs a browser:
+  # the runner image ships Chrome, so nothing is downloaded to get one.
+  #
+  # Split like the Go matrix above, and for the same reason: vitest runs these
+  # files one at a time, so giving each area its own runner is the only
+  # parallelism available between them.
+  #
+  # Areas because of the tail rather than the total. Every file pays for a dev
+  # server, a Chrome and a sign-in before it measures anything, which is about
+  # nine seconds here, so the areas do not cost what they cost on a laptop:
+  # measured one file per runner they run from 71s for `column-widths` down to
+  # 10s for `icon-geometry`. `column-widths` has an area to itself because it is
+  # the only file that would set the length of any area it joined.
+  #
+  # NOT EVERY FILE IS HERE, and which are missing is a decision rather than an
+  # oversight. This job runs the sweeps and the budgets - the checks that fail on
+  # code nobody was thinking about when they wrote it, across pages they were not
+  # looking at. A test that exercises one screen's own behaviour is left to
+  # `mise run panel:frontend:test:browser:local`, which names them and says why:
+  # whoever changes that screen is the person who will run it, and paying a
+  # runner to re-prove it on every push to every branch buys nothing.
+  #
+  # `scripts/check-test-matrix.sh` fails when a file runs in no area and is not
+  # in that local list either, when it is in both, or when one area names it
+  # twice. A new file cannot quietly run nowhere.
+  browser:
+    name: browser (${{ matrix.area }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Nineteen routes at two widths, so half the suite's pages are here.
+          - area: phone
+            files: tests/browser/mobile-layout.test.ts
+          # Which words the pages use, where those words sit, and whether any of
+          # them is cut off getting there.
+          - area: type
+            files: >-
+              tests/browser/vertical-alignment.test.ts
+              tests/browser/text-clipping.test.ts
+              tests/browser/control-heights.test.ts
+              tests/browser/dictionary.test.ts
+          # Every cell of every row given a run longer than the service can
+          # produce. Alone, at 71s: it found the same fault in five views at
+          # once, which is what a sweep is for and what it costs.
+          # `plan-rows` rides with it: a sweep over every table asks whether a
+          # heading and its cells agree, and the plan's cards have no heading -
+          # what they have is three cards that must agree with EACH OTHER, which
+          # is the same rule one level up and belongs in the same job.
+          - area: columns
+            files: >-
+              tests/browser/column-widths.test.ts
+              tests/browser/plan-rows.test.ts
+          # The two sweeps that read a rule off the sheet and ask every route
+          # whether it obeys - the universal laws, and WCAG 2.2. Together at
+          # 32s, so they sit under the tail above rather than setting it.
+          - area: audits
+            files: >-
+              tests/browser/law-audit.test.ts
+              tests/browser/wcag-audit.test.ts
+          # How much the panel asks for. `cached-navigation` is here rather than
+          # with the queue it was written against: what it guards is an effect
+          # ring reopening the stream on every navigation, which is the same
+          # silent, unbounded class `request-budget` exists for. Sync drafts
+          # belong here too: they cross routes and must still produce exactly
+          # one batch request when the user finally saves.
+          - area: requests
+            files: >-
+              tests/browser/request-budget.test.ts
+              tests/browser/runtime-settings.test.ts
+              tests/browser/cached-navigation.test.ts
+              tests/browser/access-navigation.test.ts
+              tests/browser/sync-drafts.test.ts
+              tests/browser/settings-draft-markers.test.ts
+          - area: controls
+            files: >-
+              tests/browser/segmented-control.test.ts
+              tests/browser/config-migration.test.ts
+              tests/browser/repository-file-sync.test.ts
+              tests/browser/sidebar-selection.test.ts
+              tests/browser/icon-geometry.test.ts
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install the toolchain
+        uses: ./.github/actions/toolchain
+
+      - name: Restore the panel's dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: internal/panel/frontend/node_modules
+          key: ${{ runner.os }}-panel-npm-${{ hashFiles('internal/panel/frontend/package-lock.json') }}
+
+      - name: Drive the panel in Chrome
+        run: mise run panel:frontend:test:browser ${{ matrix.files }}

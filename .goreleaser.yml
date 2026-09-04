@@ -2,11 +2,12 @@ version: 2
 
 before:
   hooks:
-    - go mod tidy
+    - mise run deps:tidy
+    - mise run panel:assets:generate
 
 builds:
   - id: smyklot
-    main: ./cmd/github-action
+    main: ./cmd/smyklot
     binary: smyklot
     env:
       - CGO_ENABLED=0
@@ -32,6 +33,7 @@ archives:
     files:
       - LICENSE
       - README.md
+      - THIRD_PARTY_NOTICES.md
 
 dockers_v2:
   - ids:
@@ -46,10 +48,16 @@ dockers_v2:
       - linux/amd64
       - linux/arm64
     dockerfile: Dockerfile
+    # The Dockerfile copies a binary GoReleaser has already built and never
+    # compiles, so nothing here is read today. It is kept complete rather than
+    # trimmed because the day something does build in-container, a context
+    # missing internal/ holds two thirds of the program.
     extra_files:
       - go.mod
       - go.sum
+      - THIRD_PARTY_NOTICES.md
       - cmd
+      - internal
       - pkg
     labels:
       org.opencontainers.image.title: "{{.ProjectName}}"
@@ -59,7 +67,7 @@ dockers_v2:
       org.opencontainers.image.version: "{{.Version}}"
       org.opencontainers.image.created: "{{.Date}}"
       org.opencontainers.image.revision: "{{.FullCommit}}"
-      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.licenses: MIT AND BSD-3-Clause
 
 checksum:
   name_template: 'checksums.txt'

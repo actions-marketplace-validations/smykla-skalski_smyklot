@@ -15,6 +15,13 @@ on:
 permissions:
   contents: read
 
+# Releases must enter semantic-release and image publication in order. Merely
+# serializing the final deploy would let a slower older image arrive after a
+# newer one and roll production backward.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # Check if workflow should proceed
   check:
@@ -33,86 +40,34 @@ jobs:
       - name: Conditions met
         run: echo "Workflow conditions met, proceeding with release process"
 
-  # Run tests
+  # The gate is the Test workflow itself, called rather than copied. It had been
+  # copied, and the copy had already drifted: it ran the suites above the port
+  # against SQLite only, and it ran neither the browser suite nor the chart,
+  # shell, workflow and deploy checks, so a release could publish what a pull
+  # request would have refused.
+  #
+  # It is also almost the whole of the wait before semantic-release, and what it
+  # costs is what its slowest job costs rather than what all of them cost: the
+  # single job they replace cost the sum of every suite. Which job that is moves
+  # as they are split, so the number worth keeping here is the shape and not a
+  # measurement - one long job sets the release's floor, and the way to lower it
+  # is to divide that job rather than to hurry the rest.
   test:
     needs: check
     name: Test
-    runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Install mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
-        with:
-          cache: true
-
-      - name: Run tests
-        run: task test
-
-  # Run golangci-lint
-  golangci-lint:
-    needs: check
-    name: Go Lint
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
-        with:
-          version: latest
-
-  # Run markdownlint
-  markdownlint:
-    needs: check
-    name: Markdown Lint
-    runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Install mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
-        with:
-          cache: true
-
-      - name: Run markdownlint
-        run: task lint:markdown
-
-  # Verify go.mod
-  go-mod-verify:
-    needs: check
-    name: Go Mod Verify
-    runs-on: ubuntu-24.04
-    env:
-      MISE_ENV: ci
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Install mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
-        with:
-          cache: true
-
-      - name: Verify go.mod
-        run: task lint:mod
+    uses: ./.github/workflows/test.yaml
+    with:
+      # Its own group. The default is keyed on the ref, and a release dispatched
+      # on main has the same ref as the push run for the commit it is releasing.
+      # One group would put this behind that run, and let the next push to main
+      # cancel it while it waited.
+      concurrency-group: release-test
 
   # Determine if a release should be created
   release:
     name: Semantic Release
     runs-on: ubuntu-24.04
-    needs: [test, golangci-lint, markdownlint, go-mod-verify]
+    needs: test
     permissions:
       contents: write
       issues: write
@@ -127,11 +82,11 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.SMYKLOT_APP_ID }}
+          client-id: ${{ vars.SMYKLOT_CLIENT_ID || 'Iv23liMyF31aNYay8IXy' }}
           private-key: ${{ secrets.SMYKLOT_APP_PRIVATE_KEY }}
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -140,11 +95,15 @@ jobs:
         id: semantic
         uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
         with:
+          # Pinned by major: installed at run time, so unpinned means whatever
+          # npm published last. Preset 10 needs conventional-changelog-writer
+          # 9; the action's semantic-release brings 8, which broke 1.44.0. Cap
+          # lifts when semantic-release ships writer 9.
           extra_plugins: |
-            @semantic-release/changelog
-            @semantic-release/git
-            @semantic-release/exec
-            conventional-changelog-conventionalcommits
+            @semantic-release/changelog@6
+            @semantic-release/git@10
+            @semantic-release/exec@7
+            conventional-changelog-conventionalcommits@9
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GIT_AUTHOR_NAME: smyklot[bot]
@@ -164,33 +123,83 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.release.outputs.new_release_git_tag }}
 
       - name: Install mise
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-fly:
+    name: Deploy to Fly
+    needs: [release, goreleaser]
+    if: needs.goreleaser.result == 'success'
+    uses: ./.github/workflows/deploy.yaml
+    with:
+      version: ${{ needs.release.outputs.new_release_version }}
+    secrets: inherit
+
+  # Package and publish the Helm chart
+  #
+  # Runs after goreleaser so the chart is never published pointing at an image
+  # that does not exist yet
+  helm-chart:
+    name: Helm Chart
+    runs-on: ubuntu-24.04
+    needs: [release, goreleaser]
+    if: needs.goreleaser.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.new_release_git_tag }}
+
+      - name: Install mise
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+
+      - name: Login to GitHub Container Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io \
+            --username "$OWNER" --password-stdin
+
+      # Chart.yaml already carries this release's version: semantic-release
+      # rewrites it and commits it under the tag checked out above
+      - name: Package and push chart
+        env:
+          VERSION: ${{ needs.release.outputs.new_release_version }}
+        run: |
+          helm package charts/smyklot --destination dist
+          helm push "dist/smyklot-${VERSION}.tgz" oci://ghcr.io/smykla-skalski/charts
 
   # Notify organization repositories of new release
   notify-org:
@@ -204,7 +213,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ vars.SMYKLOT_APP_ID }}
+          client-id: ${{ vars.SMYKLOT_CLIENT_ID || 'Iv23liMyF31aNYay8IXy' }}
           private-key: ${{ secrets.SMYKLOT_APP_PRIVATE_KEY }}
           owner: smykla-skalski
           repositories: .github

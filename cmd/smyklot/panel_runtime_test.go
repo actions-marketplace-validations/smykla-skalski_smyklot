@@ -1,0 +1,782 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/smykla-skalski/smyklot/internal/bot"
+	"github.com/smykla-skalski/smyklot/internal/githubtest"
+	"github.com/smykla-skalski/smyklot/internal/storage"
+	"github.com/smykla-skalski/smyklot/internal/workqueue"
+	"github.com/smykla-skalski/smyklot/pkg/config"
+	"github.com/smykla-skalski/smyklot/pkg/github"
+)
+
+type runtimePanelEvent struct {
+	Version      int    `json:"version"`
+	Type         string `json:"type"`
+	TargetID     string `json:"target_id"`
+	RepositoryID string `json:"repository_id"`
+}
+
+var _ = Describe("Production panel runtime [Unit]", func() {
+	var (
+		stub     *githubStub
+		endpoint *httptest.Server
+		service  *server
+	)
+
+	BeforeEach(func() {
+		stub = newGitHubStub()
+		endpoint = httptest.NewServer(stub)
+		DeferCleanup(endpoint.Close)
+
+		var err error
+		service, err = newServer(&serveConfig{
+			database:      GinkgoT().TempDir() + "/panel.sqlite3",
+			webhookPath:   defaultWebhookPath,
+			webhookSecret: []byte(testSecret),
+			apiBaseURL:    endpoint.URL,
+			botUsername:   bot.DefaultBotUsername,
+			appClientID:   "Iv1.test",
+			appPrivateKey: githubtest.AppPrivateKey(),
+			botConfig:     config.Default(),
+			logWriter:     io.Discard,
+			panel: &panelServeConfig{
+				publicOrigin: "https://smyklot.example",
+				basePath:     defaultPanelBase,
+				superRootID:  42,
+				clientID:     "Iv1.test",
+				clientSecret: "oauth-secret",
+				authorizeURL: endpoint.URL + "/authorize",
+				tokenURL:     endpoint.URL + "/token",
+				sessionTTL:   defaultPanelTTL,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(service.Close)
+	})
+
+	It("mounts the embedded application under the configured public path", func() {
+		response := httptest.NewRecorder()
+		service.handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/panel/", nil))
+
+		Expect(response.Code).To(Equal(http.StatusOK))
+		Expect(response.Header().Get("Content-Security-Policy")).NotTo(BeEmpty())
+		Expect(response.Body.String()).To(ContainSubstring("Smyklot"))
+		Expect(response.Body.String()).NotTo(ContainSubstring("/__smyklot_panel_base__"))
+	})
+
+	It("keeps a durable workload failure local to its queue item", func() {
+		work := recurringWork{
+			kind:  workqueue.KindCatalogRefresh,
+			title: "Refresh the list of repositories",
+		}
+		ran, err := service.runRecurringWork(
+			GinkgoT().Context(),
+			work,
+			func() error { return errors.New("github rate limit") },
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ran).To(BeTrue())
+
+		page, err := service.store.ListWorkQueue(GinkgoT().Context(), workqueue.Filter{
+			Kinds:  []workqueue.Kind{workqueue.KindCatalogRefresh},
+			States: []workqueue.State{workqueue.StateRetrying},
+			Limit:  1,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Items).To(HaveLen(1))
+		Expect(page.Items[0].BlockedReason).To(Equal("github rate limit"))
+	})
+
+	It("mounts the panel at the public root without shadowing service routes", func() {
+		rootService, err := newServer(&serveConfig{
+			database:      GinkgoT().TempDir() + "/panel.sqlite3",
+			webhookPath:   defaultWebhookPath,
+			webhookSecret: []byte(testSecret),
+			apiBaseURL:    endpoint.URL,
+			botUsername:   bot.DefaultBotUsername,
+			appClientID:   "Iv1.test",
+			appPrivateKey: githubtest.AppPrivateKey(),
+			botConfig:     config.Default(),
+			logWriter:     io.Discard,
+			panel: &panelServeConfig{
+				publicOrigin: "https://smyklot.com",
+				basePath:     "",
+				superRootID:  42,
+				clientID:     "Iv1.test",
+				clientSecret: "oauth-secret",
+				authorizeURL: endpoint.URL + "/authorize",
+				tokenURL:     endpoint.URL + "/token",
+				sessionTTL:   defaultPanelTTL,
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(rootService.Close)
+
+		root := httptest.NewRecorder()
+		rootService.handler().ServeHTTP(root, httptest.NewRequest(http.MethodGet, "/", nil))
+		Expect(root.Code).To(Equal(http.StatusOK))
+		Expect(root.Body.String()).To(ContainSubstring("Smyklot"))
+
+		health := httptest.NewRecorder()
+		rootService.handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		Expect(health.Code).To(Equal(http.StatusOK))
+	})
+
+	It("synchronizes immutable GitHub identity and repository metadata", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization","avatar_url":"https://avatars.example/7"}}]`
+		stub.repos = `{"total_count":1,"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","private":true,"owner":{"login":"smykla-skalski"}}]}`
+
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targetIDs).To(Equal([]string{"github:installation:111"}))
+
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target.Account.SubjectID).To(Equal("7"))
+		Expect(target.Account.AvatarURL).To(HaveValue(Equal("https://avatars.example/7")))
+		repositories, err := service.store.ListRepositories(GinkgoT().Context(), target.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repositories).To(HaveLen(1))
+		Expect(repositories[0].ID).To(Equal("github:repository:31"))
+		Expect(repositories[0].Private).To(BeTrue())
+	})
+
+	It("serializes full catalog reads so an older snapshot cannot commit last", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[]}`
+		stub.installationsStarted = make(chan struct{})
+		stub.installationsRelease = make(chan struct{})
+
+		firstDone := make(chan error, 1)
+		go func() {
+			_, err := service.SyncCatalog(GinkgoT().Context())
+			firstDone <- err
+		}()
+		Eventually(stub.installationsStarted).Should(BeClosed())
+
+		stub.setInstallations(`[
+			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
+			{"id":222,"account":{"id":8,"login":"new-org","type":"Organization"}}
+		]`)
+		secondDone := make(chan error, 1)
+		go func() {
+			_, err := service.SyncCatalog(GinkgoT().Context())
+			secondDone <- err
+		}()
+
+		Consistently(func() int {
+			return stub.countCalls(http.MethodGet, "/app/installations")
+		}).Should(Equal(1))
+		close(stub.installationsRelease)
+		Eventually(firstDone).Should(Receive(Succeed()))
+		Eventually(secondDone).Should(Receive(Succeed()))
+
+		newTarget, err := service.store.GetTarget(
+			GinkgoT().Context(),
+			"github:installation:222",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(newTarget.Available).To(BeTrue())
+	})
+
+	It("shows the root owner installations discovered after sign-in", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.members = `[{"id":42,"login":"smykla-skalski"}]`
+		_, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+
+		now := time.Now().UTC()
+		owner := storage.Account{
+			ID:          githubProvider(endpoint.URL) + ":user:42",
+			Provider:    githubProvider(endpoint.URL),
+			SubjectID:   "42",
+			Login:       "smykla-skalski",
+			DisplayName: "Smykla Skalski",
+			UpdatedAt:   now,
+		}
+		Expect(service.store.UpsertAccount(GinkgoT().Context(), owner)).To(Succeed())
+		Expect(service.store.ReconcileSuperRoot(GinkgoT().Context(), owner.ID, now)).To(Succeed())
+		stub.installations = `[
+			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
+			{"id":222,"account":{"id":8,"login":"another-org","type":"Organization"}}
+		]`
+		service.maintainPanel(GinkgoT().Context())
+
+		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targets).To(HaveLen(2))
+	})
+
+	It("persists every GitHub organization admin as an installation Owner", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.members = `[
+			{"id":42,"login":"bart","avatar_url":"https://avatars.example/42"},
+			{"id":43,"login":"ada"}
+		]`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target.Ownership.Source).To(Equal(storage.OwnershipSourceOrganizationAdmin))
+		Expect(target.Ownership.Status).To(Equal(storage.OwnershipStatusFresh))
+		Expect(target.Ownership.OwnerCount).To(Equal(2))
+		Expect(target.Ownership.Detail).To(BeNil())
+	})
+
+	It("uses the public GitHub identity when the API base URL is unset", func() {
+		stub.members = `[{"id":42,"login":"bart","avatar_url":"https://avatars.example/42"}]`
+		client, err := github.NewClient("install-token", endpoint.URL)
+		Expect(err).NotTo(HaveOccurred())
+		syncedAt := time.Date(2026, time.August, 11, 8, 0, 0, 0, time.UTC)
+		snapshot, err := completeInstallationSnapshot(
+			GinkgoT().Context(),
+			"",
+			client,
+			github.Installation{
+				ID:          111,
+				AccountID:   7,
+				Account:     "smykla-skalski",
+				AccountType: string(storage.TargetOrganization),
+			},
+			nil,
+			syncedAt,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snapshot.Ownership.Status).To(Equal(storage.OwnershipStatusFresh))
+		Expect(snapshot.Ownership.Owners).To(ConsistOf(HaveField(
+			"ID",
+			"github:https://api.github.com:user:42",
+		)))
+	})
+
+	It("records installation permission approval without hiding catalog diagnostics", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.membersStatus = http.StatusForbidden
+		stub.members = `{"message":"Resource not accessible by integration"}`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		Expect(target.Available).To(BeTrue())
+		Expect(target.Ownership.Status).To(Equal(storage.OwnershipStatusPermissionPending))
+		Expect(target.Ownership.OwnerCount).To(BeZero())
+		Expect(target.Ownership.Detail).To(HaveValue(ContainSubstring("permission")))
+	})
+
+	It("announces catalog changes after the catalog commits", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.members = `[{"id":42,"login":"smykla-skalski"}]`
+		_, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+
+		now := time.Now().UTC()
+		owner := storage.Account{
+			ID:          githubProvider(endpoint.URL) + ":user:42",
+			Provider:    githubProvider(endpoint.URL),
+			SubjectID:   "42",
+			Login:       "smykla-skalski",
+			DisplayName: "Smykla Skalski",
+			UpdatedAt:   now,
+		}
+		Expect(service.store.UpsertAccount(GinkgoT().Context(), owner)).To(Succeed())
+		Expect(service.store.ReconcileSuperRoot(GinkgoT().Context(), owner.ID, now)).To(Succeed())
+		const sessionToken = "catalog-event-session"
+		digest := sha256.Sum256([]byte(sessionToken))
+		Expect(service.store.CreateSession(GinkgoT().Context(), storage.Session{
+			TokenHash: hex.EncodeToString(digest[:]),
+			AccountID: owner.ID,
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		}, 1)).To(Succeed())
+
+		panelEndpoint := httptest.NewServer(service.panel.Handler())
+		DeferCleanup(panelEndpoint.Close)
+		headers := http.Header{}
+		headers.Set("Cookie", (&http.Cookie{
+			Name:  "smyklot_panel_session",
+			Value: sessionToken,
+		}).String())
+		headers.Set("Origin", "https://smyklot.example")
+		connection, response, err := websocket.Dial(
+			GinkgoT().Context(),
+			"ws"+strings.TrimPrefix(panelEndpoint.URL, "http")+"/panel/api/v1/events",
+			&websocket.DialOptions{HTTPHeader: headers},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(response.StatusCode).To(Equal(http.StatusSwitchingProtocols))
+		DeferCleanup(connection.CloseNow)
+
+		events := make(chan runtimePanelEvent, 4)
+		readContext := GinkgoT().Context()
+		go func() {
+			for {
+				var event runtimePanelEvent
+				if err := wsjson.Read(readContext, connection, &event); err != nil {
+					return
+				}
+				events <- event
+			}
+		}()
+		var event runtimePanelEvent
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Version).To(Equal(1))
+		Expect(event.Type).To(Equal("ready"))
+		expectEventType := func(eventType string) {
+			Eventually(func() string {
+				select {
+				case event = <-events:
+					return event.Type
+				default:
+					return ""
+				}
+			}).Should(Equal(eventType))
+		}
+
+		stub.installations = `[
+			{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}},
+			{"id":222,"account":{"id":8,"login":"another-org","type":"Organization"}}
+		]`
+		service.maintainPanel(GinkgoT().Context())
+		expectEventType("resync")
+
+		targets, err := service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targets).To(HaveLen(2))
+
+		stub.repoConfig = "disable_mentions: true\n"
+		client, err := github.NewClient("installation-token", endpoint.URL)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			"github:installation:222",
+			"github:repository:31",
+			"another-org",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		expectEventType("repository.changed")
+		Expect(event.TargetID).To(Equal("github:installation:222"))
+		Expect(event.RepositoryID).To(Equal("github:repository:31"))
+		_, err = service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			"github:installation:222",
+			"github:repository:31",
+			"another-org",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Consistently(events).ShouldNot(Receive())
+
+		stub.installations = `[]`
+		_, err = service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(events).Should(Receive(&event))
+		Expect(event.Type).To(Equal("resync"))
+		targets, err = service.store.ListTargets(GinkgoT().Context(), owner.ID, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targets).To(BeEmpty())
+	})
+
+	It("resolves fresh panel settings over cached repository configuration", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.repoConfig = "command_prefix: '?'\ndisable_mentions: true\n"
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+
+		targetPrefix := "!"
+		quietSuccess := true
+		saved, err := service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Target: &storage.InstallationTargetSettingsChange{
+					RepositoryDefaultEnabled: true,
+					ConfigPatch: config.Patch{
+						CommandPrefix: &targetPrefix,
+						QuietSuccess:  &quietSuccess,
+					},
+					ExpectedRevision: target.Revision,
+				},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.Target).NotTo(BeNil())
+		target = *saved.Target
+		repository, err := service.store.GetRepository(
+			GinkgoT().Context(),
+			target.ID,
+			"github:repository:31",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		repositoryPrefix := "#"
+		saved, err = service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Repositories: []storage.InstallationRepositorySettingsChange{{
+					RepositoryID:     repository.ID,
+					ConfigPatch:      config.Patch{CommandPrefix: &repositoryPrefix},
+					ExpectedRevision: repository.Revision,
+				}},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.Repositories).To(HaveLen(1))
+		repository = saved.Repositories[0]
+		client, err := github.NewClient("installation-token", endpoint.URL)
+		Expect(err).NotTo(HaveOccurred())
+
+		effective, err := service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			target.ID,
+			repository.ID,
+			"smykla-skalski",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(effective.CommandPrefix).To(Equal("#"))
+		Expect(effective.QuietSuccess).To(BeTrue())
+		Expect(effective.DisableMentions).To(BeTrue())
+
+		freshPrefix := "%"
+		_, err = service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Repositories: []storage.InstallationRepositorySettingsChange{{
+					RepositoryID:     repository.ID,
+					ConfigPatch:      config.Patch{CommandPrefix: &freshPrefix},
+					ExpectedRevision: repository.Revision,
+				}},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		effective, err = service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			target.ID,
+			repository.ID,
+			"smykla-skalski",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(effective.CommandPrefix).To(Equal("%"))
+		Expect(stub.countCalls(http.MethodGet, "/contents/.github/smyklot.yaml")).To(Equal(1))
+	})
+
+	It("reveals the observed repository file state when bypass is disabled", func() {
+		stub.installations = `[{"id":111,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":31,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.repoConfig = "command_aliases: invalid\n"
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		repository, err := service.store.GetRepository(
+			GinkgoT().Context(),
+			target.ID,
+			"github:repository:31",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		saved, err := service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Repositories: []storage.InstallationRepositorySettingsChange{{
+					RepositoryID: repository.ID, IgnoreRepositoryFile: true,
+					ExpectedRevision: repository.Revision,
+				}},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.Repositories).To(HaveLen(1))
+		repository = saved.Repositories[0]
+		client, err := github.NewClient("installation-token", endpoint.URL)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			target.ID,
+			repository.ID,
+			"smykla-skalski",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		repository, err = service.store.GetRepository(
+			GinkgoT().Context(),
+			target.ID,
+			repository.ID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigFileStatus).To(Equal(storage.RepositoryFileBypassed))
+
+		saved, err = service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Repositories: []storage.InstallationRepositorySettingsChange{{
+					RepositoryID: repository.ID, IgnoreRepositoryFile: false,
+					ExpectedRevision: repository.Revision,
+				}},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.Repositories).To(HaveLen(1))
+		repository = saved.Repositories[0]
+		Expect(repository.ConfigFileStatus).To(Equal(storage.RepositoryFileInvalid))
+	})
+
+	// The panel used to print ".github/smyklot.yaml" as a literal, which was
+	// true while that was the only place a configuration file could be. It is
+	// now one of five, and a repository that migrated to TOML and left the YAML
+	// behind has a file it believes is in charge and is not
+	It("records which file it read and which it passed over", func() {
+		stub.installations = `[{"id":112,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":32,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.repoConfigTOML = "quiet_success = true\n"
+		stub.repoConfig = "quiet_success: false\n"
+
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+
+		client, err := github.NewClient("installation-token", endpoint.URL)
+		Expect(err).NotTo(HaveOccurred())
+
+		effective, err := service.serviceConfig(
+			GinkgoT().Context(),
+			client,
+			target.ID,
+			"github:repository:32",
+			"smykla-skalski",
+			"smyklot",
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The TOML file is the one in charge, so it is the one that decided
+		Expect(effective.QuietSuccess).To(BeTrue())
+
+		repository, err := service.store.GetRepository(
+			GinkgoT().Context(),
+			target.ID,
+			"github:repository:32",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.ConfigFilePath).To(Equal(".smyklot.toml"))
+		Expect(repository.ConfigFileSuperseded).To(ConsistOf(".github/smyklot.yaml"))
+	})
+
+	It("enforces repository enablement and durable delivery claims", func() {
+		stub.installations = `[{"id":987,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":123456,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+
+		public := httptest.NewServer(service.handler())
+		DeferCleanup(public.Close)
+		service.deliveries.Start(GinkgoT().Context())
+		DeferCleanup(func() {
+			Expect(service.deliveries.Shutdown(context.Background())).To(Succeed())
+		})
+		body := commandDelivery("/approve")
+		response := postDelivery(public, stub, "issue_comment", "disabled-delivery", body, nil)
+		Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+		Eventually(func() int {
+			redelivery := postDelivery(
+				public, stub, "issue_comment", "disabled-delivery", body, nil,
+			)
+
+			return redelivery.StatusCode
+		}).Within(eventuallyWindow).Should(Equal(http.StatusOK))
+		Expect(stub.countCalls(http.MethodPost, approveReviews)).To(BeZero())
+
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		_, err = service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Target: &storage.InstallationTargetSettingsChange{
+					RepositoryDefaultEnabled: true,
+					ExpectedRevision:         target.Revision,
+				},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		stub.repos = `{"repositories":[]}`
+		_, err = service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		repository, err := service.store.GetRepository(
+			GinkgoT().Context(),
+			target.ID,
+			"github:repository:123456",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repository.Available).To(BeFalse())
+		stub.repos = `{"repositories":[{"id":123456,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+
+		body = delivery("edited", "/approve", "User", "2026-08-08T10:01:00Z", true)
+		response = postDelivery(public, stub, "issue_comment", "enabled-delivery", body, nil)
+		Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+		Eventually(func() bool {
+			refreshed, refreshErr := service.store.GetRepository(
+				GinkgoT().Context(),
+				target.ID,
+				repository.ID,
+			)
+
+			return refreshErr == nil && refreshed.Available
+		}).Within(eventuallyWindow).Should(BeTrue())
+		Eventually(func() int {
+			return stub.countCalls(http.MethodPost, approveReviews)
+		}).Within(eventuallyWindow).Should(Equal(1))
+
+		Eventually(func() int {
+			redelivery := postDelivery(
+				public, stub, "issue_comment", "enabled-delivery", body, nil,
+			)
+
+			return redelivery.StatusCode
+		}).Within(eventuallyWindow).Should(Equal(http.StatusOK))
+		Consistently(func() int {
+			return stub.countCalls(http.MethodPost, approveReviews)
+		}).Should(Equal(1))
+	})
+
+	It("acknowledges a burst before one delayed on-demand catalog refresh", func() {
+		stub.installations = `[{"id":987,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":123456,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		targetIDs, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		target, err := service.store.GetTarget(GinkgoT().Context(), targetIDs[0])
+		Expect(err).NotTo(HaveOccurred())
+		_, err = service.store.SaveInstallationSettings(
+			GinkgoT().Context(),
+			storage.SaveInstallationSettingsRequest{
+				TargetID: target.ID, ActorAccountID: target.Account.ID, ChangedAt: time.Now(),
+				Target: &storage.InstallationTargetSettingsChange{
+					RepositoryDefaultEnabled: true,
+					ExpectedRevision:         target.Revision,
+				},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		stub.repos = `{"repositories":[]}`
+		_, err = service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+		stub.repos = `{"repositories":[{"id":123456,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		stub.installationsStarted = make(chan struct{})
+		stub.installationsRelease = make(chan struct{})
+		catalogCalls := stub.countCalls(http.MethodGet, "/app/installations")
+
+		service.deliveries.Start(GinkgoT().Context())
+		DeferCleanup(func() {
+			Expect(service.deliveries.Shutdown(context.Background())).To(Succeed())
+		})
+		public := httptest.NewServer(service.handler())
+		DeferCleanup(public.Close)
+		for index := range 4 {
+			body := githubtest.IssueCommentPayload(githubtest.IssueComment{
+				CommentID: int64(githubtest.DefaultCommentID + index + 1),
+				Action:    "edited", Body: "/approve", AuthorType: "User",
+				UpdatedAt:     fmt.Sprintf("2026-08-08T10:0%d:00Z", index+1),
+				IsPullRequest: true,
+			})
+			response := postDelivery(
+				public,
+				stub,
+				"issue_comment",
+				fmt.Sprintf("delayed-catalog-%d", index),
+				body,
+				nil,
+			)
+			Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+		}
+		Eventually(stub.installationsStarted).Should(BeClosed())
+		Consistently(func() int {
+			return stub.countCalls(http.MethodPost, approveReviews)
+		}).Should(BeZero())
+		close(stub.installationsRelease)
+		Eventually(func() int {
+			return stub.countCalls(http.MethodPost, approveReviews)
+		}).Within(eventuallyWindow).Should(Equal(4))
+		Expect(stub.countCalls(http.MethodGet, "/app/installations") - catalogCalls).To(Equal(1))
+	})
+
+	It("persists accepted work exactly once with no dispatcher running", func() {
+		stub.installations = `[{"id":987,"account":{"id":7,"login":"smykla-skalski","type":"Organization"}}]`
+		stub.repos = `{"repositories":[{"id":123456,"name":"smyklot","full_name":"smykla-skalski/smyklot","owner":{"login":"smykla-skalski"}}]}`
+		_, err := service.SyncCatalog(GinkgoT().Context())
+		Expect(err).NotTo(HaveOccurred())
+
+		public := httptest.NewServer(service.handler())
+		DeferCleanup(public.Close)
+
+		payload := commandDelivery("/approve")
+		const deliveryID = "queue-full-redelivery"
+
+		response := postDelivery(public, stub, "issue_comment", deliveryID, payload, nil)
+		Expect(response.StatusCode).To(Equal(http.StatusAccepted))
+
+		again := postDelivery(public, stub, "issue_comment", deliveryID, payload, nil)
+		Expect(again.StatusCode).To(Equal(http.StatusAccepted))
+
+		lease, err := service.store.LeaseDelivery(
+			GinkgoT().Context(), time.Now().UTC(), time.Now().UTC().Add(jobTimeout),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lease.Work).NotTo(BeNil())
+		Expect(lease.Work.DeliveryID).To(Equal(deliveryID))
+		Expect(lease.Work.Payload).To(Equal(payload))
+
+		second, err := service.store.LeaseDelivery(
+			GinkgoT().Context(), time.Now().UTC(), time.Now().UTC().Add(jobTimeout),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second.Work).To(BeNil())
+	})
+
+	It("rejects an installation without an immutable account identity", func() {
+		_, err := installationSnapshot(
+			"",
+			github.Installation{ID: 1, Account: "org", AccountType: "Organization"},
+			[]github.Repository{{ID: 1, Name: "repo"}},
+			time.Now(),
+		)
+		Expect(err).To(MatchError(ContainSubstring("installation identity")))
+	})
+
+	It("uses the canonical public provider identifier", func() {
+		Expect(githubProvider("")).To(Equal("github:https://api.github.com"))
+		Expect(githubProvider("https://github.example/api/v3/")).
+			To(Equal("github:https://github.example/api/v3"))
+		Expect(strings.HasPrefix(githubProvider(endpoint.URL), "github:http://")).To(BeTrue())
+	})
+})

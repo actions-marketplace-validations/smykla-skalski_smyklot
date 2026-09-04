@@ -9,7 +9,7 @@
 
 - Triggers: `issue_comment` on PRs
 - Uses local action reference (`uses: ./`)
-- Environment variables from GitHub context: `GITHUB_TOKEN`, `COMMENT_BODY`, `COMMENT_ID`, `PR_NUMBER`, `REPO_OWNER`, `REPO_NAME`, `COMMENT_AUTHOR`
+- Environment variables from GitHub context: `GITHUB_TOKEN`, `COMMENT_BODY`, `COMMENT_ID`, `COMMENT_UPDATED_AT`, `PR_NUMBER`, `REPO_OWNER`, `REPO_NAME`, `COMMENT_AUTHOR`
 
 ## Security Practices
 
@@ -19,12 +19,12 @@
 
 ## Running Locally
 
-The binary reads environment variables — set `GITHUB_TOKEN`, `COMMENT_BODY`, `COMMENT_ID`, `PR_NUMBER`, `REPO_OWNER`, `REPO_NAME`, `COMMENT_AUTHOR` then run `./bin/smyklot-github-action`.
+The binary reads environment variables — set `GITHUB_TOKEN`, `COMMENT_BODY`, `COMMENT_ID`, `COMMENT_UPDATED_AT`, `PR_NUMBER`, `REPO_OWNER`, `REPO_NAME`, `COMMENT_AUTHOR` then run `./bin/smyklot`.
 
 ## Input Validation Limits
 
 - Comment body: max 10KB
 - Repository name: alphanumeric + hyphens only
 - CODEOWNERS file: max 1MB
-- HTTP client: 30s timeout with connection pooling
-- Retry: exponential backoff for 429/5xx errors
+- HTTP client: 30s timeout per attempt, with connection pooling
+- Retry: exponential backoff for 429, 5xx, and the 403 that carries a `Retry-After`, which is how GitHub spells a secondary rate limit. A bare 403 is a permission the App was never granted and is not retried. `Retry-After` wins over the backoff when GitHub sends one
