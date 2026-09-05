@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.52.0](https://github.com/smykla-skalski/smyklot/compare/v1.51.0...v1.52.0) (2026-09-05)
+
+### Features
+
+* **panel:** chart what the service has cost itself ([#358](https://github.com/smykla-skalski/smyklot/issues/358)) ([225a3b7](https://github.com/smykla-skalski/smyklot/commit/225a3b7fe43b8fd206161499d797200df29184c3))
+
+### Bug Fixes
+
+* **deps:** update module github.com/google/go-github/v90 to v91 ([#352](https://github.com/smykla-skalski/smyklot/issues/352)) ([5076d57](https://github.com/smykla-skalski/smyklot/commit/5076d575f7b3bee93dc5939738cc72f612ffe04d))
+* **deps:** update module github.com/yuin/goldmark/v2 to v2.0.1 ([#353](https://github.com/smykla-skalski/smyklot/issues/353)) ([3ccc766](https://github.com/smykla-skalski/smyklot/commit/3ccc766b1b66c47ff8a41b7db9eb5dbf42001c3b))
+* **queue:** unblock retries and bound the ledger ([#357](https://github.com/smykla-skalski/smyklot/issues/357)) ([5ec924a](https://github.com/smykla-skalski/smyklot/commit/5ec924a328e9adadc30620ddfea7ed09d59b2a5a))
+
 ## [1.51.0](https://github.com/smykla-skalski/smyklot/compare/v1.50.4...v1.51.0) (2026-09-02)
 
 ### Features
