@@ -49,6 +49,8 @@ import type {
   RootElevationInput,
   RootWorkspace,
   RootOverview,
+  PerformancePoint,
+  ServicePerformance,
   SyncConfig,
   SyncFileMergeEntry,
   SyncFileRepositoryPolicy,
@@ -1609,6 +1611,10 @@ async function handle(
     }
     if (path === route('/api/v1/root/overview') && method === 'GET') {
       respond(res, 200, rootOverviewValue(state));
+      return;
+    }
+    if (path === route('/api/v1/root/performance') && method === 'GET') {
+      respond(res, 200, mockPerformance(Number(parsed.searchParams.get('window') ?? '24')));
       return;
     }
     if (path === route('/api/v1/root/queue') && method === 'GET') {
@@ -4695,6 +4701,79 @@ function copyOptionalConfig(value: ConfigValues | null): ConfigValues | null {
 
 function copyConfig(value: ConfigValues): ConfigValues {
   return structuredClone(value);
+}
+
+function mockPerformance(windowHours: number): ServicePerformance {
+  const hours = Math.min(Math.max(windowHours, 1), 90 * 24);
+  const until = Date.now();
+  const since = until - hours * 3_600_000;
+  const steps = Math.min(hours, 240);
+
+  function points(
+    shape: (step: number) => number,
+    kind: 'timing' | 'gauge' | 'backlog',
+  ): PerformancePoint[] {
+    return Array.from({ length: steps }, (unused, step) => {
+      const value = shape(step);
+      const at = new Date(since + ((until - since) * step) / steps).toISOString();
+
+      if (kind === 'timing') {
+        return {
+          at,
+          observations: 40 + step,
+          failures: step % 17 === 0 ? 1 : 0,
+          mean_ms: value,
+          max_ms: value * 3,
+        };
+      }
+      if (kind === 'backlog') {
+        return { at, value, observations: 12, mean_ms: value * 20_000, max_ms: value * 45_000 };
+      }
+
+      return { at, value };
+    });
+  }
+
+  function series(
+    label: string,
+    shape: (step: number) => number,
+    kind: 'timing' | 'gauge' | 'backlog',
+  ) {
+    return { label, points: points(shape, kind) };
+  }
+
+  return {
+    since: new Date(since).toISOString(),
+    until: new Date(until).toISOString(),
+    metrics: {
+      query: [
+        series('Store.ListWorkQueue', (step) => 18 + Math.sin(step / 5) * 6, 'timing'),
+        series('latestRecurringItem', (step) => 3 + step * 0.08, 'timing'),
+        series('Store.ListAudit.countHistory', (step) => 7 + Math.cos(step / 4) * 2, 'timing'),
+      ],
+      ledger: [
+        series('reaction_scan', (step) => 4200 + Math.sin(step / 7) * 300, 'gauge'),
+        series('webhook_delivery', (step) => 61_000 + step * 12, 'gauge'),
+        series('sync_scan', (step) => Math.max(0, 40 - step), 'gauge'),
+        series('auth_cleanup', () => 0, 'gauge'),
+      ],
+      lane: [
+        series(
+          'maintenance',
+          (step) => Math.max(0, Math.round(Math.sin(step / 3) * 4 + 3)),
+          'backlog',
+        ),
+        series('webhook', (step) => (step % 11 === 0 ? 9 : 1), 'backlog'),
+        series('pending_ci', () => 0, 'backlog'),
+      ],
+      database: [
+        series('size_bytes', (step) => 640_000_000 + step * 90_000, 'gauge'),
+        series('round_trip', (step) => 11 + Math.sin(step / 6) * 3, 'timing'),
+        series('pool_in_use', (step) => Math.round(Math.abs(Math.sin(step / 5)) * 4), 'gauge'),
+        series('pool_waits', () => 0, 'gauge'),
+      ],
+    },
+  };
 }
 
 function rootOverviewValue(state: MockState): RootOverview {

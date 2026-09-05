@@ -333,6 +333,49 @@ export function sentenceCase(value: string): string {
   return text.charAt(0).toLocaleUpperCase() + text.slice(1);
 }
 
+export function formatCount(count: number, unit?: string): string {
+  const said = count.toLocaleString();
+
+  return unit === undefined ? said : `${said} ${plural(count, unit)}`;
+}
+
+export function formatCompact(count: number, unit?: string): string {
+  if (count < 10_000) {
+    return formatCount(count, unit);
+  }
+
+  const said = COMPACT.format(count);
+
+  return unit === undefined ? said : `${said} ${plural(2, unit)}`;
+}
+
+const COMPACT = new Intl.NumberFormat(undefined, {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
+export function formatDayAndMonth(value: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+
+  return new Date(parsed).toLocaleString(undefined, { day: 'numeric', month: 'short' });
+}
+
+export function formatTimeOfDay(value: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+
+  return new Date(parsed).toLocaleString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+}
+
 function plural(count: number, unit: string): string {
   return count === 1 ? unit : `${unit}s`;
 }

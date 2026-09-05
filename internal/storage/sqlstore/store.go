@@ -26,7 +26,7 @@ var _ storage.Store = (*Store)(nil)
 // New wraps an open pool. The caller owns opening the pool and applying
 // migrations, because both are engine-specific.
 func New(pool *sql.DB, dialect Dialect) *Store {
-	return &Store{db: newHandle(pool, dialect), dialect: dialect}
+	return &Store{db: newHandle(pool, dialect, newQueryStats()), dialect: dialect}
 }
 
 // DB returns the underlying pool.
