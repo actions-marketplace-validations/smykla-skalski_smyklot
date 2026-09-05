@@ -69,6 +69,7 @@ func SeededTables() []string {
 		"sync_repository_state",
 		"sync_plans",
 		"sync_plan_actions",
+		"service_samples",
 	}
 }
 
@@ -105,6 +106,7 @@ func (s *seeder) run() error {
 		{"delivery", s.seedDelivery},
 		{"pending CI", s.seedPendingCI},
 		{"org sync", s.seedOrgSync},
+		{"service samples", s.seedServiceSamples},
 	}
 
 	for _, step := range steps {
@@ -588,6 +590,26 @@ func (s *seeder) seedFinishedSyncPlan(digest string) error {
 		AppliedAt: s.now.Add(30 * time.Second),
 		Problem:   "these files cannot be composed: docs is not a directory here",
 	}})
+}
+
+func (s *seeder) seedServiceSamples() error {
+	hour := s.now.UTC().Truncate(time.Hour)
+
+	return s.store.RecordServiceSamples(s.ctx, []storage.ServiceSample{
+		{
+			Metric: storage.SampleQuery, Label: "Store.ListWorkQueue", SampledAt: hour,
+			Observations: 41, Failures: 2,
+			Total: 1234 * time.Millisecond, Max: 87 * time.Millisecond,
+		},
+		{
+			Metric: storage.SampleLedger, Label: "reaction_scan",
+			SampledAt: hour.Add(-time.Hour), Value: 4282,
+		},
+		{
+			Metric: storage.SampleLane, Label: "maintenance", SampledAt: hour,
+			Observations: 1, Total: 90 * time.Second, Max: 90 * time.Second, Value: 7,
+		},
+	})
 }
 
 // derive makes a second account from the first, so the seeded people differ in
