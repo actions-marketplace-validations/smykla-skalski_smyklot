@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.53.0](https://github.com/smykla-skalski/smyklot/compare/v1.52.0...v1.53.0) (2026-09-06)
+
+### Features
+
+* **sync:** run routine sync automatically ([#364](https://github.com/smykla-skalski/smyklot/issues/364)) ([5e1d9c9](https://github.com/smykla-skalski/smyklot/commit/5e1d9c9b35cc1633e19f03399a6ee74ff7c0c0ea))
+
+### Bug Fixes
+
+* **service:** measure before waiting five minutes ([#361](https://github.com/smykla-skalski/smyklot/issues/361)) ([bc53bb8](https://github.com/smykla-skalski/smyklot/commit/bc53bb8533e553c300f90b4ca03cad415c8719c3))
+
 ## [1.52.0](https://github.com/smykla-skalski/smyklot/compare/v1.51.0...v1.52.0) (2026-09-05)
 
 ### Features
