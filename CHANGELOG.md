@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.54.1](https://github.com/smykla-skalski/smyklot/compare/v1.54.0...v1.54.1) (2026-09-07)
+
+### Bug Fixes
+
+* **panel:** preserve edits and stabilize settings controls ([#370](https://github.com/smykla-skalski/smyklot/issues/370)) ([f0c9ba1](https://github.com/smykla-skalski/smyklot/commit/f0c9ba17f211fbea67e3b9b3cfab5def5a6ad79b))
+
 ## [1.54.0](https://github.com/smykla-skalski/smyklot/compare/v1.53.0...v1.54.0) (2026-09-07)
 
 ### Features
