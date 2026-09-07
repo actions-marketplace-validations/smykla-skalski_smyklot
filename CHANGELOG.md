@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.54.0](https://github.com/smykla-skalski/smyklot/compare/v1.53.0...v1.54.0) (2026-09-07)
+
+### Features
+
+* **panel:** make sync settings easier to manage ([#366](https://github.com/smykla-skalski/smyklot/issues/366)) ([4217cf1](https://github.com/smykla-skalski/smyklot/commit/4217cf19cb78207b07305fc190b2c70802deb22f))
+
+### Bug Fixes
+
+* **deps:** update dependency @codemirror/legacy-modes to v6.5.4 ([#365](https://github.com/smykla-skalski/smyklot/issues/365)) ([5a1008e](https://github.com/smykla-skalski/smyklot/commit/5a1008ecce88f0137db2719fb0e54e42e1231699))
+* **storage:** write a copied timestamp readably ([#363](https://github.com/smykla-skalski/smyklot/issues/363)) ([ffd49c9](https://github.com/smykla-skalski/smyklot/commit/ffd49c9092ec72c5dd7cabe75b94b3b93c6a96b4))
+
 ## [1.53.0](https://github.com/smykla-skalski/smyklot/compare/v1.52.0...v1.53.0) (2026-09-06)
 
 ### Features
