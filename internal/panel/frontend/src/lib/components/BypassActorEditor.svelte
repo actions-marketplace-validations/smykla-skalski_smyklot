@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { useDebounce } from 'runed';
+  import { revealControl } from '../reveal-control';
   import {
     BYPASS_ACTOR_TYPES,
     BYPASS_MODES,
@@ -85,28 +86,6 @@
       if (request === focusGeneration && !adding && returnFocus?.isConnected)
         revealControl(returnFocus);
     });
-  }
-
-  function revealControl(control: HTMLElement): void {
-    const bounds = control.getBoundingClientRect();
-    if (bounds.width === 0 || bounds.height === 0) return;
-    const composer = document.querySelector('.settings-composer')?.getBoundingClientRect();
-    const lowerEdge =
-      Math.min(
-        window.innerHeight,
-        composer && composer.top > 0 && composer.top < window.innerHeight && composer.height > 0
-          ? composer.top
-          : window.innerHeight,
-      ) - 8;
-    const upperEdge =
-      Math.max(0, document.querySelector('.top-bar')?.getBoundingClientRect().bottom ?? 0) + 8;
-    const delta =
-      bounds.bottom > lowerEdge
-        ? bounds.bottom - lowerEdge
-        : bounds.top < upperEdge
-          ? bounds.top - upperEdge
-          : 0;
-    if (delta) window.scrollBy({ top: delta, behavior: 'instant' });
   }
 
   function actorChanged(actor: SyncRulesetBypassActor): boolean {
@@ -307,7 +286,7 @@ also supports inherited lists without turning them into local overrides.
 
 {#if !readOnly && showAddButton}
   <div class="actor-header">
-    <Button tone="quiet" aria-expanded={adding} onclick={(event) => toggleAdd(event.currentTarget)}>
+    <Button tone="add" aria-expanded={adding} onclick={(event) => toggleAdd(event.currentTarget)}>
       {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}Add an actor
     </Button>
   </div>
@@ -537,7 +516,7 @@ also supports inherited lists without turning them into local overrides.
           <FormError message={failure} />
         </div>
         <div class="actor-form-actions card-action-foot">
-          <Button tone="quiet" onclick={closeAdd}>Cancel</Button>
+          <Button onclick={closeAdd}>Cancel</Button>
           {#if !named}
             <Button
               type="submit"
