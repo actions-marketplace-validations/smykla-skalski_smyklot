@@ -1,5 +1,11 @@
 import { panelUrl } from './base';
-import { parseJson, type JsonValue } from './merge';
+import type {
+  ConfigFilePreview,
+  ConfigFileResolutionInput,
+  ConfigFileResolutionReceipt,
+  ConfigFileSyncStatus,
+} from './config-file-sync';
+import { parseJson, preserveNumberToken, type JsonValue } from './merge';
 import type { PanelStreamHandle, PanelStreamHandlers, PanelWebSocketFactory } from './events';
 import { openPanelStream, panelStreamUrl } from './events';
 import type { RequestFlood } from './request-rate';
@@ -10,6 +16,7 @@ import {
   type SyncFileRenderResponse,
 } from './sync-file-render.generated';
 import type {
+  BypassActorDirectory,
   AuditEntry,
   AuditHistoryRequest,
   AddTargetInvitationInput,
@@ -89,6 +96,26 @@ export class PanelApiError extends Error {
 }
 
 export interface PanelApi {
+  fetchConfigFileStatus(targetId: string, repositoryId?: string): Promise<ConfigFileSyncStatus>;
+  fetchRootConfigFileStatus(targetId: string, repositoryId?: string): Promise<ConfigFileSyncStatus>;
+  previewConfigFile(targetId: string, repositoryId?: string): Promise<ConfigFilePreview>;
+  previewRootConfigFile(targetId: string, repositoryId?: string): Promise<ConfigFilePreview>;
+  resolveConfigFile(
+    targetId: string,
+    input: ConfigFileResolutionInput,
+    repositoryId?: string,
+  ): Promise<ConfigFileResolutionReceipt>;
+  resolveRootConfigFile(
+    targetId: string,
+    input: ConfigFileResolutionInput,
+    repositoryId?: string,
+  ): Promise<ConfigFileResolutionReceipt>;
+  fetchBypassActors(targetId: string, type?: string, query?: string): Promise<BypassActorDirectory>;
+  fetchRootBypassActors(
+    targetId: string,
+    type?: string,
+    query?: string,
+  ): Promise<BypassActorDirectory>;
   fetchViewer(): Promise<PanelViewer | null>;
   fetchTargets(): Promise<PanelTarget[]>;
   fetchRootWorkspaces(): Promise<RootWorkspace[]>;
@@ -375,7 +402,12 @@ export function createPanelApi(
 
   const jsonRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const response = await request(path, init);
-    return (await response.json()) as T;
+    // Actor IDs are identities. Other typed metadata keeps its ordinary number shape.
+    return JSON.parse(
+      await response.text(),
+      (key, value: unknown, context?: { source?: string }) =>
+        key === 'actor_id' ? preserveNumberToken(key, value, context) : value,
+    ) as T;
   };
 
   /**
@@ -775,6 +807,17 @@ export function createPanelApi(
       };
     },
 
+    fetchBypassActors(targetId: string, type = '', query = ''): Promise<BypassActorDirectory> {
+      return jsonRequest(
+        `/api/v1/targets/${pathSegment(targetId)}/bypass-actors?${new URLSearchParams({ type, q: query })}`,
+      );
+    },
+    fetchRootBypassActors(targetId: string, type = '', query = ''): Promise<BypassActorDirectory> {
+      return jsonRequest(
+        `/api/v1/root/workspaces/${pathSegment(targetId)}/bypass-actors?${new URLSearchParams({ type, q: query })}`,
+      );
+    },
+
     fetchRootTargetSettings(targetId: string): Promise<PanelTarget> {
       return jsonRequest(`/api/v1/root/workspaces/${pathSegment(targetId)}/settings`);
     },
@@ -1129,6 +1172,36 @@ export function createPanelApi(
       return jsonRequest(`/api/v1/targets/${pathSegment(targetId)}/sync/status`);
     },
 
+    fetchConfigFileStatus(targetId, repositoryId) {
+      return jsonRequest(configFilePath(targetId, repositoryId));
+    },
+
+    fetchRootConfigFileStatus(targetId, repositoryId) {
+      return jsonRequest(configFilePath(targetId, repositoryId, true));
+    },
+
+    previewConfigFile(targetId, repositoryId) {
+      return documentRequest(`${configFilePath(targetId, repositoryId)}/preview`);
+    },
+
+    previewRootConfigFile(targetId, repositoryId) {
+      return documentRequest(`${configFilePath(targetId, repositoryId, true)}/preview`);
+    },
+
+    resolveConfigFile(targetId, input, repositoryId) {
+      return postJson(`${configFilePath(targetId, repositoryId)}/resolution`, {
+        review_token: input.review_token,
+        side: input.side,
+      });
+    },
+
+    resolveRootConfigFile(targetId, input, repositoryId) {
+      return postJson(`${configFilePath(targetId, repositoryId, true)}/resolution`, {
+        review_token: input.review_token,
+        side: input.side,
+      });
+    },
+
     fetchSyncFilesContext(targetId: string): Promise<SyncFilesContext> {
       return jsonRequest(`/api/v1/targets/${pathSegment(targetId)}/sync/files/context`);
     },
@@ -1311,6 +1384,12 @@ function withRootUserPageQuery(path: string, page: RootPanelUserPageRequest): st
   return `${path}?${parameters.toString()}`;
 }
 
+function configFilePath(targetId: string, repositoryId?: string, root = false): string {
+  const scope = root ? 'root/workspaces' : 'targets';
+  const repository = repositoryId === undefined ? '' : `/repositories/${pathSegment(repositoryId)}`;
+  return `/api/v1/${scope}/${pathSegment(targetId)}${repository}/config-file`;
+}
+
 function pathSegment(value: string): string {
   return encodeURIComponent(value).replace(/\./g, '%2E');
 }
@@ -1372,7 +1451,8 @@ function graftDocuments(payload: unknown, literal: JsonValue): unknown {
   for (const key of Object.keys(grafted)) {
     const beside = (literal as Record<string, JsonValue>)[key];
     if (beside === undefined) continue;
-    grafted[key] = key === 'document' ? beside : graftDocuments(grafted[key], beside);
+    grafted[key] =
+      key === 'document' || key === 'actor_id' ? beside : graftDocuments(grafted[key], beside);
   }
 
   return grafted;

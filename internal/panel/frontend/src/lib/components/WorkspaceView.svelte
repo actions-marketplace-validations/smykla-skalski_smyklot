@@ -1,6 +1,7 @@
 <script lang="ts">
   import { syncPermissionsHref } from '../sync-health';
-  import { useQueryClient } from '@tanstack/svelte-query';
+  import { configFileStatusQuery, configFileStatusRevision } from '../config-file-status';
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { plainClick } from '#lib/follow.js';
   import { getPanelSession, type PanelSession } from '#lib/session.svelte.js';
   import { getSettingsDraftRegistry } from '#lib/settings-drafts.svelte.js';
@@ -19,6 +20,17 @@
   const session = getPanelSession();
   const settingsDrafts = getSettingsDraftRegistry();
   const queryClient = useQueryClient();
+  const configFileQuery = createQuery(() => {
+    const target = session.selectedTarget;
+    return configFileStatusQuery(
+      target?.id ?? '',
+      'panel',
+      undefined,
+      configFileStatusRevision(settingsDrafts, target?.id ?? '', target?.revision ?? 0),
+      session.api.fetchConfigFileStatus,
+      target !== null && view === 'settings',
+    );
+  });
   function fetchRepositories(request: Parameters<PanelSession['api']['fetchRepositories']>[1]) {
     if (session.selectedTarget === null) throw new Error('select a workspace first');
     return session.api.fetchRepositories(session.selectedTarget.id, request);
@@ -93,6 +105,13 @@ history is routed with its section. That is what makes an address like
       {:then { default: TargetSettings }}
         {#key session.selectedTarget.id}
           <TargetSettings
+            lookupBypassActors={(type, query) =>
+              session.api.fetchBypassActors(session.selectedTarget!.id, type, query)}
+            configFileConnection={configFileQuery}
+            configFileReview={{
+              preview: session.api.previewConfigFile,
+              resolve: session.api.resolveConfigFile,
+            }}
             target={session.selectedTarget}
             readOnly={!session.selectedTarget.capabilities.write}
             timing={{
@@ -114,10 +133,16 @@ history is routed with its section. That is what makes an address like
       {:then { default: RepositoryList }}
         {#key session.selectedTarget.id}
           <RepositoryList
+            organizationActors={session.selectedTarget.type === 'Organization'}
             targetId={session.selectedTarget.id}
             defaultEnabled={session.selectedTarget.repository_default_enabled}
             fetchPage={fetchRepositories}
             onLoad={loadRepository}
+            onLoadConfigFileStatus={session.api.fetchConfigFileStatus}
+            configFileReview={{
+              preview: session.api.previewConfigFile,
+              resolve: session.api.resolveConfigFile,
+            }}
             onResetConfigMigration={(targetId, repositoryId) =>
               session.api.resetConfigMigration(targetId, repositoryId)}
             onChanged={(targetId) => session.repositoryChanged(targetId)}
@@ -138,11 +163,14 @@ history is routed with its section. That is what makes an address like
       {:then { default: SyncView }}
         {#key session.selectedTarget.id}
           <SyncView
+            organizationActors={session.selectedTarget.type === 'Organization'}
             targetId={session.selectedTarget.id}
             section={session.currentSyncSection}
             rulesetName={session.currentSyncRuleset}
             readOnly={!session.selectedTarget.capabilities.write}
             canControl={['admin', 'owner'].includes(session.selectedTarget.effective_role)}
+            lookupBypassActors={(type, query) =>
+              session.api.fetchBypassActors(session.selectedTarget!.id, type, query)}
             fetchConfig={session.api.fetchSyncConfig}
             fetchPlan={session.api.fetchSyncPlan}
             approvePlan={session.api.approveSyncPlan}

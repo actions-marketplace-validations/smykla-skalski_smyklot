@@ -511,7 +511,8 @@ export class PanelSession {
     if (
       this.currentView === 'sync' &&
       this.currentSyncSection === section &&
-      this.currentSyncRuleset === null
+      this.currentSyncRuleset === null &&
+      this.currentSyncFile === null
     ) {
       return;
     }
@@ -890,6 +891,7 @@ export class PanelSession {
       case 'repository.changed':
         void this.queryClient.invalidateQueries({ queryKey: ['repositories', targetId] });
         void this.queryClient.invalidateQueries({ queryKey: ['repository', targetId] });
+        void this.queryClient.invalidateQueries({ queryKey: ['config-file-status', targetId] });
         /* What a repository says about a kind of sync is its own key, and keys
            match by prefix, so neither of the two above reaches it. Without this
            a colleague's save left this browser rendering the document it had
@@ -1018,6 +1020,7 @@ export class PanelSession {
   }
 
   invalidateTargetData(targetId: string): void {
+    this.queryClient.invalidateQueries({ queryKey: ['config-file-status', targetId] });
     this.queryClient.invalidateQueries({ queryKey: ['repositories', targetId] });
     this.queryClient.invalidateQueries({ queryKey: ['repository', targetId] });
     this.queryClient.invalidateQueries({ queryKey: ['audit', targetId] });

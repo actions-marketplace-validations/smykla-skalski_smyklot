@@ -1,3 +1,15 @@
+import {
+  CONFIG_FILE_STATUS_FIXTURES,
+  REPOSITORY_CONFIG_FILE_STATES,
+  workspaceConfigFileVariant,
+} from './config-file-status.js';
+import {
+  REPOSITORY_FILE_SEARCH_PATHS,
+  REPOSITORY_FILE_VARIANTS,
+  observedRepositoryFileStatus,
+  type RepositoryFileFixture,
+} from './repository-files.js';
+import { NATIVE_FILE_VARIANTS } from './native-files.js';
 /**
  * The panel's fixture data, and the only copy of it.
  *
@@ -281,6 +293,7 @@ export function seed(
     repositorySeed(organization.value, {
       id: '4004',
       name: 'migration-demo',
+      file: REPOSITORY_FILE_VARIANTS['migration-demo'],
       enabledOverride: null,
       filePatch: { quiet_pending: true },
       panelPatch: {},
@@ -319,6 +332,7 @@ export function seed(
       repositorySeed(organization.value, {
         id: `40${String(index + 5).padStart(2, '0')}`,
         name,
+        file: REPOSITORY_FILE_VARIANTS[name],
         /* auth-service (index 1) INHERITS, which is what the approved table
            demos in its second row: an unbroken chain and a dashed target on the
            value Settings supplies. An explicit `false` here drew a broken chain
@@ -440,6 +454,10 @@ export function seed(
       retryable: index % 3 === 1,
       occurred_at: iso(-(8 * 60 + index * 53) * 60_000),
     });
+  }
+  for (const repository of organization.repositories) {
+    const variant = REPOSITORY_CONFIG_FILE_STATES[repository.detail.repository.name] ?? 'off';
+    repository.detail.config_file_sync_enabled = CONFIG_FILE_STATUS_FIXTURES[variant].enabled;
   }
   recomputeTarget(organization);
 
@@ -610,6 +628,7 @@ export function seed(
                   },
                 ],
               },
+              ...NATIVE_FILE_VARIANTS.map(({ merge }) => merge),
             ],
             formats: [
               {
@@ -905,7 +924,7 @@ export function syncRulesetsSeed(iso: (offsetMs: number) => string): SyncConfig 
           conditions: { include: ['~DEFAULT_BRANCH'], exclude: [] },
           bypass_actors: [
             { actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' },
-            { actor_id: 1216238, actor_type: 'Integration', bypass_mode: 'pull_request' },
+            { actor_id: 1197525, actor_type: 'Integration', bypass_mode: 'pull_request' },
           ],
           rules: {
             deletion: true,
@@ -960,7 +979,7 @@ export function syncFilesSeed(iso: (offsetMs: number) => string): SyncConfig {
     updated_by: 'bart',
     updated_at: iso(-20 * 60_000),
     digest: 'sha256:files',
-    /* The design's five templates, content for content - the file pages are
+    /* The shared templates, including runnable native-format examples - the file pages are
        compared against the mock screen by screen. Freshness belongs to the
        strict configuration envelope, not inside the file document. */
     document: {
@@ -1008,6 +1027,10 @@ export function syncFilesSeed(iso: (offsetMs: number) => string): SyncConfig {
             '',
             '- Conventional commits: `feat:`, `fix:`, `docs:`',
             '- Sign-off and GPG sign: `-sS`',
+            '',
+            '### Making Changes',
+            '',
+            'Run make check before opening a pull request',
           ].join('\n'),
         },
         {
@@ -1018,6 +1041,7 @@ export function syncFilesSeed(iso: (offsetMs: number) => string): SyncConfig {
           path: 'LICENSE',
           content: 'Apache License 2.0\n',
         },
+        ...NATIVE_FILE_VARIANTS.map(({ file }) => file),
       ],
       retired: ['.github/stale.yml'],
       excludes: ['LICENSE-*'],
@@ -1455,7 +1479,10 @@ export function targetSeed(input: {
       installation_id: input.workspaceId,
       type: input.type,
       account,
+      config_file_sync_enabled:
+        CONFIG_FILE_STATUS_FIXTURES[workspaceConfigFileVariant(input.login)].enabled,
       repository_default_enabled: input.repositoryDefaultEnabled,
+      pending_ci_bypass_policy_default: null,
       pending_ci_mode_default: 'checks',
       pending_ci_branch_patterns_default: { include: ['~DEFAULT_BRANCH'], exclude: [] },
       pending_ci_quiet_period_seconds_override: null,
@@ -1494,21 +1521,26 @@ export function repositorySeed(
     filePatch: ConfigPatch;
     panelPatch: ConfigPatch;
     fileError?: string;
+    file?: RepositoryFileFixture;
     bypass?: boolean;
     private?: boolean;
     updatedAt: string;
   },
 ): MockRepository {
-  const bypass = input.bypass ?? false;
-  const inherited = resolveConfig(target.config_patch, input.filePatch, {}, bypass);
-  const resolved = resolveConfig(target.config_patch, input.filePatch, input.panelPatch, bypass);
-  const status = bypass
-    ? 'bypassed'
-    : input.fileError !== undefined
+  const file = input.file;
+  const filePatch = file?.patch ?? input.filePatch;
+  const fileError = file ? file.error : input.fileError;
+  const bypass = file ? (file.bypass ?? false) : (input.bypass ?? false);
+  const observedStatus =
+    file?.status ??
+    (fileError !== undefined
       ? 'invalid'
-      : Object.keys(input.filePatch).length === 0
+      : Object.keys(filePatch).length === 0
         ? 'missing'
-        : 'valid';
+        : 'valid');
+  const inherited = resolveConfig(target.config_patch, filePatch, {}, bypass);
+  const resolved = resolveConfig(target.config_patch, filePatch, input.panelPatch, bypass);
+  const status = bypass ? 'bypassed' : observedStatus === 'unknown' ? 'missing' : observedStatus;
   const summary: RepositorySummary = {
     id: input.id,
     name: input.name,
@@ -1526,7 +1558,7 @@ export function repositorySeed(
     updated_at: input.updatedAt,
   };
   return {
-    filePatch: input.filePatch,
+    filePatch,
     detail: {
       repository: summary,
       config_patch: input.panelPatch,
@@ -1534,23 +1566,25 @@ export function repositorySeed(
       effective_config: resolved.values,
       config_sources: resolved.sources,
       formatting_sources: resolved.formattingSources,
-      config_file_patch: input.filePatch,
-      config_file_error: input.fileError,
-      config_file_path: status === 'missing' ? undefined : '.smyklot.toml',
-      // Every fifth repository carries the file it was meant to have migrated
-      // away from, so the detail pane's "also present" line has something to
-      // render against
-      config_file_superseded:
-        status === 'missing' || Number(input.id.replace(/\D/g, '')) % 5 !== 0
+      config_file_patch: filePatch,
+      config_file_observation: {
+        status: observedStatus,
+        ...(observedStatus === 'unknown' ? {} : { observed_at: input.updatedAt }),
+        search_paths: [...REPOSITORY_FILE_SEARCH_PATHS],
+      },
+      config_file_error: fileError,
+      config_file_path: file
+        ? file.path
+        : observedStatus === 'missing'
           ? undefined
-          : ['.github/smyklot.yaml'],
-      // Every seventh repository has already been asked and said no, so the
-      // detail pane's refusal line and its way back are both reachable
-      config_migration:
-        status === 'missing' || Number(input.id.replace(/\D/g, '')) % 7 !== 0 ? 'none' : 'declined',
-      config_migration_pr:
-        status === 'missing' || Number(input.id.replace(/\D/g, '')) % 7 !== 0 ? undefined : 42,
+          : '.smyklot.toml',
+      config_file_superseded: file?.superseded,
+      config_migration: file?.migration ?? 'none',
+      config_migration_pr: file?.migrationPR,
+      config_file_sync_enabled: false,
       ignore_repository_file: bypass,
+      pending_ci_bypass_policy_override: null,
+      pending_ci_bypass_policy_inherited: target.pending_ci_bypass_policy_default ?? null,
       pending_ci_mode_override: null,
       pending_ci_mode_inherited: target.pending_ci_mode_default,
       pending_ci_branch_patterns_override: null,
@@ -1565,7 +1599,7 @@ export function repositorySeed(
         desired_mode: target.pending_ci_mode_default,
         effective_mode: target.pending_ci_mode_default,
         readiness: 'ready',
-        reason: 'Ready in the development fixture',
+        reason: 'Checks and required context are ready',
       },
       revision: 1,
     },
@@ -1686,7 +1720,7 @@ function recomputeRepository(target: MockTarget, repository: MockRepository): vo
   detail.repository.enabled_source =
     detail.repository.enabled_override === null ? 'target' : 'repository';
   detail.repository.config_override_count = Object.keys(detail.config_patch).length;
-  if (detail.ignore_repository_file) detail.repository.config_file_status = 'bypassed';
+  detail.repository.config_file_status = observedRepositoryFileStatus(detail);
 }
 
 export function queueSeeds(iso: (offsetMs: number) => string): QueueItem[] {

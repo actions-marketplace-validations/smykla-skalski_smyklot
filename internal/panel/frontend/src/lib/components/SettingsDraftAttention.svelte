@@ -44,32 +44,32 @@ screen would otherwise say so.
 Distinct from the save composer: that one is the bar on the page that owns the draft,
 and this is the notice everywhere else. `reviewHref` is the way back to it.
 
-`storage-problem` is the other kind - a draft that could not be kept - and takes the
-warning tone, because a draft the panel has lost is the one thing here a reader cannot
-recover by going back.
+`storage-problem` is the other kind - a draft that could not be kept in browser
+storage. Both kinds use the shared pending-decision treatment; storage failure
+retains warning typography and alert semantics without implying the draft is gone.
 -->
 
 <div class="settings-draft-attention" data-kind={kind}>
   <Callout
-    class="attention-surface"
+    decision
     tone={kind === 'storage-problem' ? 'warning' : 'quiet'}
     role={kind === 'storage-problem' ? 'alert' : 'status'}
     aria-live={kind === 'storage-problem' ? 'assertive' : 'polite'}
     aria-atomic="true"
   >
     {#snippet icon()}
-      <span class="attention-mark"><Icon name={iconName} size="base" strokeWidth={2} /></span>
+      <Icon name={iconName} size="base" strokeWidth={2} />
     {/snippet}
-    <div class="attention-copy">
+    <div class="callout-copy">
       <strong>{heading}</strong>
       <span>{detail}</span>
     </div>
-    <span class="attention-actions">
+    {#snippet actions()}
       {#if reviewHref !== undefined && kind !== 'storage-problem'}
-        <Button tone="brand" row href={reviewHref} onclick={onDismiss}>Review</Button>
+        <Button tone="signal" row href={reviewHref} onclick={onDismiss}>Review</Button>
       {/if}
       <Button tone="quiet" row onclick={onDismiss}>Dismiss</Button>
-    </span>
+    {/snippet}
   </Callout>
 </div>
 
@@ -78,60 +78,10 @@ recover by going back.
     animation: attention-arrive var(--duration-fast) var(--ease-standard) both;
   }
 
-  .settings-draft-attention :global(.attention-surface) {
-    -webkit-backdrop-filter: blur(18px) saturate(118%);
-    backdrop-filter: blur(18px) saturate(118%);
-    background: color-mix(in srgb, var(--surface-raised) 82%, transparent);
-    border-color: color-mix(in srgb, var(--text-primary) 18%, transparent);
-    box-shadow:
-      var(--shadow-popover),
-      inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
-  }
-
-  .settings-draft-attention[data-kind='inactive'] :global(.attention-surface) {
-    background: color-mix(in srgb, var(--brand-action-tint) 82%, transparent);
-    border-color: color-mix(in srgb, var(--brand-action) 28%, transparent);
-  }
-
-  .settings-draft-attention[data-kind='storage-problem'] :global(.attention-surface) {
-    background: color-mix(in srgb, var(--warning-tint) 84%, transparent);
-    border-color: color-mix(in srgb, var(--warning) 34%, transparent);
-  }
-
-  .attention-mark {
-    color: var(--text-secondary);
-    display: inline-flex;
-    flex: 0 0 auto;
-  }
-
-  .attention-copy {
-    display: grid;
-    flex: 1;
-    gap: var(--space-1);
-    min-width: 0;
-  }
-
-  .attention-copy strong {
-    color: var(--text-primary);
-  }
-
-  .attention-actions {
-    align-self: center;
-    display: flex;
-    flex: 0 0 auto;
-    gap: var(--space-1);
-  }
-
   @keyframes attention-arrive {
     from {
       opacity: 0;
       transform: translateY(-0.5rem);
-    }
-  }
-
-  @media (max-width: 36rem) {
-    .attention-actions {
-      align-self: start;
     }
   }
 

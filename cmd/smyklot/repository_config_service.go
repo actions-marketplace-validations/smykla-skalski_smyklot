@@ -16,6 +16,7 @@ import (
 
 type repositoryConfigFile struct {
 	patch  config.Patch
+	panel  *config.PanelFileSection
 	status storage.RepositoryFileStatus
 	err    error
 
@@ -88,7 +89,7 @@ func repositoryConfigFileFrom(found foundRepoConfig, fingerprint string) reposit
 		}
 	}
 
-	patch, err := parseRepositoryConfig(found)
+	document, err := parseRepositoryConfig(found)
 	if err != nil {
 		return repositoryConfigFile{
 			status:      storage.RepositoryFileInvalid,
@@ -100,7 +101,8 @@ func repositoryConfigFileFrom(found foundRepoConfig, fingerprint string) reposit
 	}
 
 	return repositoryConfigFile{
-		patch:       patch,
+		patch:       document.Patch,
+		panel:       document.Panel,
 		status:      storage.RepositoryFileValid,
 		path:        found.Path,
 		superseded:  found.Superseded,
@@ -109,13 +111,13 @@ func repositoryConfigFileFrom(found foundRepoConfig, fingerprint string) reposit
 }
 
 // parseRepositoryConfig reads a found file in whichever format its name says.
-func parseRepositoryConfig(found foundRepoConfig) (config.Patch, error) {
+func parseRepositoryConfig(found foundRepoConfig) (config.FileDocument, error) {
 	format, err := config.FormatOf(found.Path)
 	if err != nil {
-		return config.Patch{}, err
+		return config.FileDocument{}, err
 	}
 
-	return config.ParsePatch(format, found.Content)
+	return config.ParseRepositoryFile(format, found.Content)
 }
 
 func (s *server) repositoryEnabled(
@@ -262,12 +264,23 @@ func (s *server) serviceConfigWithControls(
 	if file.err != nil && !repository.IgnoreRepositoryFile {
 		return nil, file.err
 	}
+	if repository.ConfigFileSyncEnabled && !repository.IgnoreRepositoryFile {
+		if err := s.requireConfigurationFileBaseline(ctx, targetID, repositoryID); err != nil {
+			return nil, err
+		}
+	}
 
 	layers := []config.Layer{{Source: config.SourceTarget, Patch: target.ConfigPatch}}
 	if !repository.IgnoreRepositoryFile {
+		filePatch := file.patch
+		if repository.ConfigFileSyncEnabled {
+			// File edits become active only after reconciliation imports them.
+			// Runner is deliberately file-owned and cannot be set by the panel.
+			filePatch = config.Patch{Runner: file.patch.Runner}
+		}
 		layers = append(layers, config.Layer{
 			Source: config.SourceRepositoryFile,
-			Patch:  file.patch,
+			Patch:  filePatch,
 		})
 	}
 	layers = append(layers, config.Layer{

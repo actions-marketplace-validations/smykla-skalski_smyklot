@@ -18,6 +18,11 @@ func declareInstallationSettingsSpecs(
 	harness Harness,
 	runtime func() (context.Context, storage.Store, time.Time),
 ) {
+	declareBypassPolicySpecs(runtime)
+	declareRepositoryFileObservationSpecs(runtime)
+	declareConfigFileSyncSpecs(runtime)
+	declareConfigFileResolutionSpecs(harness, runtime)
+	declareConfigFileActivationSpecs(runtime)
 	declareAtomicInstallationSettingsSpec(runtime)
 	declareInstallationSettingsRollbackSpec(runtime)
 	declareInstallationSettingsFailureSpec(harness, runtime)

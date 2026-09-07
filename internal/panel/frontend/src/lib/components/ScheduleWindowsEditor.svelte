@@ -1,5 +1,7 @@
 <script lang="ts">
   import Button from './Button.svelte';
+  import IconButton from './IconButton.svelte';
+  import Select from './Select.svelte';
 
   export interface EditableWindow {
     id: string;
@@ -39,102 +41,87 @@
 The weekly windows during which work may run, edited as a list rather than a calendar.
 A window is a day and a span, and the list is the profile.
 
-Overlapping windows are not an error and are not merged: two that overlap mean the same
-thing as one that spans both, and rewriting what somebody typed into what it is
-equivalent to is a change they did not make.
+Each caller owns validation and saving. Keep the entered windows intact so invalid
+or overlapping intervals remain visible for correction.
 -->
 
-<div class="windows-editor">
+<div class="form-stack windows-editor">
   <div class="windows-heading">
-    <span>Open hours, week by week</span>
-    <Button row onclick={() => onChange([...windows, newWindow()])}>Add a day</Button>
+    <span class="form-label">Weekly hours</span>
+    <Button row onclick={() => onChange([...windows, newWindow()])}>Add hours</Button>
   </div>
   {#each windows as window, index (window.id)}
-    <div class="window-row">
-      <label for={`${idPrefix}-day-${index}`}
-        >Day<select
+    <div class="window-row" role="group" aria-label={`Hours for ${days[window.weekday]}`}>
+      <label class="form-field" for={`${idPrefix}-day-${index}`}
+        ><span class="form-label">Day</span><Select
           id={`${idPrefix}-day-${index}`}
           value={window.weekday}
-          onchange={(event) => update(index, { weekday: Number(event.currentTarget.value) })}
-        >
-          {#each days as day, dayIndex (day)}
-            <option value={dayIndex}>{day}</option>
-          {/each}
-        </select></label
+          onValueChange={(value) => update(index, { weekday: value })}
+          options={days.map((day, weekday) => ({ value: weekday, label: day }))}
+        /></label
       >
-      <label for={`${idPrefix}-start-${index}`}
-        >Opens<input
+      <label class="form-field" for={`${idPrefix}-start-${index}`}
+        ><span class="form-label">Opens</span><input
+          class="text-input"
           id={`${idPrefix}-start-${index}`}
           type="time"
           value={window.start}
           oninput={(event) => update(index, { start: event.currentTarget.value })}
         /></label
       >
-      <label for={`${idPrefix}-end-${index}`}
-        >Closes<input
+      <label class="form-field" for={`${idPrefix}-end-${index}`}
+        ><span class="form-label">Closes</span><input
+          class="text-input"
           id={`${idPrefix}-end-${index}`}
           type="time"
           value={window.end}
           oninput={(event) => update(index, { end: event.currentTarget.value })}
         /></label
       >
-      <Button
-        row
-        tone="stop-quiet"
-        disabled={windows.length === 1}
-        onclick={() => onChange(windows.filter((_, at) => at !== index))}>Remove</Button
-      >
+      <div class="window-remove">
+        <IconButton
+          toolbar
+          icon="close"
+          label={`Remove ${days[window.weekday]} hours, ${window.start} to ${window.end}`}
+          disabled={windows.length === 1}
+          onclick={() => onChange(windows.filter((_, at) => at !== index))}
+        />
+      </div>
     </div>
   {/each}
 </div>
 
 <style>
   .windows-editor {
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-control);
-    display: grid;
-    gap: var(--space-3);
-    padding: var(--space-3);
-  }
-  .windows-heading,
-  .window-row {
-    align-items: end;
-    display: grid;
-    gap: var(--space-3);
+    container: hours-editor / inline-size;
   }
   .windows-heading {
     align-items: center;
-    grid-template-columns: 1fr auto;
-  }
-  .windows-heading > span,
-  label {
-    font-size: 0.75rem;
-    font-weight: 720;
+    display: flex;
+    gap: var(--space-4);
+    justify-content: space-between;
   }
   .window-row {
-    grid-template-columns: minmax(8rem, 1.4fr) 1fr 1fr auto;
-  }
-  label {
+    align-items: end;
     display: grid;
-    gap: var(--space-1);
+    gap: var(--space-4);
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) auto;
   }
-  input,
-  select {
-    background: var(--input-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--radius-control);
-    color: var(--text-primary);
-    font: inherit;
-    min-height: 2.5rem;
-    padding: 0 var(--space-3);
+  .window-remove {
+    display: flex;
+    justify-content: end;
   }
-  @media (max-width: 34rem) {
+  @container hours-editor (max-width: 26rem) {
     .window-row {
-      align-items: stretch;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .window-row label:first-child {
-      grid-column: 1 / -1;
+    .window-remove {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .window-row label:nth-child(2),
+    .window-row label:nth-child(3) {
+      grid-row: 2;
     }
   }
 </style>

@@ -14,7 +14,12 @@ import { join } from 'node:path';
 
 import type { Browser, Page } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { createServer, defaultClientConditions, type ViteDevServer } from 'vite';
+import {
+  createServer,
+  defaultClientConditions,
+  searchForWorkspaceRoot,
+  type ViteDevServer,
+} from 'vite';
 
 /** Long enough for a route to load its data. */
 export const SETTLE_MS = 1500;
@@ -37,6 +42,7 @@ export interface Panel {
  * checked and is not.
  */
 export const PANEL_ROUTES = [
+  'workspace/',
   'workspace/settings',
   'workspace/queue',
   'workspace/repositories',
@@ -54,10 +60,14 @@ export const PANEL_ROUTES = [
   'workspace/sync/settings',
   'workspace/sync/plan',
   'workspace/sync/rulesets',
+  'workspace/sync/rulesets/main-protection',
   'workspace/sync/files',
+  'workspace/sync/files/renovate.json',
   'workspace/access/users',
   'workspace/access/invitations',
   'workspace/history',
+  'workspace/history/failures',
+  'root',
   'root/runtime/service',
   'root/runtime/settings',
   'root/queue',
@@ -66,6 +76,7 @@ export const PANEL_ROUTES = [
   'root/workspaces',
   'root/workspaces/{account}/settings',
   'root/workspaces/{account}/repositories',
+  'root/workspaces/{account}/repositories/api-gateway',
   'root/workspaces/{account}/access/users',
   'root/workspaces/{account}/access/invitations',
   'root/workspaces/{account}/history/audit',
@@ -73,7 +84,9 @@ export const PANEL_ROUTES = [
   'root/access/users',
   'root/access/invitations',
   'root/history/audit',
+  'root/history/failures',
   'inbox',
+  'search?q=merge',
 ] as const;
 
 /** One of those routes as an address, filling in the workspace that signing in found. */
@@ -86,6 +99,9 @@ export function addressOf(panel: Panel, route: string): string {
 
 export async function startPanel(): Promise<Panel> {
   process.env.SMYKLOT_PANEL_DEV_MOCK = '1';
+  // Select the same isolated generated-output and dependency-cache lane as unit
+  // Vitest, including when this harness runs standalone. Suites use it serially.
+  process.env.SMYKLOT_PANEL_BROWSER_LANE = '1';
   /* A preference document of this run's own.
      The mock keeps preferences in a file so a dev session survives a Vite restart, and that file
      sits in the checkout. Every measurement here was therefore taken through whatever the developer
@@ -109,7 +125,12 @@ export async function startPanel(): Promise<Panel> {
     // client conditions there, which would otherwise resolve Svelte's default
     // (server) entry in the real browser and fail before the panel mounts.
     resolve: { conditions: [...defaultClientConditions] },
-    server: { host: '127.0.0.1', port: 0 },
+    server: {
+      host: '127.0.0.1',
+      port: 0,
+      // Compile browser fixtures against the actual shared components in this isolated lane.
+      fs: { allow: [searchForWorkspaceRoot(process.cwd())] },
+    },
   });
   let browser: Browser | undefined;
 

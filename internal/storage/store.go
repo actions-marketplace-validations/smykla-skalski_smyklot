@@ -70,6 +70,11 @@ type CatalogStore interface {
 
 // ConfigStore owns atomic panel-setting changes and their audit records.
 type ConfigStore interface {
+	GetConfigFileState(context.Context, string, string) (ConfigFileState, error)
+	SaveConfigFileState(context.Context, ConfigFileStateChange) (ConfigFileState, error)
+	SaveConfigFileResolution(context.Context, ConfigFileResolution) (ConfigFileState, error)
+	NotifyConfigFileChange(context.Context, string, string, time.Time) error
+	DispatchConfigFileNotifications(context.Context, time.Time) (int, error)
 	SaveInstallationSettings(context.Context, SaveInstallationSettingsRequest) (SaveInstallationSettingsResult, error)
 	InspectInstallationSettingsCheckpoint(
 		context.Context,

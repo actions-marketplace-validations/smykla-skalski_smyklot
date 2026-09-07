@@ -13,9 +13,10 @@
   /* One name per job, wherever it is read. A workspace used to keep a second table
      of its own, so the row a member asked about and the row an operator answered
      named the same job two ways. */
-  import { workloadTitle } from '#lib/workloads.js';
+  import { workloadCadenceDescription, workloadTitle } from '#lib/workloads.js';
 
   import Button from './Button.svelte';
+  import DurationInput from './DurationInput.svelte';
   import Chip, { type ChipTone } from './Chip.svelte';
   import Modal from './Modal.svelte';
   import ScheduleWindowsEditor, { type EditableWindow } from './ScheduleWindowsEditor.svelte';
@@ -38,6 +39,7 @@
     'pending_ci_gate',
     'reaction_scan',
     'config_migration',
+    'config_file_sync',
     'sync_scan',
     'path_refresh',
   ]);
@@ -119,18 +121,21 @@
     { id: 'request-5', weekday: 5, start: '09:00', end: '17:00' },
   ]);
   let exceptions = $state('');
+  let cadenceProblem = $state<string | null>(null);
   let cadence = $state<number | null | undefined>(undefined);
   let priority = $state<QueuePriority | null>(null);
   let reason = $state('');
 
   const chosen = $derived(policies.find((policy) => policy.kind === kind));
+  const cadenceDescription = $derived(workloadCadenceDescription(kind));
   const cadenceShown = $derived(
     cadence !== undefined ? cadence : Math.round((chosen?.cadence ?? 0) / 1_000_000_000),
   );
   const priorityShown = $derived(priority ?? chosen?.default_priority ?? 'normal');
   const profileShown = $derived(chosenProfile ?? chosen?.profile_id ?? profiles[0]?.id ?? '');
   const cadenceInvalid = $derived(
-    cadenceShown === null ||
+    cadenceProblem !== null ||
+      cadenceShown === null ||
       !Number.isFinite(cadenceShown) ||
       cadenceShown < 0 ||
       (kind !== 'pending_ci' && cadenceShown <= 0),
@@ -264,7 +269,7 @@ answered a question a workspace never asks and hid the one it does.
 
 {#if problem !== ''}
   <div class="state-panel is-error" role="alert">
-    <span><strong>The request did not go through.</strong> {problem}</span>
+    <span><strong>Request failed</strong> · {problem}</span>
   </div>
 {/if}
 
@@ -272,52 +277,53 @@ answered a question a workspace never asks and hid the one it does.
   id="workspace-timing-request"
   {open}
   title="Request a change to when Smyklot acts"
-  description="The operators decide. Say what you need and why."
+  description="Describe the schedule change for an operator to review"
   returnFocus={opener}
   onClose={() => (open = false)}
 >
-  <div class="request-form">
-    <label>
-      <span>Job</span>
+  <div class="form-stack request-form">
+    <label class="form-field">
+      <span class="form-label">Job</span>
       <Select
+        aria-label="Job"
         value={kind}
-        onchange={(event) =>
-          pickKind((event.currentTarget as HTMLSelectElement).value as QueueWorkload)}
-      >
-        {#each policies as policy (policy.kind)}
-          <option value={policy.kind}>{workloadTitle(policy.kind)}</option>
-        {/each}
-      </Select>
+        onValueChange={(value) => pickKind(value as QueueWorkload)}
+        options={policies.map((policy) => ({
+          value: policy.kind,
+          label: workloadTitle(policy.kind),
+        }))}
+      />
     </label>
 
-    <label>
-      <span>Hours</span>
-      <Select bind:value={windowMode}>
-        <option value="existing">A named set of hours</option>
-        <option value="custom">Hours of your own</option>
-      </Select>
+    <label class="form-field">
+      <span class="form-label">Hours</span>
+      <Select
+        aria-label="Hours"
+        bind:value={windowMode}
+        options={[
+          { value: 'existing', label: 'A named set of hours' },
+          { value: 'custom', label: 'Hours of your own' },
+        ]}
+      />
     </label>
 
     {#if windowMode === 'existing'}
-      <label>
-        <span>Which hours</span>
+      <label class="form-field">
+        <span class="form-label">Which hours</span>
         <Select
           aria-label="Which hours"
           value={profileShown}
-          onchange={(event) => (chosenProfile = (event.currentTarget as HTMLSelectElement).value)}
-        >
-          {#each profiles as profile (profile.id)}
-            <option value={profile.id}>{profile.name}</option>
-          {/each}
-        </Select>
+          onValueChange={(value) => (chosenProfile = value)}
+          options={profiles.map((profile) => ({ value: profile.id, label: profile.name }))}
+        />
       </label>
     {:else}
-      <label>
-        <span>Name</span>
+      <label class="form-field">
+        <span class="form-label">Name</span>
         <input class="text-input" bind:value={customName} />
       </label>
-      <label>
-        <span>Timezone</span>
+      <label class="form-field">
+        <span class="form-label">Timezone</span>
         <input class="text-input" bind:value={timezone} placeholder="Europe/Warsaw" />
       </label>
       <div class="request-windows">
@@ -327,51 +333,59 @@ answered a question a workspace never asks and hid the one it does.
           onChange={(next) => (windows = next)}
         />
       </div>
-      <label>
-        <span>Date exceptions</span>
+      <label class="form-field">
+        <span class="form-label">Date exceptions</span>
         <textarea
-          class="text-input"
+          class="text-input mono"
           rows="4"
           bind:value={exceptions}
           placeholder="2026-12-25 closed&#10;2026-12-31 09:00-13:00"></textarea>
       </label>
-      <p class="request-helper">
+      <p class="form-help">
         One local date per line: <code>YYYY-MM-DD closed</code> or
-        <code>YYYY-MM-DD HH:MM-HH:MM</code>.
+        <code>YYYY-MM-DD HH:MM-HH:MM</code>
       </p>
     {/if}
 
-    <label>
-      <span>How often, in seconds</span>
-      <input
-        class="text-input"
-        type="number"
-        min={kind === 'pending_ci' ? 0 : 1}
-        step="60"
-        value={cadenceShown ?? ''}
-        oninput={(event) => {
-          const typed = (event.currentTarget as HTMLInputElement).valueAsNumber;
-          cadence = Number.isFinite(typed) ? typed : null;
-        }}
+    <div
+      class="form-field"
+      role="group"
+      aria-labelledby="request-cadence-label"
+      aria-describedby={cadenceDescription === undefined ? undefined : 'request-cadence-help'}
+    >
+      <label class="form-label" id="request-cadence-label" for="request-cadence">How often</label>
+      <DurationInput
+        id="request-cadence"
+        label="How often"
+        amountLabel="How often"
+        value={cadenceShown}
+        minimum={kind === 'pending_ci' ? 0 : 1}
+        disabled={busy}
+        onChange={(seconds) => (cadence = seconds)}
+        onValidityChange={(problem) => (cadenceProblem = problem)}
+      />
+      {#if cadenceDescription !== undefined}
+        <p id="request-cadence-help" class="form-help">{cadenceDescription}</p>
+      {/if}
+    </div>
+
+    <label class="form-field">
+      <span class="form-label">Priority</span>
+      <Select
+        value={priorityShown}
+        aria-label="Priority"
+        onValueChange={(value) => (priority = value as QueuePriority)}
+        options={[
+          { value: 'low', label: 'Low' },
+          { value: 'normal', label: 'Normal' },
+          { value: 'high', label: 'High' },
+          { value: 'urgent', label: 'Urgent' },
+        ]}
       />
     </label>
 
-    <label>
-      <span>Priority</span>
-      <Select
-        value={priorityShown}
-        onchange={(event) =>
-          (priority = (event.currentTarget as HTMLSelectElement).value as QueuePriority)}
-      >
-        <option value="low">Low</option>
-        <option value="normal">Normal</option>
-        <option value="high">High</option>
-        <option value="urgent">Urgent</option>
-      </Select>
-    </label>
-
-    <label class="request-reason">
-      <span>Reason</span>
+    <label class="form-field request-reason">
+      <span class="form-label">Reason</span>
       <textarea
         class="text-input"
         rows="3"
@@ -391,49 +405,12 @@ answered a question a workspace never asks and hid the one it does.
 </Modal>
 
 <style>
-  .request-form {
-    display: grid;
-    gap: var(--space-4);
-  }
-
-  .request-form label {
-    display: grid;
-    gap: var(--space-2);
-    font-size: var(--font-size-meta);
-  }
-
-  .request-form label > span {
-    color: var(--text-secondary);
-    font-weight: 600;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .request-helper {
-    color: var(--text-muted);
-    font-size: var(--font-size-compact);
-    line-height: var(--leading-compact);
-    margin: 0;
-    text-box: trim-both cap alphabetic;
-  }
-
-  .request-helper code {
+  .form-help code {
     font-family: var(--mono);
   }
 
   .text-input {
-    background: var(--input-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--r-ctl);
-    color: var(--text-primary);
-    font: inherit;
-    min-block-size: var(--tier-quiet);
-    padding: var(--space-2);
     width: 100%;
-  }
-
-  .text-input:focus-visible {
-    border-color: var(--brand-action);
-    outline: 2px solid var(--focus);
   }
 
   /* A refusal stands under the rows on the card's own text edge, not inside one. What

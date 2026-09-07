@@ -12,6 +12,7 @@
     type SyncOverrideEditorEnvelope,
   } from '#lib/repository-sync-override-settings.js';
   import { getSettingsDraftRegistry, type SettingsScope } from '#lib/settings-drafts.svelte.js';
+  import { getFileDraftValidation } from '#lib/file-draft-validation.js';
   import {
     adoptSyncConfigSettings,
     stageSyncConfigControl,
@@ -22,6 +23,7 @@
     type SyncLabelsEditorEnvelope,
   } from '#lib/sync-config-settings.js';
   import type {
+    BypassActorLookup,
     SyncConfig,
     SyncFilesContext,
     SyncKind,
@@ -55,6 +57,7 @@
     rulesetName = null,
     fileName = null,
     readOnly,
+    organizationActors = true,
     canControl = false,
     fetchConfig,
     fetchPlan,
@@ -77,11 +80,13 @@
     permissionsHref = null,
     queueHref = null,
     clock = Date.now,
+    lookupBypassActors,
   }: {
     permissionsHref?: string | null;
     queueHref?: string | null;
     repositoryHref?: ((repository: string) => string) | null;
     targetId: string;
+    lookupBypassActors?: BypassActorLookup;
     /** Which of the view's sections the address names; see `routes.ts`. */
     section: SyncSection;
     /** One ruleset's own page, when the address names one. */
@@ -89,6 +94,7 @@
     /** One template's own page, when the address names one. */
     fileName?: string | null;
     readOnly: boolean;
+    organizationActors?: boolean;
     canControl?: boolean;
     rulesetHref: (name: string) => string;
     onOpenRuleset: (name: string) => void;
@@ -129,6 +135,7 @@
   type EditorState = { config: SyncConfig | null; problem: string | null };
 
   const drafts = getSettingsDraftRegistry();
+  const fileValidation = getFileDraftValidation();
   const settingsScope = $derived({
     type: 'workspace',
     targetId,
@@ -505,6 +512,8 @@ Live plan and status queries share the shell's event invalidation and polling fa
 {:else if section === 'rulesets'}
   {#if rulesetName !== null}
     <SyncRulesetPage
+      {organizationActors}
+      {lookupBypassActors}
       config={documents.rulesets}
       savedDocument={canonicalConfigs.rulesets?.document}
       name={rulesetName}
@@ -535,6 +544,7 @@ Live plan and status queries share the shell's event invalidation and polling fa
 {:else if section === 'files'}
   {#if fileName !== null}
     <SyncFilePage
+      {repositoryHref}
       config={documents.files}
       savedDocument={canonicalConfigs.files?.document}
       context={filesContext}
@@ -548,7 +558,7 @@ Live plan and status queries share the shell's event invalidation and polling fa
       dirtyDocument={dirtyControls.includes('sync.files.document')}
       {dirtyControls}
       fetchOverride={loadFilesOverride}
-      renderFile={(input) => renderFile(targetId, input)}
+      renderFile={(input) => fileValidation?.render(targetId, input) ?? renderFile(targetId, input)}
       onFormattingValidity={(control, valid, message) =>
         drafts.setValidationProblem(settingsScope, control, valid ? null : message)}
       onChangeOverride={stageFilesOverride}
@@ -601,14 +611,9 @@ Live plan and status queries share the shell's event invalidation and polling fa
     background: var(--surface-base);
   }
 
-  :global(.form-error) {
-    margin: var(--space-3) 0 0;
-  }
-
   .sync-run-notice {
-    border-inline-start: 2px solid var(--info);
     color: var(--text-secondary);
     margin: var(--space-3) 0;
-    padding: var(--space-2) var(--space-3);
+    padding-block: var(--space-2);
   }
 </style>

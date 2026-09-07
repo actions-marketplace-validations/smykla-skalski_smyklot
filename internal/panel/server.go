@@ -103,29 +103,33 @@ type Dependencies struct {
 	// Candidates reads the roster logins are completed against. Optional: a
 	// panel without one offers no completion, which is what the dialogs did
 	// before there was any.
-	Candidates candidateDirectory
+	Candidates   candidateDirectory
+	BypassActors bypassActorDirectory
+	ConfigFiles  ConfigFileController
 }
 
 // Server owns the panel routes and their authenticated runtime state.
 type Server struct {
-	cfg        Config
-	store      storage.Store
-	catalog    catalogSyncer
-	users      userResolver
-	candidates candidateDirectory
-	signIn     signInProvider
-	random     io.Reader
-	now        func() time.Time
-	startedAt  time.Time
-	assets     *assetBundle
-	events     *eventHub
-	runtimeMu  sync.RWMutex
-	runtime    RuntimeValues
-	controller RuntimeController
-	pendingCI  PendingCIController
-	gates      PendingCIGateController
-	queue      WorkQueueController
-	syncPlans  syncScopeVerifier
+	cfg          Config
+	store        storage.Store
+	catalog      catalogSyncer
+	users        userResolver
+	candidates   candidateDirectory
+	bypassActors bypassActorDirectory
+	configFiles  ConfigFileController
+	signIn       signInProvider
+	random       io.Reader
+	now          func() time.Time
+	startedAt    time.Time
+	assets       *assetBundle
+	events       *eventHub
+	runtimeMu    sync.RWMutex
+	runtime      RuntimeValues
+	controller   RuntimeController
+	pendingCI    PendingCIController
+	gates        PendingCIGateController
+	queue        WorkQueueController
+	syncPlans    syncScopeVerifier
 	// prefsMu spans each preference commit and its fan-out so announce order
 	// matches commit order (see applyPrefsPatch).
 	prefsMu sync.Mutex
@@ -188,23 +192,25 @@ func New(cfg Config, deps Dependencies) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:        validated,
-		store:      deps.Store,
-		catalog:    deps.Catalog,
-		users:      deps.Users,
-		candidates: deps.Candidates,
-		signIn:     deps.SignIn,
-		random:     deps.Random,
-		now:        deps.Now,
-		startedAt:  deps.Now().UTC(),
-		assets:     assets,
-		events:     newEventHub(),
-		runtime:    runtime,
-		controller: deps.Runtime,
-		pendingCI:  deps.PendingCI,
-		gates:      deps.Gates,
-		queue:      deps.Queue,
-		syncPlans:  deps.SyncPlans,
+		cfg:          validated,
+		store:        deps.Store,
+		catalog:      deps.Catalog,
+		users:        deps.Users,
+		candidates:   deps.Candidates,
+		bypassActors: deps.BypassActors,
+		configFiles:  deps.ConfigFiles,
+		signIn:       deps.SignIn,
+		random:       deps.Random,
+		now:          deps.Now,
+		startedAt:    deps.Now().UTC(),
+		assets:       assets,
+		events:       newEventHub(),
+		runtime:      runtime,
+		controller:   deps.Runtime,
+		pendingCI:    deps.PendingCI,
+		gates:        deps.Gates,
+		queue:        deps.Queue,
+		syncPlans:    deps.SyncPlans,
 	}, nil
 }
 
@@ -311,6 +317,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerWorkspaceSettingsRoutes(mux *http.ServeMux, base string) {
+	s.registerConfigFileRoutes(mux, base)
+	mux.HandleFunc("GET "+base+"/api/v1/targets/{target}/bypass-actors", s.getTargetBypassActors)
+	mux.HandleFunc("GET "+base+"/api/v1/root/workspaces/{target}/bypass-actors", s.getRootBypassActors)
 	mux.HandleFunc(
 		"PUT "+base+"/api/v1/targets/{target}/settings",
 		s.putWorkspaceSettingsBatch,

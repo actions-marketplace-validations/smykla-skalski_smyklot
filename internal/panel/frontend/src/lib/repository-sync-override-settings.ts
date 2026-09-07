@@ -1,4 +1,5 @@
 import { composeFile, formatJson, parseJson, validateSpec } from './merge';
+import { fileFormat, isStructuredFile } from './file-format';
 import type { JsonValue, MergeSpec } from './merge';
 import {
   cloneFormattingPatch,
@@ -26,9 +27,6 @@ const FORMAT_KEYS = ['path', 'formatting'] as const;
 const ARRAY_RULE_KEYS = ['path', 'strategy'] as const;
 const SECTION_KEYS = ['action', 'heading', 'occurrence', 'content', 'patches'] as const;
 const PATCH_KEYS = ['find', 'replace'] as const;
-const STRUCTURED_PATH = /\.(?:json|ya?ml)$/i;
-const MARKDOWN_PATH = /\.(?:md|markdown)$/i;
-const FORMATTABLE_PATH = /\.(?:jsonc?|ya?ml|toml|md|markdown)$/i;
 const STRUCTURED_STRATEGIES = new Set(['', 'deep-merge', 'shallow-merge']);
 const ARRAY_STRATEGIES = new Set(['replace', 'append', 'prepend']);
 const SECTION_ACTIONS = new Set([
@@ -104,7 +102,7 @@ export function syncOverrideResource(targetId: string, repositoryId: string): Se
 export function buildSyncOverrideEditorEnvelope(stored: SyncOverride): SyncOverrideEditorEnvelope {
   assertReadableFilesOverride(stored);
   const document = plainSettingsRecord(stored.document);
-  if (document === null) throw new TypeError('sync override document is not finite JSON');
+  if (document === null) throw new TypeError('sync override document is not valid JSON');
 
   return {
     enabled: stored.enabled,
@@ -120,8 +118,8 @@ export function parseSyncOverrideEditorEnvelope(value: unknown): SyncOverrideEdi
   if (!isRecord(value.document) || !isStringArray(value.override_texts)) return null;
 
   try {
-    const document = cloneSettingsJson(value.document as SettingsJson);
-    if (!isRecord(document)) return null;
+    const document = plainSettingsRecord(value.document);
+    if (document === null) return null;
     return {
       enabled: value.enabled,
       document: document as SyncOverrideSettingsDocument,
@@ -234,6 +232,21 @@ export function stageSyncOverrideControl(
     snapshot?.base ?? buildSyncOverrideEditorEnvelope(stored),
   );
   if (base === null) return false;
+  if (controlId.endsWith('.document')) {
+    const savedDocument = serializeSyncOverrideDocument(base);
+    const nextDocument = serializeSyncOverrideDocument(next);
+    if (
+      savedDocument.ok &&
+      nextDocument.ok &&
+      formatJson(savedDocument.document as JsonValue) ===
+        formatJson(nextDocument.document as JsonValue)
+    ) {
+      // Whitespace in a valid JSON adjustment is editor presentation. Returning
+      // to the saved content restores its envelope; malformed text stays dirty.
+      next.document = cloneSettingsJson(base.document);
+      next.override_texts = [...base.override_texts];
+    }
+  }
   const saved = syncOverrideSavedControls(repositoryId, base);
   const current = syncOverrideSavedControls(repositoryId, next);
 
@@ -349,7 +362,7 @@ function serializeFormats(value: unknown): FormatsSerialization {
     if (typeof row.path !== 'string' || row.path.length === 0) {
       return { ok: false, problem: `${named} names no file` };
     }
-    if (!FORMATTABLE_PATH.test(row.path)) {
+    if (fileFormat(row.path) === null) {
       return { ok: false, problem: `${row.path} has no supported formatter` };
     }
     const folded = row.path.toLocaleLowerCase();
@@ -407,17 +420,20 @@ function serializeMerge(row: SettingsJson, text: string, index: number): MergeSe
     return { ok: false, problem: `${row.path} has an invalid merge strategy` };
   }
   const merge = cloneUnknownRecord(row);
-  if (MARKDOWN_PATH.test(row.path)) {
+  // Default is stored as omission. Returning the picker to Default must also
+  // return to the saved value, rather than leave an empty-string override.
+  if (merge.strategy === '') delete merge.strategy;
+  if (fileFormat(row.path) === 'markdown') {
     delete merge.overrides;
     delete merge.arrays;
     delete merge.deduplicate;
     const problem = validateMarkdownMerge(merge, row.path);
     return problem === null ? { ok: true, path: row.path, merge } : { ok: false, problem };
   }
-  if (!STRUCTURED_PATH.test(row.path)) {
+  if (!isStructuredFile(row.path)) {
     return {
       ok: false,
-      problem: `${row.path} has no extension this can merge; JSON, YAML and Markdown can`,
+      problem: `${row.path} has no extension this can merge; JSON, JSONC, YAML, TOML and Markdown can`,
     };
   }
   const overrides = parseOverrideText(text, row.path);
@@ -564,36 +580,40 @@ function overrideTexts(document: Record<string, unknown>): string[] {
 }
 
 function plainSettingsRecord(value: unknown): SyncOverrideSettingsDocument | null {
-  if (!isRecord(value) || !validJsonWithRawNumbers(value)) return null;
+  if (!isRecord(value)) return null;
   try {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) return null;
-    const parsed: unknown = JSON.parse(serialized);
-    if (!isRecord(parsed)) return null;
-    return cloneSettingsJson(parsed as SettingsJson) as SyncOverrideSettingsDocument;
+    const document = cloneSettingsJson(value as SettingsJson) as SyncOverrideSettingsDocument;
+    // The API preserves every document number. Formatting widths and Markdown
+    // occurrences are typed metadata; file overrides remain lossless content.
+    if (document.formats !== undefined) document.formats = metadataIntegers(document.formats);
+    if (Array.isArray(document.merges)) {
+      document.merges = document.merges.map((row) =>
+        isRecord(row) && row.sections !== undefined
+          ? ({ ...row, sections: metadataIntegers(row.sections as SettingsJson) } as SettingsJson)
+          : row,
+      );
+    }
+    return document;
   } catch {
     return null;
   }
 }
 
-function validJsonWithRawNumbers(value: unknown, ancestors = new WeakSet<object>()): boolean {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (typeof value !== 'object' || ancestors.has(value)) return false;
-  if (isRawJson(value)) return true;
-  if (Array.isArray(value)) {
-    ancestors.add(value);
-    const valid = value.every((entry) => validJsonWithRawNumbers(entry, ancestors));
-    ancestors.delete(value);
-    return valid;
+function metadataIntegers(value: SettingsJson): SettingsJson {
+  if (isRawJson(value)) {
+    const token = JSON.stringify(value);
+    const number = Number(token);
+    // Go's integer decoder accepts a sign on zero, but no fraction or exponent.
+    // Only typed metadata uses this normalization; override literals stay raw.
+    return Number.isSafeInteger(number) && /^-?(?:0|[1-9]\d*)$/u.test(token) ? number : value;
   }
-  if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    return false;
+  if (Array.isArray(value)) return value.map(metadataIntegers);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, metadataIntegers(entry as SettingsJson)]),
+    );
   }
-  ancestors.add(value);
-  const valid = Object.values(value).every((entry) => validJsonWithRawNumbers(entry, ancestors));
-  ancestors.delete(value);
-  return valid;
+  return value;
 }
 
 function cloneUnknownRecord(value: Record<string, unknown>): Record<string, unknown> {

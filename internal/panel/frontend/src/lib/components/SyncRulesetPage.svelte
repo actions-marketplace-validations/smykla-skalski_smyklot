@@ -63,11 +63,14 @@ stacked left, Cancel and Done on a hairline foot.
   import { globRuns } from '../glob-runs';
   import { numericValue } from '../merge';
   import { receipts } from '../receipts.svelte';
-  import type { SyncConfig, SyncRuleset, SyncRulesetBypassActor, SyncRulesetRules } from '../types';
+  import { sameRulesetFields } from '../ruleset-equality';
+  import type { SyncConfig, SyncRuleset, BypassActorLookup, SyncRulesetRules } from '../types';
   import { SYNC_SECTION_LABELS, type SyncSection } from '../routes';
 
   import Button from './Button.svelte';
+  import IconButton from './IconButton.svelte';
   import Card from './Card.svelte';
+  import BypassActorEditor from './BypassActorEditor.svelte';
   import FormError from './FormError.svelte';
   import Icon from './Icon.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -80,22 +83,26 @@ stacked left, Cancel and Done on a hairline foot.
     savedDocument = {},
     name,
     readOnly,
+    organizationActors = true,
     problem = null,
     sectionHref,
     onOpenSection,
     onChangeDocument,
     dirtyDocument = false,
+    lookupBypassActors,
   }: {
     config: SyncConfig | null;
     savedDocument?: Record<string, unknown>;
     /** Which ruleset the address names. */
     name: string;
     readOnly: boolean;
+    organizationActors?: boolean;
     problem?: string | null;
     sectionHref: (section: SyncSection) => string;
     onOpenSection: (section: SyncSection) => void;
     onChangeDocument: (document: Record<string, unknown>) => void;
     dirtyDocument?: boolean;
+    lookupBypassActors?: BypassActorLookup;
   } = $props();
 
   const stored = $derived(config?.document ?? {});
@@ -110,17 +117,42 @@ stacked left, Cancel and Done on a hairline foot.
   );
   const savedRuleset = $derived(savedRulesets.find((held) => held.name === name) ?? null);
 
-  function same(left: unknown, right: unknown): boolean {
-    try {
-      return JSON.stringify(left) === JSON.stringify(right);
-    } catch {
-      return false;
-    }
+  function partDirty(part: 'enforcement' | 'conditions' | 'rules' | 'bypass_actors'): boolean {
+    const current = ruleset?.[part];
+    const saved = savedRuleset?.[part];
+    return (
+      dirtyDocument &&
+      !sameRulesetFields(
+        current === undefined ? {} : { [part]: current },
+        saved === undefined ? {} : { [part]: saved },
+      )
+    );
   }
 
-  function partDirty(part: 'enforcement' | 'conditions' | 'rules' | 'bypass_actors'): boolean {
-    return dirtyDocument && !same(ruleset?.[part], savedRuleset?.[part]);
+  function conditionDirty(side: 'include' | 'exclude'): boolean {
+    return (
+      dirtyDocument &&
+      !sameRulesetFields(
+        { conditions: { [side]: ruleset?.conditions[side] ?? [] } },
+        { conditions: { [side]: savedRuleset?.conditions[side] ?? [] } },
+      )
+    );
   }
+
+  function ruleDirty(key: keyof SyncRulesetRules): boolean {
+    const current = ruleset?.rules?.[key];
+    const saved = savedRuleset?.rules?.[key];
+    return (
+      dirtyDocument &&
+      !sameRulesetFields(
+        { rules: current === undefined ? {} : { [key]: current } },
+        { rules: saved === undefined ? {} : { [key]: saved } },
+      )
+    );
+  }
+
+  let actorEditor: { toggleAdd: (trigger?: HTMLElement) => void } | undefined = $state();
+  let addingActor = $state(false);
 
   /** Writes one changed ruleset back into the whole document. */
   function patch(change: Partial<SyncRuleset>): void {
@@ -182,8 +214,8 @@ stacked left, Cancel and Done on a hairline foot.
         : include.length === 0
           ? 'Covering no branches yet - add a pattern below'
           : include.length === 1 && include[0] === '~DEFAULT_BRANCH'
-            ? 'Enforced on the default branch of every syncing repository'
-            : `Enforced on ${include.join(', ')} in every syncing repository`,
+            ? 'Targets the default branch of every syncing repository'
+            : `Targets ${include.join(', ')} in every syncing repository`,
   );
 
   let includeOpen = $state(false);
@@ -312,7 +344,8 @@ stacked left, Cancel and Done on a hairline foot.
     const rules = ruleset?.rules;
     if (key === 'pull_request') {
       const rule = rules?.pull_request;
-      prApprovals = numericValue(rule?.required_approving_review_count) ?? 1;
+      prApprovals =
+        numericValue(rule?.required_approving_review_count) ?? (rule === undefined ? 1 : 0);
       prStale = rule?.dismiss_stale_reviews_on_push === true;
       prOwners = rule?.require_code_owner_review === true;
       prLastPush = rule?.require_last_push_approval === true;
@@ -342,7 +375,9 @@ stacked left, Cancel and Done on a hairline foot.
     if (key === 'pull_request') {
       patchRules({
         pull_request: {
-          required_approving_review_count: Math.max(0, Math.min(10, prApprovals)),
+          ...(prApprovals > 0
+            ? { required_approving_review_count: Math.min(10, prApprovals) }
+            : {}),
           ...(prStale ? { dismiss_stale_reviews_on_push: true } : {}),
           ...(prOwners ? { require_code_owner_review: true } : {}),
           ...(prLastPush ? { require_last_push_approval: true } : {}),
@@ -405,59 +440,6 @@ stacked left, Cancel and Done on a hairline foot.
   /* ---------- The bypass list ---------- */
 
   const actors = $derived(ruleset?.bypass_actors ?? []);
-
-  function actorName(actor: SyncRulesetBypassActor): string {
-    if (actor.actor_type === 'OrganizationAdmin') return 'Organization admin';
-    const id = numericValue(actor.actor_id) ?? 0;
-    if (actor.actor_type === 'RepositoryRole') {
-      const roles: Record<number, string> = {
-        5: 'Repository admin',
-        4: 'Maintainers',
-        2: 'Writers',
-      };
-      return roles[id] ?? `Repository role ${id}`;
-    }
-    if (actor.actor_type === 'Integration') return `App ${id}`;
-    if (actor.actor_type === 'Team') return `Team ${id}`;
-    return `Deploy keys`;
-  }
-
-  function actorWhy(actor: SyncRulesetBypassActor): string {
-    if (actor.bypass_mode === 'pull_request') return 'Pull requests only';
-    return 'Always - pushes and pull requests both';
-  }
-
-  function removeActor(at: number): void {
-    patch({ bypass_actors: actors.filter((_, index) => index !== at) });
-  }
-
-  let addingActor = $state(false);
-  let actorType = $state('RepositoryRole');
-  let actorId = $state('5');
-  let actorMode = $state('always');
-
-  function addActor(): void {
-    addingActor = false;
-    const parsed = Number.parseInt(actorId, 10);
-    patch({
-      bypass_actors: [
-        ...actors,
-        {
-          actor_type: actorType,
-          actor_id: actorType === 'OrganizationAdmin' ? 0 : Number.isNaN(parsed) ? 0 : parsed,
-          bypass_mode: actorMode,
-        },
-      ],
-    });
-  }
-
-  const ACTOR_TYPES = [
-    { value: 'RepositoryRole', label: 'Repository role' },
-    { value: 'OrganizationAdmin', label: 'Organization admin' },
-    { value: 'Integration', label: 'App' },
-    { value: 'Team', label: 'Team' },
-    { value: 'DeployKey', label: 'Deploy keys' },
-  ];
 </script>
 
 <div class="view-frame">
@@ -524,8 +506,8 @@ stacked left, Cancel and Done on a hairline foot.
       <div class="policy-rows">
         <div
           class="policy-row"
-          class:is-unsaved={partDirty('conditions')}
-          data-unsaved={partDirty('conditions') || undefined}
+          class:is-unsaved={conditionDirty('include')}
+          data-unsaved={conditionDirty('include') || undefined}
         >
           <span class="setting-say"
             ><span class="setting-name">Included branches</span>
@@ -572,7 +554,10 @@ stacked left, Cancel and Done on a hairline foot.
                     spellcheck="false"
                     bind:value={addValue}
                     onkeydown={(event) => {
-                      if (event.key === 'Enter') addPattern('include');
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addPattern('include');
+                      }
                     }}
                   />
                 </div>
@@ -583,8 +568,8 @@ stacked left, Cancel and Done on a hairline foot.
         </div>
         <div
           class="policy-row"
-          class:is-unsaved={partDirty('conditions')}
-          data-unsaved={partDirty('conditions') || undefined}
+          class:is-unsaved={conditionDirty('exclude')}
+          data-unsaved={conditionDirty('exclude') || undefined}
         >
           <span class="setting-say"><span class="setting-name">Excluded branches</span></span>
           <span class="policy-value">
@@ -629,7 +614,10 @@ stacked left, Cancel and Done on a hairline foot.
                     spellcheck="false"
                     bind:value={addValue}
                     onkeydown={(event) => {
-                      if (event.key === 'Enter') addPattern('exclude');
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addPattern('exclude');
+                      }
                     }}
                   />
                 </div>
@@ -649,12 +637,10 @@ stacked left, Cancel and Done on a hairline foot.
       <div class="policy-rows">
         {#each onRules as rule (rule.key)}
           <div
-            class="policy-row"
-            class:is-unsaved={dirtyDocument &&
-              !same(ruleset?.rules?.[rule.key], savedRuleset?.rules?.[rule.key])}
-            data-unsaved={(dirtyDocument &&
-              !same(ruleset?.rules?.[rule.key], savedRuleset?.rules?.[rule.key])) ||
-              undefined}
+            class="policy-row rule-row"
+            class:rule-simple={!rule.parameterized}
+            class:is-unsaved={ruleDirty(rule.key)}
+            data-unsaved={ruleDirty(rule.key) || undefined}
           >
             <span class="setting-say">
               <span class="setting-name">{rule.label}</span>
@@ -662,35 +648,40 @@ stacked left, Cancel and Done on a hairline foot.
                 <span class="setting-why">{rule.why}</span>
               {/if}
             </span>
-            <span class="policy-value">
-              {#each paramChips(rule.key) as chip, at (at)}
-                <span class="param-chip"
-                  >{#if chip.strong !== undefined}<strong>{chip.strong}</strong>{/if}<span class="t"
-                    >{chip.text}</span
-                  ></span
-                >
-              {/each}
+            <span class="policy-value rule-value">
               {#if rule.parameterized}
-                <Button tone="quiet" disabled={frozen} onclick={() => openEditor(rule.key)}>
-                  Edit
-                </Button>
+                <span class="rule-summary">
+                  {#each paramChips(rule.key) as chip, at (at)}
+                    <span class="param-chip"
+                      >{#if chip.strong !== undefined}<strong>{chip.strong}</strong>{/if}<span
+                        class="t">{chip.text}</span
+                      ></span
+                    >
+                  {/each}
+                </span>
               {/if}
+              <span class="rule-actions">
+                {#if rule.parameterized}
+                  <Button tone="quiet" disabled={frozen} onclick={() => openEditor(rule.key)}>
+                    Edit
+                  </Button>
+                {/if}
+                <IconButton
+                  icon="close"
+                  toolbar
+                  label="Switch the rule off"
+                  disabled={frozen}
+                  onclick={() => ruleOff(rule.key)}
+                />
+              </span>
             </span>
-            <button
-              class="setting-clear"
-              title="Switch the rule off"
-              disabled={frozen}
-              onclick={() => ruleOff(rule.key)}
-            >
-              <Icon name="close" size="micro" />
-            </button>
             {#if editing === rule.key}
               <div class="rule-edit">
                 {#if rule.key === 'pull_request'}
                   <div class="entry-field">
                     <span class="entry-label">Approvals required</span>
                     <input
-                      class="text-inline num-input"
+                      class="text-input text-inline num-input"
                       type="number"
                       min="0"
                       max="10"
@@ -789,7 +780,10 @@ stacked left, Cancel and Done on a hairline foot.
                               spellcheck="false"
                               bind:value={addValue}
                               onkeydown={(event) => {
-                                if (event.key === 'Enter') addListValue('checks');
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  addListValue('checks');
+                                }
                               }}
                             />
                           </div>
@@ -862,7 +856,10 @@ stacked left, Cancel and Done on a hairline foot.
                               spellcheck="false"
                               bind:value={addValue}
                               onkeydown={(event) => {
-                                if (event.key === 'Enter') addListValue('tools');
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  addListValue('tools');
+                                }
                               }}
                             />
                           </div>
@@ -882,7 +879,7 @@ stacked left, Cancel and Done on a hairline foot.
         {/each}
       </div>
       {#if offRules.length > 0}
-        <div class="group-rest" class:is-open={pickingRule}>
+        <div class="group-rest rule-remainder" class:is-open={pickingRule}>
           {#if pickingRule}
             <span class="rest-say"
               ><span class="rest-count">{offRules.length} rules are off</span> - pick one to switch on:</span
@@ -916,93 +913,27 @@ stacked left, Cancel and Done on a hairline foot.
     <Card unsaved={partDirty('bypass_actors')}>
       <div class="card-head">
         <h2 class="card-title">Bypass list</h2>
-        <span class="card-meta">{actors.length} {actors.length === 1 ? 'actor' : 'actors'}</span>
+        <Button
+          tone="quiet"
+          disabled={frozen}
+          aria-expanded={addingActor}
+          onclick={(event) => actorEditor?.toggleAdd(event.currentTarget)}
+        >
+          {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
+          Add an actor
+        </Button>
       </div>
-      {#if actors.length > 0}
-        <div class="policy-rows">
-          {#each actors as actor, at (at)}
-            <div
-              class="policy-row"
-              class:is-unsaved={partDirty('bypass_actors')}
-              data-unsaved={partDirty('bypass_actors') || undefined}
-            >
-              <span class="setting-say">
-                <span class="setting-name">{actorName(actor)}</span>
-                <span class="setting-why">{actorWhy(actor)}</span>
-              </span>
-              <span class="policy-value"></span>
-              <button
-                class="setting-clear"
-                title="Remove this actor"
-                disabled={frozen}
-                onclick={() => removeActor(at)}
-              >
-                <Icon name="close" size="micro" />
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-      <div class="group-rest" class:is-open={addingActor}>
-        {#if addingActor}
-          <div class="rule-edit actor-edit">
-            <div class="entry-field">
-              <span class="entry-label">Who</span>
-              <span class="chip-line">
-                {#each ACTOR_TYPES as kind (kind.value)}
-                  <button
-                    class="add-chip"
-                    class:is-held={actorType === kind.value}
-                    onclick={() => (actorType = kind.value)}
-                  >
-                    {#if actorType === kind.value}<Icon name="check" size="xs" />{:else}<Icon
-                        name="plus"
-                        size="xs"
-                      />{/if}
-                    <span class="t">{kind.label}</span>
-                  </button>
-                {/each}
-              </span>
-            </div>
-            {#if actorType !== 'OrganizationAdmin'}
-              <div class="entry-field">
-                <span class="entry-label"
-                  >{actorType === 'RepositoryRole'
-                    ? 'Role id - 5 admin, 4 maintain, 2 write'
-                    : 'Its id on GitHub'}</span
-                >
-                <input
-                  class="text-inline num-input"
-                  bind:value={actorId}
-                  aria-label="Actor id"
-                  spellcheck="false"
-                />
-              </div>
-            {/if}
-            <div class="rule-flag">
-              <span>Only through pull requests</span>
-              <Switch
-                checked={actorMode === 'pull_request'}
-                bare
-                label="Only through pull requests"
-                onToggle={(next) => (actorMode = next ? 'pull_request' : 'always')}
-              />
-            </div>
-            <div class="rule-edit-foot">
-              <Button tone="quiet" onclick={() => (addingActor = false)}>Cancel</Button>
-              <Button tone="signal" onclick={addActor}>Add</Button>
-            </div>
-          </div>
-        {:else}
-          <span class="rest-say"
-            >Anyone here may push past every rule above, wherever this ruleset applies</span
-          >
-          <Button tone="quiet" disabled={frozen} onclick={() => (addingActor = true)}>
-            {#snippet icon()}<Icon name="plus" size="sm" />{/snippet}
-            Add an actor
-          </Button>
-        {/if}
-      </div>
+      <BypassActorEditor
+        bind:this={actorEditor}
+        bind:adding={addingActor}
+        showAddButton={false}
+        savedActors={dirtyDocument ? (savedRuleset?.bypass_actors ?? []) : actors}
+        {organizationActors}
+        {actors}
+        lookup={lookupBypassActors}
+        readOnly={frozen}
+        onChange={(next) => patch({ bypass_actors: next })}
+      />
     </Card>
 
     <!-- The one destructive act on the page, in the row grammar every other setting
@@ -1033,9 +964,8 @@ stacked left, Cancel and Done on a hairline foot.
          then rather than on the list this used to leave for. -->
     <div class="state-panel is-warn">
       <span
-        ><strong>Pending removal.</strong> The configuration no longer carries {name}; the next next
-        sync removes it from every syncing repository. On GitHub it stays enforced until that plan
-        runs</span
+        ><strong>Pending removal</strong> The next sync removes {name} after this change is saved · Existing
+        GitHub protection stays in place until then</span
       >
       <Button disabled={frozen} onclick={restoreRuleset}>Undo - keep this ruleset</Button>
     </div>
@@ -1049,14 +979,55 @@ stacked left, Cancel and Done on a hairline foot.
     timeline-scope: --bar-slot;
   }
 
-  .card.is-unsaved {
-    border-color: color-mix(in srgb, var(--brand-action) 55%, var(--border-subtle));
-  }
-
   /* The remainder is a summary line and not a row, so the list still seams into it. */
   .policy-rows:has(+ .group-rest) > .policy-row:last-child::after {
     content: '';
     inset-inline: var(--space-2);
+  }
+
+  /* A rule has two sides. Its Edit and off controls stay one action group
+     while summaries wrap independently inside the value side. */
+  .rule-value {
+    flex-wrap: nowrap;
+    margin-inline-start: auto;
+    min-inline-size: 0;
+  }
+
+  .rule-summary,
+  .rule-actions {
+    align-items: center;
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .rule-summary {
+    flex-wrap: wrap;
+    min-inline-size: 0;
+  }
+
+  .rule-actions {
+    flex: none;
+    margin-inline-start: auto;
+  }
+
+  .rule-simple > .setting-say {
+    flex: 1;
+    min-inline-size: 0;
+  }
+
+  .rule-simple > .rule-value {
+    flex: none;
+  }
+
+  .rule-remainder :global(.btn) {
+    margin-inline-start: auto;
+  }
+
+  @container (max-width: 32rem) {
+    .rule-row:not(.rule-simple) > .rule-value {
+      flex-basis: 100%;
+      max-inline-size: 100%;
+    }
   }
 
   /* ---------- Chips: a value, and a parameter said in a word ---------- */
@@ -1079,6 +1050,7 @@ stacked left, Cancel and Done on a hairline foot.
 
   .cond-chip .t {
     display: block;
+    text-box: trim-both cap alphabetic;
   }
 
   /* A 20px disc folded around an 8px glyph - exactly the chip's height, so
@@ -1108,23 +1080,29 @@ stacked left, Cancel and Done on a hairline foot.
   .param-chip {
     align-items: center;
     background: var(--surface-inset);
-    block-size: var(--tier-mark);
+    min-block-size: var(--tier-mark);
+    max-inline-size: 100%;
     border-radius: var(--r-chip);
     color: var(--text-secondary);
     display: inline-flex;
     font-size: var(--font-size-micro);
     gap: 0.25rem;
     line-height: var(--leading-flat);
-    padding: 0 var(--space-2);
+    padding: var(--space-1) var(--space-2);
   }
 
   .param-chip .t {
     display: block;
+    line-height: var(--leading-tight);
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+    text-box: trim-both cap alphabetic;
   }
 
   .param-chip strong {
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
+    text-box: trim-both cap alphabetic;
   }
 
   .add-chip {
@@ -1217,22 +1195,6 @@ stacked left, Cancel and Done on a hairline foot.
     gap: var(--space-2);
     justify-content: flex-end;
     padding-top: var(--space-3);
-  }
-
-  .text-inline {
-    background: var(--input-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--r-ctl);
-    color: var(--text-primary);
-    font-size: var(--font-size-control);
-    min-block-size: 30px;
-    padding-inline: 0.55rem;
-  }
-
-  .text-inline:focus {
-    border-color: var(--focus);
-    outline: var(--focus-ring-width) solid var(--focus);
-    outline-offset: var(--focus-ring-inset);
   }
 
   .num-input {
