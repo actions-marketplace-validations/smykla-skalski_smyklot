@@ -28,12 +28,14 @@ type preparedTargetSettings struct {
 	change         storage.TargetSettingsChange
 	patch          string
 	branchPatterns string
+	bypassPolicy   any
 }
 
 type preparedRepositorySettings struct {
 	change         storage.RepositorySettingsChange
 	patch          string
 	branchPatterns any
+	bypassPolicy   any
 }
 
 type installationSettingsWork struct {
@@ -66,6 +68,12 @@ func (s *Store) SaveInstallationSettings(
 	ctx context.Context,
 	request storage.SaveInstallationSettingsRequest,
 ) (storage.SaveInstallationSettingsResult, error) {
+	if request.ConfigFileImport != nil {
+		request.ActorAccountID = systemAuditAccountID
+		if err := validateConfigFileImportRequest(request); err != nil {
+			return storage.SaveInstallationSettingsResult{}, err
+		}
+	}
 	prepared, err := prepareInstallationSettings(request)
 	if err != nil {
 		return storage.SaveInstallationSettingsResult{}, err
@@ -86,6 +94,9 @@ func (s *Store) SaveInstallationSettings(
 	if err := s.lockInstallationSettingsTarget(ctx, tx, request.TargetID); err != nil {
 		return storage.SaveInstallationSettingsResult{}, err
 	}
+	if err := prepareConfigFileImport(ctx, tx, request); err != nil {
+		return storage.SaveInstallationSettingsResult{}, err
+	}
 	work, err := loadInstallationSettingsWork(ctx, tx, prepared)
 	if err != nil {
 		return storage.SaveInstallationSettingsResult{}, err
@@ -95,8 +106,25 @@ func (s *Store) SaveInstallationSettings(
 		return storage.SaveInstallationSettingsResult{}, err
 	}
 	if len(work.items) == 0 {
+		if err := commitUnchangedConfigFileImport(ctx, tx, request); err != nil {
+			return storage.SaveInstallationSettingsResult{}, err
+		}
 		return installationSettingsResult(work), nil
 	}
+	if err := validateImportedSettingsWork(request, work); err != nil {
+		return storage.SaveInstallationSettingsResult{}, err
+	}
+	return s.finishInstallationSettingsSave(ctx, tx, prepared, work)
+}
+
+func (s *Store) finishInstallationSettingsSave(
+	ctx context.Context,
+	tx *transaction,
+	prepared preparedInstallationSettings,
+	work installationSettingsWork,
+) (storage.SaveInstallationSettingsResult, error) {
+	request := prepared.request
+	var err error
 	work.snapshotBefore, err = captureInstallationSettingsSnapshot(
 		ctx, tx, request.TargetID,
 	)
@@ -135,6 +163,11 @@ func (s *Store) SaveInstallationSettings(
 	}
 	appendInstallationSettingsChanges(&result, work)
 	result.CheckpointID = &checkpointID
+	if request.ConfigFileImport != nil {
+		if err := writeConfigFileState(ctx, tx, request.ConfigFileImport.State); err != nil {
+			return storage.SaveInstallationSettingsResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return storage.SaveInstallationSettingsResult{}, fmt.Errorf(
 			"commit installation settings save: %w", err,
@@ -147,6 +180,9 @@ func (s *Store) SaveInstallationSettings(
 func prepareInstallationSettings(
 	request storage.SaveInstallationSettingsRequest,
 ) (preparedInstallationSettings, error) {
+	if err := validateSyncResourceRemovals(request); err != nil {
+		return preparedInstallationSettings{}, err
+	}
 	if strings.TrimSpace(request.TargetID) == "" ||
 		strings.TrimSpace(request.ActorAccountID) == "" || request.ChangedAt.IsZero() {
 		return preparedInstallationSettings{}, errors.New(
@@ -207,9 +243,11 @@ func prepareInstallationTargetSettings(
 	change, patch, patterns, err := prepareTargetSettings(storage.TargetSettingsChange{
 		TargetID: request.TargetID, ActorAccountID: request.ActorAccountID,
 		ElevationID: request.ElevationID, SessionTokenHash: request.SessionTokenHash,
+		ConfigFileSyncEnabled:          settings.ConfigFileSyncEnabled,
 		RepositoryDefaultEnabled:       settings.RepositoryDefaultEnabled,
 		PendingCIModeDefault:           settings.PendingCIModeDefault,
 		PendingCIBranchPatternsDefault: settings.PendingCIBranchPatternsDefault,
+		PendingCIBypassPolicyDefault:   settings.PendingCIBypassPolicyDefault,
 		PendingCIQuietPeriodOverride:   settings.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:      settings.PathIndexIntervalOverride,
 		ConfigPatch:                    settings.ConfigPatch, ExpectedRevision: settings.ExpectedRevision,
@@ -221,7 +259,11 @@ func prepareInstallationTargetSettings(
 		return preparedTargetSettings{}, err
 	}
 
-	return preparedTargetSettings{change: change, patch: patch, branchPatterns: patterns}, nil
+	bypass, err := marshalBypassPolicy(change.PendingCIBypassPolicyDefault)
+	if err != nil {
+		return preparedTargetSettings{}, err
+	}
+	return preparedTargetSettings{change: change, patch: patch, branchPatterns: patterns, bypassPolicy: bypass}, nil
 }
 
 func prepareInstallationRepositorySettings(
@@ -239,9 +281,11 @@ func prepareInstallationRepositorySettings(
 		SessionTokenHash: request.SessionTokenHash, EnabledOverride: settings.EnabledOverride,
 		PendingCIModeOverride:           settings.PendingCIModeOverride,
 		PendingCIBranchPatternsOverride: settings.PendingCIBranchPatternsOverride,
+		PendingCIBypassPolicyOverride:   settings.PendingCIBypassPolicyOverride,
 		PendingCIQuietPeriodOverride:    settings.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:       settings.PathIndexIntervalOverride,
 		ConfigPatch:                     settings.ConfigPatch, IgnoreRepositoryFile: settings.IgnoreRepositoryFile,
+		ConfigFileSyncEnabled:          settings.ConfigFileSyncEnabled,
 		ExpectedRevision:               settings.ExpectedRevision,
 		RetunePendingCIQuietPeriod:     settings.RetunePendingCIQuietPeriod,
 		DeploymentPendingCIQuietPeriod: settings.DeploymentPendingCIQuietPeriod,
@@ -265,7 +309,11 @@ func prepareInstallationRepositorySettings(
 		}
 	}
 
-	return preparedRepositorySettings{change: change, patch: patch, branchPatterns: patterns}, nil
+	bypass, err := marshalBypassPolicy(change.PendingCIBypassPolicyOverride)
+	if err != nil {
+		return preparedRepositorySettings{}, err
+	}
+	return preparedRepositorySettings{change: change, patch: patch, branchPatterns: patterns, bypassPolicy: bypass}, nil
 }
 
 func (s *Store) lockInstallationSettingsTarget(
@@ -274,8 +322,12 @@ func (s *Store) lockInstallationSettingsTarget(
 	targetID string,
 ) error {
 	var held string
+	// Settings never change the target identity. Allow audit foreign-key reads
+	// while excluding other settings writers: an elevation revocation holds its
+	// grant before inserting that audit, while this writer reads the grant next.
+	// FOR UPDATE would turn those two valid operations into a deadlock cycle.
 	err := tx.QueryRowContext(ctx,
-		"SELECT id FROM targets WHERE id = ?"+s.dialect.RowLock(), targetID,
+		"SELECT id FROM targets WHERE id = ?"+s.dialect.NonKeyRowLock(), targetID,
 	).Scan(&held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.ErrNotFound
@@ -293,6 +345,9 @@ func loadInstallationSettingsWork(
 	prepared preparedInstallationSettings,
 ) (installationSettingsWork, error) {
 	work := installationSettingsWork{}
+	if err := validateInstallationBypassPolicies(ctx, tx, prepared); err != nil {
+		return work, err
+	}
 	if prepared.target != nil {
 		current, err := getTarget(ctx, tx, prepared.request.TargetID)
 		if err != nil {
@@ -384,9 +439,11 @@ func targetSettingsCheckpointItem(
 		return storage.SettingsCheckpointItem{}, false, err
 	}
 	afterDocument := storage.TargetSettingsDocument{
+		ConfigFileSyncEnabled:          work.prepared.change.ConfigFileSyncEnabled,
 		RepositoryDefaultEnabled:       work.prepared.change.RepositoryDefaultEnabled,
 		PendingCIModeDefault:           work.prepared.change.PendingCIModeDefault,
 		PendingCIBranchPatternsDefault: work.prepared.change.PendingCIBranchPatternsDefault,
+		PendingCIBypassPolicyDefault:   work.prepared.change.PendingCIBypassPolicyDefault,
 		PendingCIQuietPeriodOverride:   work.prepared.change.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:      work.prepared.change.PathIndexIntervalOverride,
 		ConfigPatch:                    work.prepared.change.ConfigPatch,
@@ -417,9 +474,11 @@ func repositorySettingsCheckpointItem(
 		EnabledOverride:                 work.prepared.change.EnabledOverride,
 		PendingCIModeOverride:           work.prepared.change.PendingCIModeOverride,
 		PendingCIBranchPatternsOverride: work.prepared.change.PendingCIBranchPatternsOverride,
+		PendingCIBypassPolicyOverride:   work.prepared.change.PendingCIBypassPolicyOverride,
 		PendingCIQuietPeriodOverride:    work.prepared.change.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:       work.prepared.change.PathIndexIntervalOverride,
 		ConfigPatch:                     work.prepared.change.ConfigPatch,
+		ConfigFileSyncEnabled:           work.prepared.change.ConfigFileSyncEnabled,
 		IgnoreRepositoryFile:            work.prepared.change.IgnoreRepositoryFile,
 	}
 	after, err := repositorySettingsState(afterDocument, work.current.Revision+1)
@@ -462,9 +521,11 @@ func installationSettingsState(document any, revision int64) (*storage.SettingsC
 
 func targetSettingsDocument(target storage.Target) storage.TargetSettingsDocument {
 	return storage.TargetSettingsDocument{
+		ConfigFileSyncEnabled:          target.ConfigFileSyncEnabled,
 		RepositoryDefaultEnabled:       target.RepositoryDefaultEnabled,
 		PendingCIModeDefault:           target.PendingCIModeDefault,
 		PendingCIBranchPatternsDefault: target.PendingCIBranchPatternsDefault,
+		PendingCIBypassPolicyDefault:   target.PendingCIBypassPolicyDefault,
 		PendingCIQuietPeriodOverride:   target.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:      target.PathIndexIntervalOverride,
 		ConfigPatch:                    target.ConfigPatch,
@@ -476,9 +537,11 @@ func repositorySettingsDocument(repository storage.Repository) storage.Repositor
 		EnabledOverride:                 repository.EnabledOverride,
 		PendingCIModeOverride:           repository.PendingCIModeOverride,
 		PendingCIBranchPatternsOverride: repository.PendingCIBranchPatternsOverride,
+		PendingCIBypassPolicyOverride:   repository.PendingCIBypassPolicyOverride,
 		PendingCIQuietPeriodOverride:    repository.PendingCIQuietPeriodOverride,
 		PathIndexIntervalOverride:       repository.PathIndexIntervalOverride,
 		ConfigPatch:                     repository.ConfigPatch,
+		ConfigFileSyncEnabled:           repository.ConfigFileSyncEnabled,
 		IgnoreRepositoryFile:            repository.IgnoreRepositoryFile,
 	}
 }

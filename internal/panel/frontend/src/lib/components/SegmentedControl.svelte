@@ -25,6 +25,8 @@
     outline?: boolean;
     /** Renders in place of the label, which stays as the accessible name. */
     icon?: IconName;
+    /** Keep an unavailable alternative visible while native radios skip it. */
+    disabled?: boolean;
   }
 
   const {
@@ -291,6 +293,7 @@ positioning will replace once it is portable.
         {name}
         value={option.value}
         checked={value === option.value}
+        disabled={option.disabled}
         onchange={(event) => onSelect(event.currentTarget.value)}
       />
       <span class="segment-label">
@@ -451,10 +454,19 @@ positioning will replace once it is portable.
     inline-size: fit-content;
     isolation: isolate;
     margin: 0;
+    max-inline-size: 100%;
     min-width: 0;
-    overflow: clip;
+    /* A narrow inspector can stand inside a desktop viewport. Keep every option
+       reachable whenever its containing row is smaller than the natural track. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
     padding: var(--seg-gutter);
     position: relative;
+  }
+
+  fieldset::-webkit-scrollbar {
+    display: none;
   }
 
   /* A sidebar popover carries its own surfaces, so a control inside one follows the popover rather
@@ -634,7 +646,10 @@ positioning will replace once it is portable.
     opacity: 0;
     pointer-events: none;
     position: absolute;
-    transition: opacity var(--duration-press) var(--ease-standard);
+    transition:
+      opacity var(--duration-press) var(--ease-standard),
+      background-color var(--duration-press) var(--ease-standard),
+      box-shadow var(--duration-press) var(--ease-standard);
     z-index: 1;
   }
 
@@ -1085,23 +1100,12 @@ positioning will replace once it is portable.
     opacity: 0.45;
   }
 
-  fieldset:disabled label {
+  fieldset:disabled label,
+  label:has(input:disabled) {
     cursor: default;
   }
 
   @media (max-width: 36rem) {
-    fieldset {
-      box-sizing: border-box;
-      max-inline-size: 100%;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: none;
-    }
-
-    fieldset::-webkit-scrollbar {
-      display: none;
-    }
-
     fieldset.navigation .segment-label {
       padding-inline: var(--space-2);
     }

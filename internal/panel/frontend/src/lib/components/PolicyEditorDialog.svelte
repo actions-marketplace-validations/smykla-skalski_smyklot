@@ -6,8 +6,12 @@
     QueuePriority,
     ScheduleProfile,
   } from '#lib/types.js';
-  import { workloadTitle } from '#lib/workloads.js';
+  import { workloadCadenceDescription, workloadTitle } from '#lib/workloads.js';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import DurationInput from './DurationInput.svelte';
+  import Select from './Select.svelte';
+  import Switch from './Switch.svelte';
+  import FormError from './FormError.svelte';
 
   const {
     policy,
@@ -25,6 +29,7 @@
     onSubmit: (input: QueuePolicyInput) => void;
   } = $props();
 
+  let durationProblems = $state<Record<string, string | null>>({});
   let enabled = $state(true);
   let cadence = $state(300);
   let profileId = $state('always-open');
@@ -45,11 +50,15 @@
     'catalog_refresh',
     'reaction_scan',
     'config_migration',
+    'config_file_sync',
     'sync_scan',
     'path_refresh',
     'delivery_cleanup',
     'auth_cleanup',
   ]);
+  const cadenceDescription = $derived(
+    policy === null ? undefined : workloadCadenceDescription(policy.kind),
+  );
 
   onMount(() => {
     if (policy === null) return;
@@ -93,6 +102,7 @@
   }
 
   function invalid(): boolean {
+    if (Object.values(durationProblems).some((problem) => problem !== null)) return true;
     if (
       cadence < 0 ||
       (enabled && policy !== null && recurringKinds.has(policy.kind) && cadence <= 0) ||
@@ -111,13 +121,18 @@
         passingQuiet < 0
       );
     if (policy?.kind === 'webhook_delivery')
-      return webhookMaxDelay <= 0 || webhookMaxAttempts < 1 || webhookMaxAttempts > 100;
+      return (
+        webhookMaxDelay <= 0 ||
+        !Number.isInteger(webhookMaxAttempts) ||
+        webhookMaxAttempts < 1 ||
+        webhookMaxAttempts > 100
+      );
 
     return false;
   }
 
   function submit(): void {
-    if (policy === null) return;
+    if (policy === null || invalid()) return;
     onSubmit({
       enabled,
       cadence_seconds: cadence,
@@ -155,121 +170,260 @@ window that no longer exists by the time it opens.
   {onClose}
   onConfirm={submit}
 >
-  <div class="policy-form">
-    <label class="check-line"
-      ><input type="checkbox" bind:checked={enabled} /><span>Run this job</span></label
+  <div class="form-stack policy-form">
+    <div class="form-row">
+      <span class="form-label">Run this job</span>
+      <span class="policy-value"
+        ><Switch
+          bare
+          checked={enabled}
+          label="Run this job"
+          disabled={busy}
+          onToggle={(next) => (enabled = next)}
+        /></span
+      >
+    </div>
+    <div
+      class="form-field"
+      role="group"
+      aria-labelledby="policy-cadence-label"
+      aria-describedby={cadenceDescription === undefined ? undefined : 'policy-cadence-help'}
     >
-    <label for="policy-cadence">How often, in seconds</label>
-    <input
-      id="policy-cadence"
-      type="number"
-      min={enabled && policy !== null && recurringKinds.has(policy.kind) ? 1 : 0}
-      step="30"
-      bind:value={cadence}
-    />
-    <label for="policy-window">Hours</label>
-    <select id="policy-window" bind:value={profileId}>
-      {#each profiles as profile (profile.id)}
-        <option value={profile.id}>{profile.name} · {profile.timezone}</option>
-      {/each}
-    </select>
-    <label for="policy-priority">Default priority</label>
-    <select id="policy-priority" bind:value={priority}>
-      <option value="low">Low</option>
-      <option value="normal">Normal</option>
-      <option value="high">High</option>
-      <option value="urgent">Urgent</option>
-    </select>
-    <label for="policy-retry">Wait before retrying, in seconds</label>
-    <input id="policy-retry" type="number" min="0" step="5" bind:value={retryDelay} />
-    <label class="check-line"
-      ><input type="checkbox" bind:checked={retentionEnabled} /><span
-        >Delete finished records after a while</span
-      ></label
-    >
+      <label class="form-label" id="policy-cadence-label" for="policy-cadence">How often</label>
+      <DurationInput
+        id="policy-cadence"
+        label="How often"
+        amountLabel="How often"
+        value={cadence}
+        units={['seconds', 'minutes', 'hours', 'days']}
+        minimum={enabled && policy !== null && recurringKinds.has(policy.kind) ? 1 : 0}
+        disabled={busy}
+        onChange={(seconds) => {
+          if (seconds !== null) cadence = seconds;
+        }}
+        onValidityChange={(problem) => (durationProblems.cadence = problem)}
+      />
+      {#if cadenceDescription !== undefined}
+        <p id="policy-cadence-help" class="form-help">{cadenceDescription}</p>
+      {/if}
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="policy-window">Hours</label>
+      <Select
+        disabled={busy}
+        id="policy-window"
+        bind:value={profileId}
+        options={profiles.map((profile) => ({
+          value: profile.id,
+          label: `${profile.name} · ${profile.timezone}`,
+        }))}
+      />
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="policy-priority">Default priority</label>
+      <Select
+        disabled={busy}
+        id="policy-priority"
+        bind:value={priority}
+        options={[
+          { value: 'low', label: 'Low' },
+          { value: 'normal', label: 'Normal' },
+          { value: 'high', label: 'High' },
+          { value: 'urgent', label: 'Urgent' },
+        ]}
+      />
+    </div>
+    <div class="form-field">
+      <label class="form-label" for="policy-retry">Wait before retrying</label>
+      <DurationInput
+        id="policy-retry"
+        label="Wait before retrying"
+        amountLabel="Wait before retrying"
+        value={retryDelay}
+        units={['seconds', 'minutes', 'hours', 'days']}
+        minimum={0}
+        disabled={busy}
+        onChange={(seconds) => {
+          if (seconds !== null) retryDelay = seconds;
+        }}
+        onValidityChange={(problem) => (durationProblems.retryDelay = problem)}
+      />
+    </div>
+    <div class="form-row">
+      <span class="form-label">Delete finished records after a while</span>
+      <span class="policy-value"
+        ><Switch
+          bare
+          checked={retentionEnabled}
+          label="Delete finished records after a while"
+          disabled={busy}
+          onToggle={(next) => (retentionEnabled = next)}
+        /></span
+      >
+    </div>
     {#if retentionEnabled}
-      <label for="policy-retention">Keep finished records for, in seconds</label>
-      <input id="policy-retention" type="number" min="0" step="3600" bind:value={retention} />
+      <div class="form-field">
+        <label class="form-label" for="policy-retention">Keep finished records for</label>
+        <DurationInput
+          id="policy-retention"
+          label="Keep finished records for"
+          amountLabel="Keep finished records for"
+          value={retention}
+          units={['seconds', 'minutes', 'hours', 'days']}
+          minimum={0}
+          disabled={busy}
+          onChange={(seconds) => {
+            if (seconds !== null) retention = seconds;
+          }}
+          onValidityChange={(problem) => (durationProblems.retention = problem)}
+        />
+      </div>
     {/if}
     {#if policy?.kind === 'sync_scan'}
-      <fieldset>
-        <legend>Sync plan safety</legend>
-        <label for="policy-approval">An approval expires after, in seconds</label>
-        <input id="policy-approval" type="number" min="1" step="60" bind:value={approvalLifetime} />
-      </fieldset>
+      <section class="form-section">
+        <h3 class="card-title">Sync plan safety</h3>
+        <div class="form-field">
+          <label class="form-label" for="policy-approval">An approval expires after</label>
+          <DurationInput
+            id="policy-approval"
+            label="An approval expires after"
+            amountLabel="An approval expires after"
+            value={approvalLifetime}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) approvalLifetime = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.approvalLifetime = problem)}
+          />
+        </div>
+      </section>
     {:else if policy?.kind === 'pending_ci'}
-      <fieldset class="job-fields">
-        <legend>Pending CI timing</legend>
-        <label for="policy-active-check">Look again every, in seconds</label>
-        <input id="policy-active-check" type="number" min="1" bind:value={activeCheck} />
-        <label for="policy-no-check">Wait for checks to appear, in seconds</label>
-        <input id="policy-no-check" type="number" min="1" bind:value={noCheckGrace} />
-        <label for="policy-defer-after">Slow down after no progress for, in seconds</label>
-        <input id="policy-defer-after" type="number" min="1" bind:value={deferAfter} />
-        <label for="policy-deferred-check">Then look every, in seconds</label>
-        <input id="policy-deferred-check" type="number" min="1" bind:value={deferredCheck} />
-        <label for="policy-quiet">Quiet period after checks pass, in seconds</label>
-        <input id="policy-quiet" type="number" min="0" bind:value={passingQuiet} />
-      </fieldset>
+      <section class="form-section">
+        <h3 class="card-title">Pending CI timing</h3>
+        <div class="form-field">
+          <label class="form-label" for="policy-active-check">Look again every</label>
+          <DurationInput
+            id="policy-active-check"
+            label="Look again every"
+            amountLabel="Look again every"
+            value={activeCheck}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) activeCheck = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.activeCheck = problem)}
+          />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="policy-no-check">Wait for checks to appear</label>
+          <DurationInput
+            id="policy-no-check"
+            label="Wait for checks to appear"
+            amountLabel="Wait for checks to appear"
+            value={noCheckGrace}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) noCheckGrace = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.noCheckGrace = problem)}
+          />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="policy-defer-after">Slow down after no progress for</label>
+          <DurationInput
+            id="policy-defer-after"
+            label="Slow down after no progress for"
+            amountLabel="Slow down after no progress for"
+            value={deferAfter}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) deferAfter = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.deferAfter = problem)}
+          />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="policy-deferred-check">Then look every</label>
+          <DurationInput
+            id="policy-deferred-check"
+            label="Then look every"
+            amountLabel="Then look every"
+            value={deferredCheck}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) deferredCheck = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.deferredCheck = problem)}
+          />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="policy-quiet">Quiet period after checks pass</label>
+          <DurationInput
+            id="policy-quiet"
+            label="Quiet period after checks pass"
+            amountLabel="Quiet period after checks pass"
+            value={passingQuiet}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={0}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) passingQuiet = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.passingQuiet = problem)}
+          />
+        </div>
+      </section>
     {:else if policy?.kind === 'webhook_delivery'}
-      <fieldset class="job-fields">
-        <legend>Webhook retry budget</legend>
-        <label for="policy-webhook-max-delay">Longest wait between attempts, in seconds</label>
-        <input id="policy-webhook-max-delay" type="number" min="1" bind:value={webhookMaxDelay} />
-        <label for="policy-webhook-attempts">Attempts before giving up</label>
-        <input
-          id="policy-webhook-attempts"
-          type="number"
-          min="1"
-          max="100"
-          bind:value={webhookMaxAttempts}
-        />
-      </fieldset>
+      <section class="form-section">
+        <h3 class="card-title">Webhook retry budget</h3>
+        <div class="form-field">
+          <label class="form-label" for="policy-webhook-max-delay"
+            >Longest wait between attempts</label
+          >
+          <DurationInput
+            id="policy-webhook-max-delay"
+            label="Longest wait between attempts"
+            amountLabel="Longest wait between attempts"
+            value={webhookMaxDelay}
+            units={['seconds', 'minutes', 'hours', 'days']}
+            minimum={1}
+            disabled={busy}
+            onChange={(seconds) => {
+              if (seconds !== null) webhookMaxDelay = seconds;
+            }}
+            onValidityChange={(problem) => (durationProblems.webhookMaxDelay = problem)}
+          />
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="policy-webhook-attempts">Attempts before giving up</label>
+          <input
+            id="policy-webhook-attempts"
+            class="text-input mono attempts-count"
+            disabled={busy}
+            type="number"
+            min="1"
+            max="100"
+            bind:value={webhookMaxAttempts}
+          />
+        </div>
+      </section>
     {/if}
-    {#if error !== ''}<p class="form-error" role="alert">{error}</p>{/if}
+    <FormError message={error} />
   </div>
 </ConfirmDialog>
 
 <style>
-  .policy-form {
-    display: grid;
-    gap: var(--space-3);
-  }
-  label:not(.check-line) {
-    font-size: 0.75rem;
-    font-weight: 720;
-    margin-bottom: calc(var(--space-2) * -1);
-  }
-  .check-line {
-    align-items: center;
-    display: flex;
-    gap: var(--space-2);
-    min-height: 2.75rem;
-  }
-  input[type='number'],
-  select {
-    background: var(--input-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--radius-control);
-    color: var(--text-primary);
-    font: inherit;
-    min-height: 2.75rem;
-    padding: 0 var(--space-3);
-  }
-  fieldset {
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-control);
-    display: grid;
-    gap: var(--space-3);
-    margin: 0;
-    padding: var(--space-3);
-  }
-  legend {
-    font-size: 0.75rem;
-    font-weight: 720;
-  }
-  .form-error {
-    color: var(--danger);
-    margin: 0;
+  .attempts-count {
+    inline-size: 8ch;
   }
 </style>

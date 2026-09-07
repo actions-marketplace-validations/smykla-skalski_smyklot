@@ -1,3 +1,15 @@
+import { mockConfigFilePreview } from './config-file-review.js';
+import type { ConfigFileChoiceSide } from '../src/lib/config-file-sync.js';
+import {
+  mockConfigFileInputs,
+  mockConfigFileStatus,
+  REPOSITORY_CONFIG_FILE_STATES,
+  workspaceConfigFileVariant,
+} from './config-file-status.js';
+import { observedRepositoryFileStatus } from './repository-files.js';
+import { mockBypassActorSuggestions } from './bypass-actors.ts';
+import { parseBypassPolicy } from '../src/lib/bypass-policy.js';
+import { preserveNumberToken } from '../src/lib/merge.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
@@ -171,6 +183,12 @@ interface MockState extends Fixtures {
   scheduleRequests: ScheduleRequest[];
   scheduleCounter: number;
   fileRenderer: GoFileRenderer;
+  configFileInputs: Map<string, string>;
+  configFileCheckedAt: string;
+  configFileResolutions: Map<
+    string,
+    { inputs: string; side: ConfigFileChoiceSide; checkedAt: string }
+  >;
 }
 
 /** Marks the error renderer's own request for a shell, so `handle` stands aside. */
@@ -197,6 +215,7 @@ const MOCK_SCHEDULE_KINDS: QueueWorkload[] = [
   'catalog_refresh',
   'reaction_scan',
   'config_migration',
+  'config_file_sync',
   'sync_scan',
   'sync_apply',
   'path_refresh',
@@ -254,6 +273,7 @@ function mockScheduleState(
     catalog_refresh: 5 * 60,
     reaction_scan: 5 * 60,
     config_migration: 5 * 60,
+    config_file_sync: 15 * 60,
     sync_scan: 6 * 60 * 60,
     sync_apply: 0,
     path_refresh: 60 * 60,
@@ -267,7 +287,10 @@ function mockScheduleState(
     cadence: cadenceSeconds[kind] * NANOSECONDS_PER_SECOND,
     profile_id: 'always-open',
     default_priority: kind === 'webhook_delivery' ? 'high' : 'normal',
-    retry_delay: (kind === 'webhook_delivery' ? 30 : 5 * 60) * NANOSECONDS_PER_SECOND,
+    retry_delay:
+      (kind === 'webhook_delivery' || kind === 'config_file_sync' ? 30 : 5 * 60) *
+      NANOSECONDS_PER_SECOND,
+    ...(kind === 'config_file_sync' ? { retention: 48 * 60 * 60 * NANOSECONDS_PER_SECOND } : {}),
     ...(kind === 'sync_scan' ? { approval_ttl: 2 * 60 * 60 * NANOSECONDS_PER_SECOND } : {}),
     ...(kind === 'pending_ci'
       ? {
@@ -572,6 +595,9 @@ function recomputeTarget(target: MockTarget): void {
 }
 
 function recomputeRepository(target: MockTarget, repository: MockRepository): void {
+  repository.detail.pending_ci_bypass_policy_inherited = cloneMockDocument(
+    target.value.pending_ci_bypass_policy_default ?? null,
+  );
   const detail = repository.detail;
   const inherited = resolveConfig(
     target.value.config_patch,
@@ -594,7 +620,7 @@ function recomputeRepository(target: MockTarget, repository: MockRepository): vo
   detail.repository.enabled_source =
     detail.repository.enabled_override === null ? 'target' : 'repository';
   detail.repository.config_override_count = Object.keys(detail.config_patch).length;
-  if (detail.ignore_repository_file) detail.repository.config_file_status = 'bypassed';
+  detail.repository.config_file_status = observedRepositoryFileStatus(detail);
 }
 
 /**
@@ -655,6 +681,28 @@ function install(httpServer: DevHttpServer | null | undefined, middlewares: Conn
     streams: new Set(),
     shell: () => Promise.reject(new Error('the mock dev server is not serving yet')),
     fileRenderer,
+    configFileCheckedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    configFileResolutions: new Map(),
+    configFileInputs: new Map(
+      fixtures.targets.flatMap((target) => [
+        [
+          target.value.id,
+          mockConfigFileInputs(fixtures, target.value.id, undefined, target.value.revision),
+        ] as const,
+        ...target.repositories.map(
+          ({ detail }) =>
+            [
+              `${target.value.id}/${detail.repository.id}`,
+              mockConfigFileInputs(
+                fixtures,
+                target.value.id,
+                detail.repository.id,
+                detail.revision,
+              ),
+            ] as const,
+        ),
+      ]),
+    ),
   };
   if (httpServer !== null && httpServer !== undefined) {
     const server = httpServer;
@@ -1357,6 +1405,166 @@ async function handle(
   }
 
   try {
+    const reviewRoute = path.match(
+      /^\/api\/v1\/(?<surface>targets|root\/workspaces)\/(?<target>[^/]+)(?:\/repositories\/(?<repository>[^/]+))?\/config-file\/(?<action>preview|resolution)$/u,
+    );
+    if (
+      reviewRoute &&
+      ((method === 'GET' && reviewRoute.groups?.action === 'preview') ||
+        (method === 'POST' && reviewRoute.groups?.action === 'resolution'))
+    ) {
+      const target = findTarget(state, reviewRoute.groups?.target ?? '');
+      const selector = reviewRoute.groups?.repository;
+      const repository = selector ? findRepository(target, selector) : undefined;
+      const repositoryId = repository?.detail.repository.id;
+      const owner = repository?.detail ?? target.value;
+      const key = repositoryId ? `${target.value.id}/${repositoryId}` : target.value.id;
+      const inputs = mockConfigFileInputs(state, target.value.id, repositoryId, owner.revision);
+      const variant = repository
+        ? (REPOSITORY_CONFIG_FILE_STATES[repository.detail.repository.name] ?? 'off')
+        : workspaceConfigFileVariant(target.value.account.login);
+      const name =
+        repository?.detail.repository.full_name ?? `${target.value.account.login}/.github`;
+      const token = createHash('sha256')
+        .update(
+          JSON.stringify([
+            key,
+            name,
+            inputs,
+            variant,
+            owner.config_file_sync_enabled,
+            repository?.detail.ignore_repository_file,
+            repository?.detail.repository.default_branch,
+          ]),
+        )
+        .digest('hex');
+      const preview = mockConfigFilePreview(
+        variant,
+        name,
+        token,
+        !repository,
+        owner.config_file_sync_enabled ?? false,
+        repository?.detail.ignore_repository_file ?? false,
+      );
+      const accepted = state.configFileResolutions.get(key);
+      if (method === 'GET') {
+        respond(
+          res,
+          200,
+          accepted?.inputs === inputs
+            ? { status: 'pending', checked_at: accepted.checkedAt, path: preview.path }
+            : preview,
+        );
+        return;
+      }
+      if (reviewRoute.groups?.surface === 'root/workspaces') requireRootWrite(state, target);
+      else if (!target.value.capabilities.write)
+        throw new MockApiError(403, 'forbidden', 'Write access is required to apply a choice');
+      const input = await readBody<{ review_token?: string; side?: ConfigFileChoiceSide }>(req);
+      if (
+        !input.review_token ||
+        !/^[a-f0-9]{64}$/iu.test(input.review_token) ||
+        !['panel', 'file'].includes(input.side ?? '')
+      )
+        throw new MockApiError(
+          400,
+          'invalid_config_file_choice',
+          'Review the current file and choose which conflicting values to keep',
+        );
+      if (preview.problem === 'sync_off' || preview.problem === 'file_disabled')
+        throw new MockApiError(
+          422,
+          preview.problem,
+          preview.message ?? 'Configuration file sync is blocked',
+        );
+      if (accepted?.inputs === inputs || input.review_token !== preview.review_token)
+        throw new MockApiError(
+          409,
+          'config_file_changed',
+          'Settings or the file changed. Review the current values before choosing again',
+        );
+      if (!preview.choices?.some((choice) => choice.side === input.side && choice.available))
+        throw new MockApiError(
+          422,
+          'resolution_unavailable',
+          'This choice cannot produce valid settings',
+        );
+      state.configFileResolutions.set(key, {
+        inputs,
+        side: input.side!,
+        checkedAt: new Date().toISOString(),
+      });
+      broadcast(state, {
+        type: repositoryId ? 'repository.changed' : 'target.changed',
+        target_id: target.value.id,
+        ...(repositoryId ? { repository_id: repositoryId } : {}),
+      });
+      respond(res, 202, { status: 'pending' });
+      return;
+    }
+    const configFile = path.match(
+      /^\/api\/v1\/(?:targets|root\/workspaces)\/(?<target>[^/]+)(?:\/repositories\/(?<repository>[^/]+))?\/config-file$/u,
+    );
+    if (configFile && method === 'GET') {
+      const target = findTarget(state, configFile.groups?.target ?? '');
+      const selector = configFile.groups?.repository;
+      const repository = selector ? findRepository(target, selector) : undefined;
+      const variant = repository
+        ? (REPOSITORY_CONFIG_FILE_STATES[repository.detail.repository.name] ?? 'off')
+        : workspaceConfigFileVariant(target.value.account.login);
+      const owner = repository?.detail ?? target.value;
+      const key = repository
+        ? `${target.value.id}/${repository.detail.repository.id}`
+        : target.value.id;
+      const accepted = state.configFileResolutions.get(key);
+      if (
+        accepted?.inputs ===
+          mockConfigFileInputs(
+            state,
+            target.value.id,
+            repository?.detail.repository.id,
+            owner.revision,
+          ) &&
+        owner.config_file_sync_enabled &&
+        !repository?.detail.ignore_repository_file
+      ) {
+        respond(res, 200, {
+          enabled: true,
+          available: true,
+          status: 'pending',
+          last_check: {
+            checked_at: accepted.checkedAt,
+            status: 'pending',
+            settings_current: true,
+            path: repository ? '.smyklot.toml' : '.smyklot/workspace.toml',
+          },
+        });
+        return;
+      }
+      respond(
+        res,
+        200,
+        mockConfigFileStatus(
+          variant,
+          repository?.detail.repository.full_name ?? `${target.value.account.login}/.github`,
+          owner.config_file_sync_enabled ?? false,
+          owner.revision,
+          repository?.detail.ignore_repository_file ?? false,
+          repository === undefined,
+          state.configFileCheckedAt,
+          state.configFileInputs.get(
+            repository ? `${target.value.id}/${repository.detail.repository.id}` : target.value.id,
+          ) ===
+            mockConfigFileInputs(
+              state,
+              target.value.id,
+              repository?.detail.repository.id,
+              owner.revision,
+            ),
+        ),
+      );
+      return;
+    }
     if (path === route('/api/v1/session') && method === 'GET') {
       respond(res, 200, {
         account: VIEWER,
@@ -2064,6 +2272,19 @@ async function handle(
     }
     if (path === route('/api/v1/events') && method === 'GET') {
       respond(res, 426, { error: { code: 'upgrade_required', message: 'WebSocket required' } });
+      return;
+    }
+
+    if (
+      /^\/api\/v1\/(?:targets|root\/workspaces)\/[^/]+\/bypass-actors$/.test(path) &&
+      method === 'GET'
+    ) {
+      respond(res, 200, {
+        items: mockBypassActorSuggestions(
+          parsed.searchParams.get('type'),
+          parsed.searchParams.get('q') ?? '',
+        ),
+      });
       return;
     }
 
@@ -3050,7 +3271,7 @@ function changedMockSyncConfig(
     labels: labels ? structuredClone(input.labels) : config.labels,
     allow_removal: labels ? input.allow_removal : config.allow_removal,
     excludes: labels ? structuredClone(input.excludes) : config.excludes,
-    document: labels ? config.document : structuredClone(input.document),
+    document: labels ? config.document : cloneMockDocument(input.document),
     revision: nextRevision,
     updated_by: VIEWER.login,
     updated_at: now,
@@ -3080,7 +3301,7 @@ async function saveMockWorkspaceSettings(
   input: WorkspaceSettingsBatchInput,
 ): Promise<WorkspaceSettingsBatchResponse> {
   validateMockWorkspaceSettingsBatch(input);
-  input = structuredClone(input);
+  input = cloneMockDocument(input);
   for (const change of input.sync_configs ?? []) {
     if (change.kind !== 'files' || !Array.isArray(change.document.files)) continue;
     let totalBytes = 0;
@@ -3236,24 +3457,46 @@ function prepareMockWorkspaceSettings(
   };
 }
 
+function mockConfigFileSyncEnabled(value: unknown, current: boolean | undefined): boolean {
+  if (value === undefined) return current ?? false;
+  if (typeof value !== 'boolean')
+    invalidMockSettingsBatch('Configuration file sync must be a boolean');
+  return value;
+}
+
+function mockBypassPolicy(value: unknown) {
+  const policy = parseBypassPolicy(value);
+  if (policy === undefined)
+    throw new MockApiError(400, 'invalid_request', 'Bypass policy is invalid');
+  return policy;
+}
+
 function prepareMockTargetSettings(
   target: MockTarget,
   input: WorkspaceTargetSettingsInput,
 ): MockPreparedChange<PanelTarget> {
   const current = mockWorkspaceTargetDocument(target.value);
   const proposed = {
+    config_file_sync_enabled: mockConfigFileSyncEnabled(
+      input.config_file_sync_enabled,
+      target.value.config_file_sync_enabled,
+    ),
     repository_default_enabled: input.repository_default_enabled,
+    pending_ci_bypass_policy_default:
+      input.pending_ci_bypass_policy_default === undefined
+        ? (target.value.pending_ci_bypass_policy_default ?? null)
+        : mockBypassPolicy(input.pending_ci_bypass_policy_default),
     pending_ci_mode_default: input.pending_ci_mode_default,
     pending_ci_branch_patterns_default: structuredClone(input.pending_ci_branch_patterns_default),
     pending_ci_quiet_period_seconds_override: input.pending_ci_quiet_period_seconds_override,
     path_index_interval_seconds_override: input.path_index_interval_seconds_override,
     config_patch: structuredClone(input.config_patch),
   };
-  const next = structuredClone(target.value);
+  const next = cloneMockDocument(target.value);
   const changed = !sameMockDocument(current, proposed);
   if (changed) Object.assign(next, proposed, { revision: next.revision + 1 });
   return {
-    before: structuredClone(target.value),
+    before: cloneMockDocument(target.value),
     changed,
     next,
     conflict:
@@ -3276,29 +3519,39 @@ function prepareMockRepositorySettings(
   const stored = findRepository(target, input.repository_id);
   const proposed = {
     enabled_override: input.enabled_override,
+    pending_ci_bypass_policy_override:
+      input.pending_ci_bypass_policy_override === undefined
+        ? (stored.detail.pending_ci_bypass_policy_override ?? null)
+        : mockBypassPolicy(input.pending_ci_bypass_policy_override),
     pending_ci_mode_override: input.pending_ci_mode_override,
     pending_ci_branch_patterns_override: structuredClone(input.pending_ci_branch_patterns_override),
     pending_ci_quiet_period_seconds_override: input.pending_ci_quiet_period_seconds_override,
     path_index_interval_seconds_override: input.path_index_interval_seconds_override,
     config_patch: structuredClone(input.config_patch),
+    config_file_sync_enabled: mockConfigFileSyncEnabled(
+      input.config_file_sync_enabled,
+      stored.detail.config_file_sync_enabled,
+    ),
     ignore_repository_file: input.ignore_repository_file,
   };
-  const next = structuredClone(stored.detail);
+  const next = cloneMockDocument(stored.detail);
   const changed = !sameMockDocument(mockWorkspaceRepositoryDocument(stored.detail), proposed);
   if (changed) {
     next.repository.enabled_override = proposed.enabled_override;
+    next.pending_ci_bypass_policy_override = proposed.pending_ci_bypass_policy_override;
     next.pending_ci_mode_override = proposed.pending_ci_mode_override;
     next.pending_ci_branch_patterns_override = proposed.pending_ci_branch_patterns_override;
     next.pending_ci_quiet_period_seconds_override =
       proposed.pending_ci_quiet_period_seconds_override;
     next.path_index_interval_seconds_override = proposed.path_index_interval_seconds_override;
     next.config_patch = proposed.config_patch;
+    next.config_file_sync_enabled = proposed.config_file_sync_enabled;
     next.ignore_repository_file = proposed.ignore_repository_file;
     next.revision += 1;
     next.repository.updated_at = new Date().toISOString();
   }
   return {
-    before: structuredClone(stored.detail),
+    before: cloneMockDocument(stored.detail),
     changed,
     stored,
     next,
@@ -3323,7 +3576,7 @@ function prepareMockSyncConfigSettings(
 ): MockPreparedChange<SyncConfig> & { key: string } {
   const key = `${targetId}/${input.kind}`;
   const stored = state.sync.get(key);
-  const current = structuredClone(stored ?? emptyMockSyncConfig(input.kind));
+  const current = cloneMockDocument(stored ?? emptyMockSyncConfig(input.kind));
   const proposed =
     input.kind === 'labels'
       ? {
@@ -3331,12 +3584,12 @@ function prepareMockSyncConfigSettings(
           allow_removal: input.allow_removal,
           excludes: structuredClone(input.excludes),
         }
-      : structuredClone(input.document);
+      : cloneMockDocument(input.document);
   const changed =
     current.enabled !== input.enabled ||
     !sameMockDocument(mockSyncConfigDocument(current), proposed);
   return {
-    before: stored === undefined ? null : structuredClone(stored),
+    before: stored === undefined ? null : cloneMockDocument(stored),
     changed,
     key,
     next: changed ? changedMockSyncConfig(current, input) : current,
@@ -3362,21 +3615,21 @@ function prepareMockSyncOverrideSettings(
   const repository = findRepository(target, input.repository_id);
   const key = `${input.repository_id}/${input.kind}`;
   const stored = state.syncOverrides.get(key);
-  const current = structuredClone(stored ?? emptyMockSyncOverride(input.kind));
+  const current = cloneMockDocument(stored ?? emptyMockSyncOverride(input.kind));
   const changed =
     current.enabled !== input.enabled || !sameMockDocument(current.document, input.document);
   const next: SyncOverride = changed
     ? {
         ...current,
         enabled: input.enabled,
-        document: structuredClone(input.document),
+        document: cloneMockDocument(input.document),
         revision: current.revision + 1,
         updated_by: VIEWER.login,
         updated_at: new Date().toISOString(),
       }
     : current;
   return {
-    before: stored === undefined ? null : structuredClone(stored),
+    before: stored === undefined ? null : cloneMockDocument(stored),
     changed,
     key,
     repository,
@@ -3592,7 +3845,7 @@ function createMockWorkspaceSettingsCheckpoint(
   };
   state.workspaceSettings.checkpoints.set(
     mockWorkspaceCheckpointKey(target.value.id, id),
-    structuredClone(checkpoint),
+    cloneMockDocument(checkpoint),
   );
   return checkpoint;
 }
@@ -3614,7 +3867,7 @@ function mockWorkspaceCheckpointItem(
     current: SettingsCheckpointState | null,
   ) => ({
     available,
-    state: structuredClone(value),
+    state: cloneMockDocument(value),
     differs: available && !sameMockCheckpointState(value, current),
     restorable: available && (value !== null || optional),
   });
@@ -3623,7 +3876,7 @@ function mockWorkspaceCheckpointItem(
     document_version: 1,
     before: side(beforeAvailable, before, after),
     after: side(afterAvailable, after, after),
-    current: structuredClone(after),
+    current: cloneMockDocument(after),
     changed: beforeAvailable && afterAvailable && !sameMockCheckpointState(before, after),
   };
 }
@@ -3634,7 +3887,11 @@ function mockWorkspaceSettingsAuditSummary(verb: 'Saved' | 'Restored', count: nu
 
 function mockWorkspaceTargetDocument(target: PanelTarget) {
   return {
+    config_file_sync_enabled: target.config_file_sync_enabled ?? false,
     repository_default_enabled: target.repository_default_enabled,
+    pending_ci_bypass_policy_default: cloneMockDocument(
+      target.pending_ci_bypass_policy_default ?? null,
+    ),
     pending_ci_mode_default: target.pending_ci_mode_default,
     pending_ci_branch_patterns_default: target.pending_ci_branch_patterns_default,
     pending_ci_quiet_period_seconds_override: target.pending_ci_quiet_period_seconds_override,
@@ -3646,18 +3903,26 @@ function mockWorkspaceTargetDocument(target: PanelTarget) {
 function mockWorkspaceRepositoryDocument(detail: RepositoryDetail) {
   return {
     enabled_override: detail.repository.enabled_override,
+    pending_ci_bypass_policy_override: cloneMockDocument(
+      detail.pending_ci_bypass_policy_override ?? null,
+    ),
     pending_ci_mode_override: detail.pending_ci_mode_override,
     pending_ci_branch_patterns_override: detail.pending_ci_branch_patterns_override,
     pending_ci_quiet_period_seconds_override: detail.pending_ci_quiet_period_seconds_override,
     path_index_interval_seconds_override: detail.path_index_interval_seconds_override,
     config_patch: detail.config_patch,
+    config_file_sync_enabled: detail.config_file_sync_enabled ?? false,
     ignore_repository_file: detail.ignore_repository_file,
   };
 }
 
 function mockWorkspaceTargetCheckpointDocument(target: PanelTarget): Record<string, unknown> {
   return {
+    ...(target.config_file_sync_enabled === true ? { config_file_sync_enabled: true } : {}),
     repository_default_enabled: target.repository_default_enabled,
+    pending_ci_bypass_policy_default: cloneMockDocument(
+      target.pending_ci_bypass_policy_default ?? null,
+    ),
     pending_ci_mode_default: target.pending_ci_mode_default,
     pending_ci_branch_patterns_default: structuredClone(target.pending_ci_branch_patterns_default),
     pending_ci_quiet_period_override: mockWorkspaceCheckpointDuration(
@@ -3675,6 +3940,9 @@ function mockWorkspaceRepositoryCheckpointDocument(
 ): Record<string, unknown> {
   return {
     enabled_override: detail.repository.enabled_override,
+    pending_ci_bypass_policy_override: cloneMockDocument(
+      detail.pending_ci_bypass_policy_override ?? null,
+    ),
     pending_ci_mode_override: detail.pending_ci_mode_override,
     pending_ci_branch_patterns_override: structuredClone(
       detail.pending_ci_branch_patterns_override,
@@ -3686,6 +3954,7 @@ function mockWorkspaceRepositoryCheckpointDocument(
       detail.path_index_interval_seconds_override,
     ),
     config_patch: structuredClone(detail.config_patch),
+    ...(detail.config_file_sync_enabled === true ? { config_file_sync_enabled: true } : {}),
     ignore_repository_file: detail.ignore_repository_file,
   };
 }
@@ -3714,7 +3983,7 @@ function mockWorkspaceCheckpointState(
   document: Record<string, unknown>,
   revision: number,
 ): SettingsCheckpointState {
-  const copy = structuredClone(document);
+  const copy = cloneMockDocument(document);
   return {
     document: copy,
     digest: `sha256:${createHash('sha256').update(canonicalStringify(copy)).digest('hex')}`,
@@ -3774,7 +4043,7 @@ function inspectMockWorkspaceSettingsCheckpoint(
   target: MockTarget,
   checkpoint: SettingsCheckpoint,
 ): SettingsCheckpoint {
-  const inspection = structuredClone(checkpoint);
+  const inspection = cloneMockDocument(checkpoint);
   const seen = new Set(inspection.items.map(mockWorkspaceCheckpointIdentity));
   for (const entry of mockWorkspaceSettingsSnapshot(state, target).values()) {
     if (entry.kind !== 'sync_config' && entry.kind !== 'sync_override') continue;
@@ -3793,7 +4062,7 @@ function inspectMockWorkspaceSettingsCheckpoint(
     const { current, incompatibility } = mockWorkspaceCheckpointCurrent(state, target, item);
     return {
       ...item,
-      current: structuredClone(current),
+      current: cloneMockDocument(current),
       before: inspectMockWorkspaceCheckpointSide(item, item.before, current, incompatibility),
       after: inspectMockWorkspaceCheckpointSide(item, item.after, current, incompatibility),
     };
@@ -3814,7 +4083,7 @@ function inspectMockWorkspaceCheckpointSide(
     side.state !== null || item.kind === 'sync_config' || item.kind === 'sync_override';
   return {
     ...side,
-    state: structuredClone(side.state),
+    state: cloneMockDocument(side.state),
     differs: side.available && !sameMockCheckpointState(side.state, current),
     restorable: side.available && incompatibility === undefined && historicalRestorable,
     ...(incompatibility === undefined ? {} : { incompatibility }),
@@ -4089,7 +4358,15 @@ function appendMockWorkspaceRestoreInput(
   switch (selection.kind) {
     case 'target':
       batch.target = {
+        config_file_sync_enabled: mockCheckpointBoolean(
+          document.config_file_sync_enabled === undefined
+            ? false
+            : document.config_file_sync_enabled,
+        ),
         repository_default_enabled: mockCheckpointBoolean(document.repository_default_enabled),
+        pending_ci_bypass_policy_default: parseBypassPolicy(
+          document.pending_ci_bypass_policy_default ?? null,
+        ),
         pending_ci_mode_default: mockCheckpointPendingCIMode(document.pending_ci_mode_default),
         pending_ci_branch_patterns_default: mockCheckpointBranchPatterns(
           document.pending_ci_branch_patterns_default,
@@ -4111,6 +4388,9 @@ function appendMockWorkspaceRestoreInput(
       (batch.repositories ??= []).push({
         repository_id: selection.repository_id,
         enabled_override: mockCheckpointNullableBoolean(document.enabled_override),
+        pending_ci_bypass_policy_override: parseBypassPolicy(
+          document.pending_ci_bypass_policy_override ?? null,
+        ),
         pending_ci_mode_override: mockCheckpointNullablePendingCIMode(
           document.pending_ci_mode_override,
         ),
@@ -4124,6 +4404,11 @@ function appendMockWorkspaceRestoreInput(
           document.path_index_interval_override,
         ),
         config_patch: mockCheckpointConfigPatch(document.config_patch),
+        config_file_sync_enabled: mockCheckpointBoolean(
+          document.config_file_sync_enabled === undefined
+            ? false
+            : document.config_file_sync_enabled,
+        ),
         ignore_repository_file: mockCheckpointBoolean(document.ignore_repository_file),
         expected_revision: selection.expected_revision,
       });
@@ -4261,7 +4546,7 @@ function mockCheckpointNestedDocument(value: unknown): Record<string, unknown> {
     blockedMockWorkspaceRestore('the selected checkpoint contains an invalid Sync document');
   }
   try {
-    const parsed: unknown = JSON.parse(value);
+    const parsed: unknown = JSON.parse(value, preserveNumberToken);
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       blockedMockWorkspaceRestore('the selected checkpoint contains an invalid Sync document');
     }
@@ -4313,13 +4598,13 @@ function mockSyncConfigDocument(config: SyncConfig): Record<string, unknown> {
         allow_removal: config.allow_removal,
         excludes: structuredClone(config.excludes),
       }
-    : structuredClone(config.document);
+    : cloneMockDocument(config.document);
 }
 
 function mockWorkspaceTargetState(target: PanelTarget): WorkspaceTargetSettingsState {
   return {
     target_id: target.id,
-    ...structuredClone(mockWorkspaceTargetDocument(target)),
+    ...cloneMockDocument(mockWorkspaceTargetDocument(target)),
     revision: target.revision,
   };
 }
@@ -4327,7 +4612,7 @@ function mockWorkspaceTargetState(target: PanelTarget): WorkspaceTargetSettingsS
 function mockWorkspaceRepositoryState(detail: RepositoryDetail): WorkspaceRepositorySettingsState {
   return {
     repository_id: detail.repository.id,
-    ...structuredClone(mockWorkspaceRepositoryDocument(detail)),
+    ...cloneMockDocument(mockWorkspaceRepositoryDocument(detail)),
     revision: detail.revision,
   };
 }
@@ -4357,7 +4642,7 @@ function mockWorkspaceSyncOverrideState(
     repository_id: repositoryId,
     kind: override.kind as SyncKind,
     enabled: override.enabled,
-    document: structuredClone(override.document),
+    document: cloneMockDocument(override.document),
     revision: override.revision,
   };
 }
@@ -4385,6 +4670,18 @@ function emptyMockSyncOverride(kind: SyncKind): SyncOverride {
 
 function sameMockDocument(left: unknown, right: unknown): boolean {
   return canonicalStringify(left) === canonicalStringify(right);
+}
+
+/** Sync documents may contain native raw JSON numbers, which structuredClone refuses. */
+function cloneMockDocument<T>(value: T): T {
+  if (typeof JSON.isRawJSON === 'function' && JSON.isRawJSON(value)) return value;
+  if (Array.isArray(value)) return value.map(cloneMockDocument) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, cloneMockDocument(entry)]),
+    ) as T;
+  }
+  return value;
 }
 
 function mockBatchArray<T>(value: T[] | undefined, name: string): T[] {
@@ -5622,10 +5919,10 @@ function activeMockElevation(state: MockState, targetId: string): RootElevation 
 }
 
 function rootTargetValue(state: MockState, target: MockTarget): PanelTarget {
-  if (mockRootOwns(target)) return structuredClone(target.value);
+  if (mockRootOwns(target)) return cloneMockDocument(target.value);
   const elevated = activeMockElevation(state, target.value.id) !== undefined;
   return {
-    ...structuredClone(target.value),
+    ...cloneMockDocument(target.value),
     effective_role: 'none',
     access_source: elevated ? 'elevation' : 'root',
     capabilities: { ...ROOT_READ_CAPABILITIES, write: elevated },
@@ -6305,7 +6602,7 @@ async function readBody<T>(req: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'), preserveNumberToken) as T;
   } catch {
     throw new MockApiError(400, 'invalid_request', 'request body must be valid JSON');
   }

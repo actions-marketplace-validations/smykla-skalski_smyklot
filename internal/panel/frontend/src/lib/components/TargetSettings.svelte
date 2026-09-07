@@ -1,5 +1,15 @@
 <script lang="ts">
+  import { page } from '$app/state';
+  import type {
+    ConfigurationReviewClient,
+    ConfigurationReviewSource,
+  } from '../config-file-review.svelte';
+  import { configFileStatusRevision, type ConfigFileStatusConnection } from '../config-file-status';
+  import ConfigurationFileSync from './ConfigurationFileSync.svelte';
+  import type { BypassActorLookup } from '../types';
+  import BypassPolicyEditor from './BypassPolicyEditor.svelte';
   import { untrack } from 'svelte';
+  import { useInterval } from 'runed';
 
   import { CONFIG_KEYS } from '../config';
   import {
@@ -22,6 +32,7 @@
   import type { PanelApi } from '../api';
   import type { ConfigKey, ConfigPatch, PanelTarget, PendingCIMode } from '../types';
   import Button from './Button.svelte';
+  import DurationInput from './DurationInput.svelte';
   import Card from './Card.svelte';
   import ClippedLabel from './ClippedLabel.svelte';
   import ConfigEditor from './ConfigEditor.svelte';
@@ -32,6 +43,7 @@
   import PageHeader from './PageHeader.svelte';
   import PageToc, { type TocEntry } from './PageToc.svelte';
   import Popover from './Popover.svelte';
+  import PickerTrigger from './PickerTrigger.svelte';
   import SegmentedControl from './SegmentedControl.svelte';
   import WorkspaceTiming from './WorkspaceTiming.svelte';
 
@@ -49,8 +61,10 @@
      one the design does not model - the rules it holds are real and reachable nowhere
      else, so it is indexed like the rest rather than left off the list. */
   const TOC: readonly TocEntry[] = [
+    { id: 'ws-config-file', label: 'Configuration file sync' },
     { id: 'ws-newrepos', label: 'New repositories' },
     { id: 'ws-merging', label: 'Merging' },
+    { id: 'ws-exceptions', label: 'Merge exceptions' },
     { id: 'ws-behavior', label: 'Behavior' },
     { id: 'ws-commands', label: 'Commands' },
     { id: 'ws-formatting', label: 'Formatting' },
@@ -61,8 +75,14 @@
     target: canonicalTarget,
     readOnly = false,
     timing,
+    lookupBypassActors,
+    configFileConnection,
+    configFileReview,
   }: {
     target: PanelTarget;
+    configFileConnection?: ConfigFileStatusConnection;
+    configFileReview?: ConfigurationReviewClient;
+    lookupBypassActors?: BypassActorLookup;
     readOnly?: boolean;
     /**
      * What the Timing card needs to say when Smyklot acts and to carry a request to the
@@ -73,11 +93,41 @@
   } = $props();
 
   const drafts = getSettingsDraftRegistry();
+  // This page owns its observation clock in both normal and Root workspace views.
+  // The Root wrapper's separate elevation clock intentionally pauses without a visit.
+  let now = $state(Date.now());
+  useInterval(30_000, { callback: () => (now = Date.now()) });
   const resource = $derived(targetDefaultsResource(canonicalTarget.id));
   const settingsScope = $derived({
     type: 'workspace',
     targetId: canonicalTarget.id,
   } as const satisfies SettingsScope);
+  const reviewSource = $derived.by((): ConfigurationReviewSource | undefined => {
+    const client = configFileReview;
+    if (!client) return undefined;
+    const targetId = canonicalTarget.id;
+    const saved = parseTargetDefaultsDocument(drafts.resource(resource)?.base);
+    return {
+      identity: JSON.stringify([
+        drafts.accountId,
+        targetId,
+        canonicalTarget.account.login,
+        readOnly,
+        page.url.pathname,
+        configFileStatusRevision(drafts, targetId, canonicalTarget.revision),
+      ]),
+      prepare: () => drafts.refreshFromStorage(),
+      hasDrafts: drafts.dirtyControls(settingsScope).length > 0,
+      canWrite: !readOnly,
+      enabled: saved?.config_file_sync_enabled ?? canonicalTarget.config_file_sync_enabled ?? false,
+      fileIgnored: false,
+      preview: () => client.preview(targetId),
+      resolve: (input) => client.resolve(targetId, input),
+      onResolved: () => {
+        void configFileConnection?.refetch();
+      },
+    };
+  });
   const document = $derived(targetDefaultsDraftDocument(drafts, canonicalTarget));
   const target = $derived(overlayTargetDefaultsDocument(canonicalTarget, document));
   let failure = $state<string | null>(null);
@@ -176,89 +226,10 @@
     );
   }
 
-  let quietDraft = $state<string | null>(null);
-  const quietShown = $derived(
-    quietDraft ?? target.pending_ci_quiet_period_seconds_override?.toString() ?? '',
-  );
+  const PATH_INDEX_UNITS: readonly DurationUnit[] = ['seconds', 'minutes', 'hours', 'days'];
 
-  function typeQuiet(value: string): void {
-    quietDraft = value;
-    const trimmed = value.trim();
-    const quiet = trimmed === '' ? null : Number(trimmed);
-    if (quiet !== null && (!Number.isInteger(quiet) || quiet < 0 || quiet > 86_400)) {
-      failure = 'Quiet period must be whole seconds from 0 to 86400';
-      return;
-    }
-    stage(
-      { ...document, pending_ci_quiet_period_seconds_override: quiet },
-      'defaults.pending_ci_quiet_period_seconds_override',
-    );
-  }
-
-  function finishQuiet(): void {
-    if (quietDraft === null) return;
-    const trimmed = quietDraft.trim();
-    const quiet = trimmed === '' ? null : Number(trimmed);
-    if (quiet !== null && (!Number.isInteger(quiet) || quiet < 0 || quiet > 86_400)) return;
-    quietDraft = null;
-  }
-
-  /* ---------- The path-index interval, an amount beside a unit ---------- */
-
-  const PATH_INDEX_UNITS: readonly DurationUnit[] = ['minutes', 'hours', 'days'];
-  const UNIT_SECONDS: Record<DurationUnit, number> = {
-    seconds: 1,
-    minutes: 60,
-    hours: 3_600,
-    days: 86_400,
-  };
-  let indexAmountDraft = $state<string | null>(null);
-  let indexUnitDraft = $state<DurationUnit | null>(null);
-
-  function indexParts(): { amount: number; unit: DurationUnit } {
-    const seconds =
-      target.path_index_interval_seconds_override ?? target.path_index_interval_seconds_inherited;
-    return durationParts(seconds, PATH_INDEX_UNITS);
-  }
-
-  const indexAmountShown = $derived(indexAmountDraft ?? indexParts().amount.toString());
-  const indexUnitShown = $derived(indexUnitDraft ?? indexParts().unit);
-
-  function typeIndexAmount(value: string): void {
-    indexAmountDraft = value;
-    const unit = indexUnitShown;
-    indexUnitDraft = unit;
-    saveIndexDraft(value, unit);
-  }
-
-  function pickIndexUnit(unit: DurationUnit): void {
-    const amount = indexAmountShown;
-    indexAmountDraft = amount;
-    indexUnitDraft = unit;
-    if (saveIndexDraft(amount, unit)) {
-      indexAmountDraft = null;
-      indexUnitDraft = null;
-    }
-  }
-
-  function saveIndexDraft(amount: string, unit: DurationUnit): boolean {
-    const seconds = Math.round(Number(amount) * UNIT_SECONDS[unit]);
-    if (!Number.isFinite(seconds) || seconds < 60 || seconds > 604_800) {
-      failure = 'File index interval must be from 1 minute to 7 days';
-      return false;
-    }
-    return stage(
-      { ...document, path_index_interval_seconds_override: seconds },
-      'defaults.path_index_interval_seconds_override',
-    );
-  }
-
-  function finishIndexDraft(): void {
-    if (indexAmountDraft === null || indexUnitDraft === null) return;
-    if (saveIndexDraft(indexAmountDraft, indexUnitDraft)) {
-      indexAmountDraft = null;
-      indexUnitDraft = null;
-    }
+  function durationValidity(control: TargetDefaultsControlId, problem: string | null): void {
+    drafts.setValidationProblem(settingsScope, control, problem);
   }
 </script>
 
@@ -279,12 +250,33 @@ settings from them answers a different question than the one they asked.
       <PageHeader
         id="defaults-heading"
         title="Workspace settings"
-        description="What every repository here inherits, unless one overrides it for itself"
+        description="Settings and defaults for this workspace"
       />
 
       {#if failure !== null}
         <FormError message={failure} />
       {/if}
+
+      <ConfigurationFileSync
+        id="ws-config-file"
+        {now}
+        scope="workspace"
+        repository={`${canonicalTarget.account.login}/.github`}
+        enabled={target.config_file_sync_enabled ?? false}
+        savedEnabled={parseTargetDefaultsDocument(drafts.resource(resource)?.base)
+          ?.config_file_sync_enabled ??
+          canonicalTarget.config_file_sync_enabled ??
+          false}
+        dirty={controlDirty('defaults.config_file_sync_enabled')}
+        {readOnly}
+        connection={configFileConnection}
+        {reviewSource}
+        onChange={(enabled) =>
+          stage(
+            { ...document, config_file_sync_enabled: enabled },
+            'defaults.config_file_sync_enabled',
+          )}
+      />
 
       <Card id="ws-newrepos" labelledby="settings-repositories">
         <div class="card-head">
@@ -380,48 +372,21 @@ settings from them answers a different question than the one they asked.
                 </span>
               {:else}
                 <span class="policy-value">
-                  <input
-                    class="num-inline num-short"
-                    inputmode="numeric"
-                    aria-label="File index interval amount"
-                    value={indexAmountShown}
+                  <DurationInput
+                    label="File index interval"
+                    value={target.path_index_interval_seconds_override}
+                    units={PATH_INDEX_UNITS}
+                    minimum={60}
+                    maximum={604_800}
                     disabled={frozen}
-                    oninput={(event) => typeIndexAmount(event.currentTarget.value)}
-                    onblur={finishIndexDraft}
+                    onChange={(seconds) =>
+                      stage(
+                        { ...document, path_index_interval_seconds_override: seconds },
+                        'defaults.path_index_interval_seconds_override',
+                      )}
+                    onValidityChange={(problem) =>
+                      durationValidity('defaults.path_index_interval_seconds_override', problem)}
                   />
-                  <Popover
-                    role="listbox"
-                    label="File index interval unit"
-                    align="end"
-                    itemSelector=".menu-item"
-                  >
-                    {#snippet trigger(attributes)}
-                      <button
-                        {...attributes}
-                        class="value-select"
-                        type="button"
-                        aria-label="File index interval unit"
-                        disabled={frozen}
-                      >
-                        <span class="t">{indexUnitShown}</span>
-                      </button>
-                    {/snippet}
-                    <div class="menu-list">
-                      {#each PATH_INDEX_UNITS as unit (unit)}
-                        <button
-                          class="menu-item"
-                          role="option"
-                          aria-selected={indexUnitShown === unit}
-                          onclick={() => pickIndexUnit(unit)}
-                        >
-                          <span class="menu-check">
-                            {#if indexUnitShown === unit}<Icon name="check" size="base" />{/if}
-                          </span>
-                          <ClippedLabel class="mi-label" text={unit} />
-                        </button>
-                      {/each}
-                    </div>
-                  </Popover>
                   <!-- A WORD, NOT A GLYPH. The bare x asked a reader to know that this one
                      crossed out an answer rather than deleting the setting. -->
                   <Button
@@ -468,19 +433,16 @@ settings from them answers a different question than the one they asked.
                 itemSelector=".menu-item"
               >
                 {#snippet trigger(attributes)}
-                  <button
+                  <PickerTrigger
                     {...attributes}
-                    class="value-select"
                     type="button"
                     aria-label="{target.pending_ci_mode_default === 'checks'
                       ? 'Checks'
                       : 'Labels'} - repository protection"
                     disabled={frozen}
                   >
-                    <span class="t"
-                      >{target.pending_ci_mode_default === 'checks' ? 'Checks' : 'Labels'}</span
-                    >
-                  </button>
+                    {target.pending_ci_mode_default === 'checks' ? 'Checks' : 'Labels'}
+                  </PickerTrigger>
                 {/snippet}
                 <div class="menu-list">
                   {#each PENDING_CI_CHOICES as option (option.value)}
@@ -571,21 +533,24 @@ settings from them answers a different question than the one they asked.
                 Smyklot merges as soon as a second look agrees</span
               >
             </span>
-            <!-- THE UNIT LIVES BESIDE THE NUMBER, never buried in the sentence: a reader
-               typing 30 into a box should not have to read a line of prose to learn
-               whether the field is asking for seconds or minutes. -->
-            <span class="policy-value entry-suffix">
-              <input
+            <span class="policy-value">
+              <DurationInput
                 id="settings-quiet-period"
-                class="num-inline"
-                inputmode="numeric"
-                placeholder={target.pending_ci_quiet_period_seconds_inherited.toString()}
-                value={quietShown}
+                label="Quiet period after checks pass"
+                amountLabel="Quiet period after checks pass"
+                value={target.pending_ci_quiet_period_seconds_override}
+                inherited={target.pending_ci_quiet_period_seconds_inherited}
+                maximum={86_400}
+                allowEmpty
                 disabled={frozen}
-                oninput={(event) => typeQuiet(event.currentTarget.value)}
-                onblur={finishQuiet}
+                onChange={(seconds) =>
+                  stage(
+                    { ...document, pending_ci_quiet_period_seconds_override: seconds },
+                    'defaults.pending_ci_quiet_period_seconds_override',
+                  )}
+                onValidityChange={(problem) =>
+                  durationValidity('defaults.pending_ci_quiet_period_seconds_override', problem)}
               />
-              <span class="entry-unit">seconds</span>
             </span>
           </div>
         </div>
@@ -595,6 +560,20 @@ settings from them answers a different question than the one they asked.
             blocked until GitHub approves both permissions.
           </p>
         {/if}
+      </Card>
+      <Card id="ws-exceptions" unsaved={controlDirty('defaults.pending_ci_bypass_policy_default')}>
+        <div class="card-head"><h2 class="card-title">Merge exceptions</h2></div>
+        <BypassPolicyEditor
+          organizationActors={target.type === 'Organization'}
+          value={target.pending_ci_bypass_policy_default ?? null}
+          lookup={lookupBypassActors}
+          readOnly={frozen}
+          onChange={(value) =>
+            stage(
+              { ...document, pending_ci_bypass_policy_default: value },
+              'defaults.pending_ci_bypass_policy_default',
+            )}
+        />
       </Card>
 
       <ConfigEditor
@@ -606,9 +585,16 @@ settings from them answers a different question than the one they asked.
         disabled={frozen}
         dirtyKeys={dirtyConfigKeys}
         onChange={updateConfig}
+        onValidity={(problem) =>
+          drafts.setValidationProblem(
+            settingsScope,
+            'defaults.config_patch.command_aliases',
+            problem,
+          )}
       />
       <FormattingEditor
         patch={target.config_patch.formatting ?? {}}
+        savedPatch={canonicalTarget.config_patch.formatting ?? {}}
         inherited={target.inherited_config.formatting}
         sources={target.formatting_sources}
         scope="target"
@@ -681,40 +667,6 @@ settings from them answers a different question than the one they asked.
     font-weight: 600;
   }
 
-  .value-select {
-    align-items: center;
-    appearance: none;
-    background:
-      linear-gradient(45deg, transparent 49%, var(--text-secondary) 51%) calc(100% - 14px) 55% / 5px
-        5px no-repeat,
-      linear-gradient(135deg, var(--text-secondary) 49%, transparent 51%) calc(100% - 9px) 55% / 5px
-        5px no-repeat,
-      var(--control-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--r-ctl);
-    color: var(--text-primary);
-    cursor: pointer;
-    display: inline-flex;
-    font-size: var(--font-size-control);
-    min-block-size: var(--tier-quiet);
-    padding: 0 1.5rem 0 var(--space-2);
-  }
-
-  /* Ink-true, so the chosen word shares the row's centre with the say
-     beside it rather than riding its line box's leading. */
-  .value-select .t {
-    text-box: trim-both cap alphabetic;
-  }
-
-  .value-select[data-state='open'] {
-    background:
-      linear-gradient(45deg, transparent 49%, var(--text-secondary) 51%) calc(100% - 14px) 55% / 5px
-        5px no-repeat,
-      linear-gradient(135deg, var(--text-secondary) 49%, transparent 51%) calc(100% - 9px) 55% / 5px
-        5px no-repeat,
-      var(--control-bg-pressed);
-  }
-
   .menu-item {
     align-items: center;
     background: none;
@@ -756,32 +708,6 @@ settings from them answers a different question than the one they asked.
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .num-inline {
-    background: var(--input-bg);
-    border: 1px solid var(--control-border);
-    border-radius: var(--r-ctl);
-    color: var(--text-primary);
-    font-family: var(--mono);
-    font-size: var(--font-size-control);
-    min-block-size: var(--tier-quiet);
-    padding: 0 var(--space-2);
-    text-align: end;
-    width: 8.5rem;
-  }
-
-  .num-inline.num-short {
-    width: 5rem;
-  }
-
-  .num-inline::placeholder {
-    color: var(--text-muted);
-  }
-
-  .num-inline:focus-visible {
-    border-color: var(--brand-action);
-    outline: 2px solid var(--focus);
   }
 
   .perm-note {

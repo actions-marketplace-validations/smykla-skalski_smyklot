@@ -148,6 +148,7 @@ export class SettingsDraftRegistry {
   private editCounter = 0;
   private logicalTime = 0;
   private listening = false;
+  private readonly saveValidators: Array<() => void> = [];
   private readonly storage: SettingsDraftStorage | null;
   private readonly now: () => number;
   private readonly writerId: string;
@@ -218,6 +219,7 @@ export class SettingsDraftRegistry {
   }
 
   dispose(): void {
+    this.saveValidators.length = 0;
     if (!this.listening || typeof window === 'undefined') return;
     window.removeEventListener('storage', this.onStorage);
     this.listening = false;
@@ -266,21 +268,40 @@ export class SettingsDraftRegistry {
     nextValue: SettingsJson,
     change: SettingsControlChange,
   ): boolean {
+    return this.stageMany(resource, nextValue, [change]);
+  }
+
+  /** A single UI action may change several controls in the complete document. */
+  stageMany(
+    resource: SettingsResource,
+    nextValue: SettingsJson,
+    changes: readonly SettingsControlChange[],
+  ): boolean {
     this.syncFromStorage();
     const key = settingsResourceKey(resource);
     const current = this.resources[key];
-    if (current === undefined || change.id.length === 0) return false;
+    if (
+      current === undefined ||
+      changes.length === 0 ||
+      changes.some((change) => change.id.length === 0) ||
+      changes.some((change, index) =>
+        changes.slice(0, index).some((earlier) => earlier.id === change.id),
+      )
+    )
+      return false;
 
     const at = this.timestamp();
     const controls = { ...current.controls };
-    const previous = controls[change.id];
-    controls[change.id] = {
-      id: change.id,
-      location: normalizeSettingsLocation(change.location),
-      saved: cloneSettingsJson(previous?.saved ?? change.saved),
-      value: cloneSettingsJson(change.value),
-      changedAt: at,
-    };
+    for (const change of changes) {
+      const previous = controls[change.id];
+      controls[change.id] = {
+        id: change.id,
+        location: normalizeSettingsLocation(change.location),
+        saved: cloneSettingsJson(previous?.saved ?? change.saved),
+        value: cloneSettingsJson(change.value),
+        changedAt: at,
+      };
+    }
     const candidate: ResourceState = {
       ...current,
       draft: cloneSettingsJson(nextValue),
@@ -341,10 +362,9 @@ export class SettingsDraftRegistry {
   }
 
   /**
-   * Register an editor-only problem that cannot be represented in the typed
-   * draft yet, such as a partially entered bounded integer. These problems are
-   * deliberately not persisted: the invalid text belongs to the mounted input,
-   * while every stored draft remains valid and round-trippable.
+   * Register a transient validation result owned by an input or an application
+   * coordinator. Callers clear their results when the relevant draft disappears.
+   * Results are not persisted; application checks rerun against restored drafts.
    */
   setValidationProblem(scope: SettingsScope, controlId: string, problem: string | null): void {
     const scopeKey = settingsScopeKey(scope);
@@ -366,10 +386,15 @@ export class SettingsDraftRegistry {
   }
 
   validationProblem(scope: SettingsScope): string | null {
+    return this.validationIssue(scope)?.problem ?? null;
+  }
+
+  /** Keep a message paired with its owner so navigation cannot point at another draft. */
+  validationIssue(scope: SettingsScope): { controlId: string; problem: string } | null {
     const problems = this.validationProblems[settingsScopeKey(scope)];
     if (problems === undefined) return null;
     const first = Object.keys(problems).sort()[0];
-    return first === undefined ? null : (problems[first] ?? null);
+    return first === undefined ? null : { controlId: first, problem: problems[first]! };
   }
 
   hasConflicts(scope: SettingsScope): boolean {
@@ -454,8 +479,18 @@ export class SettingsDraftRegistry {
     return selected.length;
   }
 
+  /** Refresh synchronous validation after importing storage, before snapshotting a save. */
+  onBeforeSave(validate: () => void): () => void {
+    this.saveValidators.push(validate);
+    return () => {
+      const index = this.saveValidators.indexOf(validate);
+      if (index !== -1) this.saveValidators.splice(index, 1);
+    };
+  }
+
   beginSave(scope: SettingsScope): SettingsSaveAttempt | null {
     this.syncFromStorage();
+    for (const validate of this.saveValidators) validate();
     const accountId = this.accountId;
     const states = Object.entries(this.resources).filter(
       ([, state]) => isDirty(state) && sameSettingsScope(settingsScopeOf(state.resource), scope),
@@ -745,6 +780,11 @@ export class SettingsDraftRegistry {
       return cleanResource(submitted.resource, result.revision, base);
     }
     return rebased;
+  }
+
+  /** Read the latest account drafts before a saved-settings operation outside the Save flow. */
+  refreshFromStorage(): void {
+    this.syncFromStorage();
   }
 
   private readonly onStorage = (event: StorageEvent): void => {

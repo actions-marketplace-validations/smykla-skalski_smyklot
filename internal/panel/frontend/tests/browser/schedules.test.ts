@@ -1,9 +1,77 @@
-import type { Route } from 'playwright-core';
+import type { Locator, Route } from 'playwright-core';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { addressOf, startPanel, visit, type Panel } from './harness';
 
 let panel: Panel;
+
+async function expectSharedModalControls(dialog: Locator): Promise<void> {
+  const geometry = await dialog.evaluate((node) => {
+    const durations = Array.from(node.querySelectorAll('.duration-field')).map((field) => {
+      const box = field.getBoundingClientRect();
+      const controls = field.querySelector('.duration-controls')!.getBoundingClientRect();
+      const parent = field.closest('.form-field')!;
+      const label = parent.querySelector('.form-label')!;
+      const labelBox = label.getBoundingClientRect();
+      const input = field.querySelector('input')!;
+      const select = field.querySelector('[role=combobox]')!;
+      const reference = document.createElement('input');
+      reference.className = 'text-input';
+      parent.append(reference);
+      const paint = (element: Element) => {
+        const style = getComputedStyle(element);
+        return [
+          style.backgroundColor,
+          style.borderTopColor,
+          style.borderTopWidth,
+          style.borderRadius,
+          style.fontSize,
+          style.height,
+        ];
+      };
+      const result = {
+        width: box.width,
+        controlsWidth: controls.width,
+        x: controls.x,
+        labelX: labelBox.x,
+        gap: controls.y - labelBox.bottom,
+        labelSize: getComputedStyle(label).fontSize,
+        expectedLabelSize: getComputedStyle(reference).fontSize,
+        labelWeight: getComputedStyle(label).fontWeight,
+        input: paint(input),
+        reference: paint(reference),
+        inputHeight: input.getBoundingClientRect().height,
+        selectHeight: select.getBoundingClientRect().height,
+      };
+      reference.remove();
+      return result;
+    });
+    return {
+      durations,
+      nativeChecks: Array.from(node.querySelectorAll('input[type="checkbox"]')).filter(
+        (input) => !input.closest('.switch,.check-item'),
+      ).length,
+      nativeSelects: node.querySelectorAll('select').length,
+      overflow: node.scrollWidth - node.clientWidth,
+    };
+  });
+  expect(geometry.durations.length).toBeGreaterThan(0);
+  for (const field of geometry.durations) {
+    expect(field.width).toBeCloseTo(field.controlsWidth, 1);
+    expect(field.x).toBeCloseTo(field.labelX, 1);
+    expect(field.gap).toBeCloseTo(8, 1);
+    expect(field.labelSize).toBe(field.expectedLabelSize);
+    expect(field.labelWeight).toBe('600');
+    expect(field.input).toEqual(field.reference);
+    expect(field.inputHeight).toBe(34);
+    expect(field.selectHeight).toBe(34);
+  }
+  expect(geometry.nativeChecks).toBe(0);
+  expect(geometry.nativeSelects).toBe(0);
+  expect(geometry.overflow).toBeLessThanOrEqual(1);
+}
 
 beforeAll(async () => {
   panel = await startPanel();
@@ -14,6 +82,189 @@ afterAll(async () => {
 });
 
 describe('background work schedules [Integration]', () => {
+  it.each([
+    { colorScheme: 'light', width: 1440 },
+    { colorScheme: 'dark', width: 1440 },
+    { colorScheme: 'light', width: 375 },
+    { colorScheme: 'dark', width: 375 },
+  ] as const)(
+    'recognizes configuration file sync in service and workspace timing at $colorScheme $width',
+    async ({ colorScheme, width }) => {
+      const page = await panel.browser.newPage({ colorScheme, viewport: { width, height: 1000 } });
+      page.setDefaultTimeout(10_000);
+      try {
+        await visit(page, addressOf(panel, 'root/schedules'), { ready: '.view-frame .object-row' });
+        await page.getByRole('button', { name: /Show all \d+ jobs/ }).click();
+        const job = page.locator('.object-row', {
+          has: page.getByText('Configuration file sync', { exact: true }),
+        });
+        await job.getByText(/every 15 minutes around the clock/).waitFor();
+        await job
+          .getByRole('button', { name: 'Edit schedule - Configuration file sync', exact: true })
+          .click();
+        const editor = page.getByRole('dialog', { name: 'Configure job', exact: true });
+        await editor.waitFor();
+        expect(
+          await editor.getByRole('textbox', { name: 'How often', exact: true }).inputValue(),
+        ).toBe('15');
+        await editor.getByText(/Checks connected configuration files for changes/).waitFor();
+        const directory = process.env.SMYKLOT_VISUAL_AUDIT_DIR;
+        if (directory) {
+          await mkdir(directory, { recursive: true });
+          await editor.screenshot({
+            path: join(directory, `service-${colorScheme}-${width}.png`),
+            animations: 'disabled',
+          });
+        }
+        await expectSharedModalControls(editor);
+        const overflow = await editor.evaluate(
+          (element) => element.scrollWidth - element.clientWidth,
+        );
+        expect(overflow).toBeLessThanOrEqual(1);
+        await page.keyboard.press('Escape');
+
+        let submitted: Record<string, unknown> | undefined;
+        await page.route('**/api/v1/targets/*/schedule-requests', async (route) => {
+          if (route.request().method() !== 'POST') {
+            await route.continue();
+            return;
+          }
+          submitted = route.request().postDataJSON() as Record<string, unknown>;
+          await route.fulfill({ status: 200, json: {} });
+        });
+        await visit(page, addressOf(panel, 'workspace/settings'), { ready: '#ws-timing' });
+        const timing = page.locator('#ws-timing');
+        await timing.locator('summary').click();
+        await timing.getByRole('button', { name: 'Request a change' }).click();
+        const request = page.getByRole('dialog', { name: 'Request a change to when Smyklot acts' });
+        await request.getByLabel('Job', { exact: true }).click();
+        await page.getByRole('option', { name: 'Configuration file sync', exact: true }).click();
+        await request.getByText(/Checks connected configuration files for changes/).waitFor();
+        expect(
+          await request.getByRole('textbox', { name: 'How often', exact: true }).inputValue(),
+        ).toBe('15');
+        await request.getByRole('textbox', { name: 'How often', exact: true }).fill('20');
+        await request.getByLabel('Reason').fill('Check missed file changes every twenty minutes');
+        if (directory)
+          await request.screenshot({
+            path: join(directory, `workspace-${colorScheme}-${width}.png`),
+            animations: 'disabled',
+          });
+        expect(
+          await request.evaluate((element) => element.scrollWidth - element.clientWidth),
+        ).toBeLessThanOrEqual(1);
+        await expectSharedModalControls(request);
+        await request.getByRole('button', { name: 'Send request' }).click();
+        await expect
+          .poll(() => submitted)
+          .toEqual(
+            expect.objectContaining({
+              kind: 'config_file_sync',
+              cadence_seconds: 1200,
+              base_revision: 1,
+              default_priority: 'normal',
+            }),
+          );
+      } finally {
+        await page.close();
+      }
+    },
+  );
+
+  it.each(
+    [375, 768, 1024, 1440].flatMap((width) =>
+      (['light', 'dark'] as const).map((colorScheme) => ({ width, colorScheme })),
+    ),
+  )('keeps hours profile forms coherent at $colorScheme $width', async ({ width, colorScheme }) => {
+    const page = await panel.browser.newPage({ colorScheme, viewport: { width, height: 1000 } });
+    page.setDefaultTimeout(10_000);
+    try {
+      await visit(page, addressOf(panel, 'root/schedules'), { ready: '.view-frame .object-row' });
+      await page.getByRole('button', { name: 'New hours profile', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'New hours profile', exact: true });
+      await dialog.waitFor();
+      const directory = process.env.SMYKLOT_VISUAL_AUDIT_DIR;
+      if (directory) {
+        await mkdir(directory, { recursive: true });
+        await dialog.screenshot({
+          path: join(directory, `profile-new-${colorScheme}-${width}.png`),
+          animations: 'disabled',
+        });
+      }
+      const geometry = await dialog.evaluate((node) => {
+        const name = node.querySelector<HTMLInputElement>('#profile-name')!;
+        const timezone = node.querySelector<HTMLInputElement>('#profile-timezone')!;
+        const controls = Array.from(
+          node.querySelectorAll('.window-row input, .window-row [role=combobox]'),
+        );
+        return {
+          nameHeight: name.getBoundingClientRect().height,
+          timezoneHeight: timezone.getBoundingClientRect().height,
+          controlHeights: controls.map((control) => control.getBoundingClientRect().height),
+          removeButtons: Array.from(node.querySelectorAll('.window-remove button')).map(
+            (button) => ({
+              width: button.getBoundingClientRect().width,
+              height: button.getBoundingClientRect().height,
+              glyphs: button.querySelectorAll('svg path').length,
+            }),
+          ),
+          overflow: node.scrollWidth - node.clientWidth,
+        };
+      });
+      expect.soft(geometry.nameHeight).toBe(34);
+      expect.soft(geometry.timezoneHeight).toBe(34);
+      expect.soft(geometry.controlHeights.every((height) => height === 34)).toBe(true);
+      expect(geometry.removeButtons).toHaveLength(5);
+      for (const button of geometry.removeButtons) {
+        expect(button.width).toBe(34);
+        expect(button.height).toBe(34);
+        expect(button.glyphs).toBeGreaterThan(0);
+      }
+      expect(geometry.overflow).toBeLessThanOrEqual(1);
+      if (width === 375) {
+        const exceptions = dialog.getByLabel('Date exceptions', { exact: true });
+        await exceptions.scrollIntoViewIfNeeded();
+        if (directory)
+          await dialog.screenshot({
+            path: join(directory, `profile-new-end-${colorScheme}-${width}.png`),
+            animations: 'disabled',
+          });
+        const control = await exceptions.boundingBox();
+        const save = await dialog.getByRole('button', { name: 'Save profile' }).boundingBox();
+        expect(control!.y + control!.height).toBeLessThan(save!.y);
+      }
+      await page.keyboard.press('Escape');
+      await page
+        .getByRole('button', { name: /^Edit - the .+ profile$/ })
+        .first()
+        .click();
+      const edit = page.getByRole('dialog', { name: 'Edit hours profile', exact: true });
+      await edit.waitFor();
+      if (directory)
+        await edit.screenshot({
+          path: join(directory, `profile-edit-${colorScheme}-${width}.png`),
+          animations: 'disabled',
+        });
+      expect(
+        await edit.evaluate((node) => node.scrollWidth - node.clientWidth),
+      ).toBeLessThanOrEqual(1);
+      if (width === 375) {
+        await edit.getByLabel('Date exceptions', { exact: true }).scrollIntoViewIfNeeded();
+        if (directory)
+          await edit.screenshot({
+            path: join(directory, `profile-edit-end-${colorScheme}-${width}.png`),
+            animations: 'disabled',
+          });
+      }
+      await edit.getByRole('button', { name: /^Remove Friday hours/ }).click();
+      expect(await edit.locator('.window-row').count()).toBe(4);
+      await edit.getByRole('button', { name: 'Add hours', exact: true }).click();
+      expect(await edit.locator('.window-row').count()).toBe(5);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('announces the initial schedule load until every response arrives', async () => {
     const page = await panel.browser.newPage();
     let releaseResponse = (): void => {};
@@ -66,7 +317,7 @@ describe('background work schedules [Integration]', () => {
 
   /**
    * A job is a sentence, and the page opens on the four that ran most recently rather
-   * than on all eleven: a console opens on what is happening. What each card owes a
+   * than on all twelve: a console opens on what is happening. What each card owes a
    * reader is checked by its words, because that is the whole of what changed - a
    * cadence is said in human units and the hours are said as a week.
    */
@@ -79,15 +330,15 @@ describe('background work schedules [Integration]', () => {
 
       const jobs = page.locator('.card', { has: page.getByRole('heading', { name: 'Jobs' }) });
       await expect.poll(() => jobs.locator('.object-row').count()).toBe(4);
-      await jobs.getByText('Showing 4 of 11 jobs', { exact: false }).waitFor();
+      await jobs.getByText('Showing 4 of 12 jobs', { exact: false }).waitFor();
       // The cadence in words, and the hours the job runs in - never 21600 seconds.
       await jobs
         .getByText(/every 5 minutes around the clock/)
         .first()
         .waitFor();
 
-      await jobs.getByRole('button', { name: 'Show all 11 jobs' }).click();
-      await expect.poll(() => jobs.locator('.object-row').count()).toBe(11);
+      await jobs.getByRole('button', { name: 'Show all 12 jobs' }).click();
+      await expect.poll(() => jobs.locator('.object-row').count()).toBe(12);
 
       const hours = page.locator('.card', { has: page.getByRole('heading', { name: 'Hours' }) });
       await hours.getByText('Always Open', { exact: true }).waitFor();

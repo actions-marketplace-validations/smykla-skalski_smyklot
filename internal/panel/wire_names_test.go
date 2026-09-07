@@ -32,6 +32,7 @@ func TestPanelResponsesUseWireNames(t *testing.T) {
 	harness := newPanelHarness(t, "owner")
 	session := harness.signIn(t)
 	seedPanelWireNameRows(t, harness)
+	harness.server.configFiles = &configFileControllerProbe{}
 
 	paths := panelWireNameProbePaths()
 	read := 0
@@ -179,10 +180,15 @@ func panelWireNameProbePaths() []string {
 		"/panel/api/v1/targets/" + target + "/settings/checkpoints/1",
 		"/panel/api/v1/targets/" + target + "/repositories",
 		"/panel/api/v1/targets/" + target + "/repositories/" + repository,
+		"/panel/api/v1/targets/" + target + "/config-file",
+		"/panel/api/v1/targets/" + target + "/repositories/" + repository + "/config-file",
+		"/panel/api/v1/targets/" + target + "/config-file/preview",
+		"/panel/api/v1/targets/" + target + "/repositories/" + repository + "/config-file/preview",
 		"/panel/api/v1/targets/" + target + "/repositories/" + repository + "/sync/labels",
 		"/panel/api/v1/targets/" + target + "/users",
 		"/panel/api/v1/targets/" + target + "/users/" + account + "/decisions",
 		"/panel/api/v1/targets/" + target + "/user-suggestions",
+		"/panel/api/v1/targets/" + target + "/bypass-actors",
 		"/panel/api/v1/targets/" + target + "/invitations",
 		"/panel/api/v1/targets/" + target + "/sync/config/labels",
 		"/panel/api/v1/targets/" + target + "/sync/paths",
@@ -217,9 +223,14 @@ func panelWireNameProbePaths() []string {
 		"/panel/api/v1/root/workspaces/" + target + "/settings/checkpoints/1",
 		"/panel/api/v1/root/workspaces/" + target + "/repositories",
 		"/panel/api/v1/root/workspaces/" + target + "/repositories/" + repository,
+		"/panel/api/v1/root/workspaces/" + target + "/config-file",
+		"/panel/api/v1/root/workspaces/" + target + "/repositories/" + repository + "/config-file",
+		"/panel/api/v1/root/workspaces/" + target + "/config-file/preview",
+		"/panel/api/v1/root/workspaces/" + target + "/repositories/" + repository + "/config-file/preview",
 		"/panel/api/v1/root/workspaces/" + target + "/users",
 		"/panel/api/v1/root/workspaces/" + target + "/users/" + account + "/decisions",
 		"/panel/api/v1/root/workspaces/" + target + "/user-suggestions",
+		"/panel/api/v1/root/workspaces/" + target + "/bypass-actors",
 		"/panel/api/v1/root/workspaces/" + target + "/invitations",
 		"/panel/api/v1/root/workspaces/" + target + "/audit",
 		"/panel/api/v1/root/workspaces/" + target + "/failures",
