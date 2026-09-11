@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.54.2](https://github.com/smykla-skalski/smyklot/compare/v1.54.1...v1.54.2) (2026-09-11)
+
+### Bug Fixes
+
+* **deps:** update ginkgo to v2.32.2 ([#376](https://github.com/smykla-skalski/smyklot/issues/376)) ([21cb35f](https://github.com/smykla-skalski/smyklot/commit/21cb35f138b05cf542fe99df4038892390c75f94))
+* **deps:** update module github.com/jackc/pgx/v5 to v5.11.0 ([#373](https://github.com/smykla-skalski/smyklot/issues/373)) ([9aa474a](https://github.com/smykla-skalski/smyklot/commit/9aa474ad656bfa562abfff4688bf88a373e4b779))
+* **deps:** update module github.com/yuin/goldmark/v2 to v2.0.2 ([#380](https://github.com/smykla-skalski/smyklot/issues/380)) ([aeb1718](https://github.com/smykla-skalski/smyklot/commit/aeb17189bf94e5cc59d219afc58e6b55178b7417))
+* **deps:** update module golang.org/x/sync to v0.23.0 ([#375](https://github.com/smykla-skalski/smyklot/issues/375)) ([cd18e40](https://github.com/smykla-skalski/smyklot/commit/cd18e40c05a65a2ad15689ba95708524ac982e0a))
+
 ## [1.54.1](https://github.com/smykla-skalski/smyklot/compare/v1.54.0...v1.54.1) (2026-09-07)
 
 ### Bug Fixes
